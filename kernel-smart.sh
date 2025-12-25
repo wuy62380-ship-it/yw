@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-#  YW / Devi 智能内核切换 + BBR 自动启用脚本（v2.0）
+#  YW / Devi 智能内核切换 + BBR 自动启用 + 直播链路优化（v2.1）
 #  适配所有 VPS：官方内核 / cloud 内核 / grub / 无 grub / Direct Kernel Boot
 #  Debian 11 / 12 / 13
 # ============================================================
@@ -8,7 +8,7 @@
 set -e
 
 echo "============================================================"
-echo "  YW 智能内核切换 + BBR 自动启用脚本（v2.0）"
+echo "  YW 智能内核切换 + BBR 自动启用 + 直播优化（v2.1）"
 echo "============================================================"
 echo
 
@@ -28,7 +28,7 @@ log_info "当前运行内核：$CURRENT_KERNEL"
 log_info "可用拥塞算法：$AVAILABLE_CC"
 
 # ============================================================
-# 1. 检查是否为 Direct Kernel Boot（最严重情况）
+# 1. 检查是否为 Direct Kernel Boot
 # ============================================================
 log_step "检测是否为 Direct Kernel Boot"
 
@@ -57,14 +57,57 @@ net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 EOF
 
+    # ============================================================
+    # 集成直播链路专用 sysctl（激进版）
+    # ============================================================
+    log_step "应用直播链路专用 sysctl 优化（激进版）"
+
+    cat > /etc/sysctl.d/200-live-stream.conf <<EOF
+# ============================================================
+#  YW / Devi 直播链路专用 sysctl（激进版）
+# ============================================================
+
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+
+net.core.somaxconn = 65535
+net.core.netdev_max_backlog = 65535
+
+net.core.rmem_max = 67108864
+net.core.wmem_max = 67108864
+net.core.rmem_default = 262144
+net.core.wmem_default = 262144
+
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_retries2 = 8
+net.ipv4.tcp_mtu_probing = 1
+
+net.ipv4.tcp_notsent_lowat = 131072
+net.ipv4.tcp_no_metrics_save = 1
+net.ipv4.tcp_slow_start_after_idle = 0
+
+net.ipv4.ip_local_port_range = 1024 65000
+net.ipv4.tcp_syncookies = 1
+net.ipv4.tcp_fin_timeout = 10
+
+net.ipv4.conf.all.rp_filter = 0
+net.ipv4.conf.default.rp_filter = 0
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
+EOF
+
     sysctl --system
 
     CURRENT_CC2=$(sysctl net.ipv4.tcp_congestion_control | awk -F'= ' '{print $2}')
     if [ "$CURRENT_CC2" = "bbr" ]; then
-        log_ok "BBR 已成功启用并设置为永久生效"
+        log_ok "BBR + 直播链路优化 已成功启用并永久生效"
         echo
         echo "============================================================"
         echo "  结论：当前内核已成功启用 BBR（通常为 BBR v2）"
+        echo "  已应用直播链路优化参数（激进版）"
         echo "  无需切换内核，脚本已完成全部操作"
         echo "============================================================"
         echo
@@ -121,12 +164,13 @@ update-grub
 log_ok "已设置 grub 默认启动项为：$MENU_ENTRY"
 
 # ============================================================
-# 7. 重启后自动启用 BBR
+# 7. 重启后自动启用 BBR + 直播优化
 # ============================================================
-log_step "设置重启后自动启用 BBR"
+log_step "设置重启后自动启用 BBR + 直播优化"
 
 cat > /root/run-bbr-after-reboot.sh <<EOF
 #!/bin/bash
+
 mkdir -p /etc/modules-load.d
 echo "tcp_bbr" > /etc/modules-load.d/zz-bbr.conf
 modprobe tcp_bbr 2>/dev/null || true
@@ -137,6 +181,34 @@ net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 EOT
 
+cat > /etc/sysctl.d/200-live-stream.conf <<EOT
+# 直播链路专用 sysctl（激进版）
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+net.core.somaxconn = 65535
+net.core.netdev_max_backlog = 65535
+net.core.rmem_max = 67108864
+net.core.wmem_max = 67108864
+net.core.rmem_default = 262144
+net.core.wmem_default = 262144
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_retries2 = 8
+net.ipv4.tcp_mtu_probing = 1
+net.ipv4.tcp_notsent_lowat = 131072
+net.ipv4.tcp_no_metrics_save = 1
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.ip_local_port_range = 1024 65000
+net.ipv4.tcp_syncookies = 1
+net.ipv4.tcp_fin_timeout = 10
+net.ipv4.conf.all.rp_filter = 0
+net.ipv4.conf.default.rp_filter = 0
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
+EOT
+
 sysctl --system
 rm -f /root/run-bbr-after-reboot.sh
 EOF
@@ -145,7 +217,7 @@ chmod +x /root/run-bbr-after-reboot.sh
 
 cat > /etc/systemd/system/run-bbr-after-reboot.service <<EOF
 [Unit]
-Description=Enable BBR after reboot
+Description=Enable BBR + Live Stream Optimization after reboot
 After=network.target
 
 [Service]
@@ -158,7 +230,7 @@ EOF
 
 systemctl enable run-bbr-after-reboot.service
 
-log_ok "已创建自动启用 BBR 的 systemd 服务"
+log_ok "已创建自动启用 BBR + 直播优化的 systemd 服务"
 
 # ============================================================
 # 8. 自动重启
