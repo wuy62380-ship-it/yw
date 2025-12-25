@@ -1,8 +1,8 @@
 #!/bin/bash
 # ============================================================
-#  YW 专属：智能内核切换脚本（安全模式）
+#  YW / Devi 专属：智能内核切换脚本（安全模式）
 #  Debian 11 / 12 / 13 · 自动检测内核 · 自动安装官方内核（BBR v2）
-#  重启后自动执行 auto-bbr.sh
+#  自动强制 grub 使用官方内核 · 重启后自动执行 auto-bbr.sh
 # ============================================================
 
 set -e
@@ -29,12 +29,16 @@ log_ok() {
     echo "[OK] $1"
 }
 
+log_err() {
+    echo "[错误] $1"
+    exit 1
+}
+
 # -------------------------------
 # 检查 root
 # -------------------------------
 if [ "$(id -u)" != "0" ]; then
     log_err "请使用 root 运行"
-    exit 1
 fi
 
 # -------------------------------
@@ -42,7 +46,6 @@ fi
 # -------------------------------
 if [ ! -f /etc/os-release ]; then
     log_err "无法检测系统版本：缺少 /etc/os-release"
-    exit 1
 fi
 
 VERSION=$(grep VERSION_ID /etc/os-release | cut -d '"' -f 2)
@@ -51,13 +54,8 @@ NAME=$(grep ^NAME= /etc/os-release | cut -d '"' -f 2)
 log_info "检测到系统：$NAME"
 log_info "检测到 Debian 版本：$VERSION"
 
-if [ "$NAME" != "Debian GNU/Linux" ] && [ "$NAME" != "Debian" ]; then
-    log_warn "当前系统不是 Debian，脚本仅支持 Debian 11 / 12 / 13"
-fi
-
 if [ "$VERSION" != "11" ] && [ "$VERSION" != "12" ] && [ "$VERSION" != "13" ]; then
     log_err "本脚本仅支持 Debian 11 / 12 / 13"
-    exit 1
 fi
 
 # -------------------------------
@@ -99,16 +97,29 @@ apt install linux-image-amd64 -y
 log_ok "官方内核安装完成"
 
 # -------------------------------
-# 更新 grub
+# 强制 grub 使用官方内核启动
 # -------------------------------
-log_step "更新 grub 引导配置"
+log_step "强制 grub 使用官方内核启动"
+
+OFFICIAL_KERNEL=$(ls /boot | grep vmlinuz | grep -v cloud | head -n 1 | sed 's/vmlinuz-//')
+
+if [ -z "$OFFICIAL_KERNEL" ]; then
+    log_err "未找到官方内核（非 cloud 内核），无法强制设置 grub 默认启动项"
+fi
+
+MENU_ENTRY="Debian GNU/Linux, with Linux $OFFICIAL_KERNEL"
+
+log_info "检测到官方内核：$OFFICIAL_KERNEL"
+log_info "设置 grub 默认启动项为：$MENU_ENTRY"
+
+grub-set-default "$MENU_ENTRY" || log_warn "grub-set-default 执行失败，请稍后手动检查"
 
 update-grub
 
-log_ok "grub 更新完成"
+log_ok "已强制设置 grub 默认启动项为官方内核"
 
 # -------------------------------
-# 设置开机自动运行 auto-bbr.sh
+# 设置重启后自动运行 auto-bbr.sh
 # -------------------------------
 log_step "设置重启后自动运行 auto-bbr.sh"
 
@@ -122,7 +133,6 @@ EOF
 
 chmod +x /root/run-bbr-after-reboot.sh
 
-# 写入 systemd 服务
 cat > /etc/systemd/system/run-bbr-after-reboot.service <<EOF
 [Unit]
 Description=Run auto-bbr.sh after reboot
@@ -148,7 +158,7 @@ echo "============================================================"
 echo "  内核切换准备完成"
 echo "------------------------------------------------------------"
 echo "  已安装 Debian 官方原版内核（支持 BBR v2）"
-echo "  已设置默认内核"
+echo "  已强制设置 grub 默认启动项为官方内核"
 echo "  重启后将自动运行 auto-bbr.sh 完成 BBR 优化"
 echo "------------------------------------------------------------"
 echo "  请现在执行：reboot"
