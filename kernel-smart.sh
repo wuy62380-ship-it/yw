@@ -1,154 +1,153 @@
 #!/bin/bash
 
 # ====================================================================
-#  🔥 Linux 伺服器直播推流極致優化 + BBRv3 核心智能雙模腳本 🔥
-#  功能：首次執行自動安裝並調優；重啟後再次執行直接進入終極驗證模式。
-#  適用系統: Debian / Ubuntu (x86_64)
+# 项目名称: BBRv3 YW激活脚本
+# 适用系统: Ubuntu 24.04+ / Debian 12+ (x86_64 / aarch64)
 # ====================================================================
 
-# 顏色定義
+# 终端颜色输出定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
 PLAIN='\033[0m'
 
-# 確保以 root 權限執行
-if [ "$EUID" -ne 0 ]; then
-  echo -e "${RED}錯誤: 請使用 root 使用者或搭配 sudo 執行此腳本！${PLAIN}"
-  exit 1
+# 检查 1: 必须以 root 权限运行
+if [ "$(id -u)" != "0" ]; then
+    echo -e "${RED}[错误] 请使用 root 权限运行此脚本！(例如: sudo bash 脚本名)${PLAIN}"
+    exit 1
 fi
 
-# ====================================================================
-# 模式判斷：檢查是否已經切換到 xanmod 核心
-# ====================================================================
+# 核心阶段：自动根据当前的内核状态执行不同操作
 CURRENT_KERNEL=$(uname -r)
 
-if [[ "$CURRENT_KERNEL" == *"xanmod"* ]]; then
-  # ----------------------------------------------------------------
-  # 🔍 【驗證模式】當前已經是新核心，直接印出終極 BBRv3 效能報告
-  # ----------------------------------------------------------------
-  clear
-  echo -e "${BLUE}====================================================${PLAIN}"
-  echo -e "${GREEN}      ✨ 歡迎使用 BBRv3 直播優化 終極狀態驗證工具 ✨      ${PLAIN}"
-  echo -e "${BLUE}====================================================${PLAIN}"
-  echo ""
-  
-  # 1. 檢查核心版本
-  echo -e "➔ 1. 當前系統 Linux 內核核心: ${GREEN}${CURRENT_KERNEL}${PLAIN} (已成功切換至高規格核心)"
-  
-  # 2. 檢查 TCP 擁塞演算法
-  TCP_CC=$(sysctl -n net.ipv4.tcp_congestion_control)
-  if [ "$TCP_CC" = "bbr" ]; then
-    echo -e "➔ 2. 當前 TCP 擁塞控制演算法: ${GREEN}bbr (核心已自動關聯並啟用 BBRv3 機制)${PLAIN}"
-  else
-    echo -e "➔ 2. 當前 TCP 擁塞控制演算法: ${RED}${TCP_CC} (異常，未成功啟用 bbr)${PLAIN}"
-  fi
-  
-  # 3. 檢查佇列規則 (qdisc)
-  QDISC=$(sysctl -n net.core.default_qdisc)
-  if [ "$QDISC" = "fq" ]; then
-    echo -e "➔ 3. 當前網路預設佇列規則: ${GREEN}fq (Fair Queueing 完美配對 BBRv3)${PLAIN}"
-  else
-    echo -e "➔ 3. 當前網路預設佇列規則: ${YELLOW}${QDISC} (建議為 fq)${PLAIN}"
-  fi
+if [[ "$CURRENT_KERNEL" == *"-joeyblog-bbrv3"* ]]; then
+    # ----------------------------------------------------------------
+    # 状态 A: 用户已使用 byJoey 内核重启，现在执行原代码写入与最终验证
+    # ----------------------------------------------------------------
+    echo -e "${BLUE}[1/2] 检测到您已成功运行 byJoey-BBRv3 专用内核 (${CURRENT_KERNEL})。${PLAIN}"
+    echo -e "${YELLOW}正在自动生成并覆盖 /etc/sysctl.conf 配置...${PLAIN}"
 
-  # 4. 深度檢測底層內核 bbr 模組狀態 (印出當前推流時的內部狀態)
-  echo ""
-  echo -e "${YELLOW}[底層 BBR 核心運作細節檢測]${PLAIN}"
-  if modinfo tcp_bbr > /dev/null 2>&1; then
-    BBR_VERSION=$(modinfo tcp_bbr | grep -E "version:" | awk '{print $2}')
-    if [ -n "$BBR_VERSION" ]; then
-      echo -e "   • BBR 模組版本標記: ${GREEN}${BBR_VERSION}${PLAIN}"
-    else
-      echo -e "   • BBR 模組狀態: ${GREEN}內建整合於目前內核中運作${PLAIN}"
-    fi
-  fi
-  
-  # 5. 輸出快取極限解鎖狀態
-  FILE_MAX=$(sysctl -n fs.file-max)
-  echo -e "   • 系統最高併發檔案限制 (fs.file-max): ${GREEN}${FILE_MAX}${PLAIN} (原版 65535，已成功解鎖至百萬級別)"
+    # 备份原有的 sysctl.conf
+    cp /etc/sysctl.conf /etc/sysctl.conf.bak
 
-  echo ""
-  echo -e "${GREEN}🎉 驗證完畢！您的伺服器目前正處於「抗丟包、超高吞吐量、低延遲」的最高戰鬥狀態！${PLAIN}"
-  echo -e "${GREEN}現在您可以隨時開啟 OBS 或 FFmpeg 進行極限推流測試了。${PLAIN}"
-  echo -e "${BLUE}====================================================${PLAIN}"
-  exit 0
-fi
+    # 精准写入您发送给我的完整原始代码，并在底部追加 BBRv3 必要变量
+    cat << 'EOF' > /etc/sysctl.conf
+#
+# /etc/sysctl.conf - Configuration file for setting system variables
+# See /etc/sysctl.d/ for additional system variables.
+# See sysctl.conf (5) for information.
+#
+
+#kernel.domainname = example.com
+
+# Uncomment the following to stop low-level messages on console
+#kernel.printk = 3 4 1 3
+
+###################################################################
+# Functions previously found in netbase
+#
+
+# Uncomment the next two lines to enable Spoof protection (reverse-path filter)
+# Turn on Source Address Verification in all interfaces to
+# prevent some spoofing attacks
+#net.ipv4.conf.default.rp_filter=1
+#net.ipv4.conf.all.rp_filter=1
+
+# Uncomment the next line to enable TCP/IP SYN cookies
+# See http://lwn.net
+# Note: This may impact IPv6 TCP sessions too
+#net.ipv4.tcp_syncookies=1
+
+# Uncomment the next line to enable packet forwarding for IPv4
+#net.ipv4.ip_forward=1
+
+# Uncomment the next line to enable packet forwarding for IPv6
+#  Enabling this option disables Stateless Address Autoconfiguration
+#  based on Router Advertisements for this host
+#net.ipv6.conf.all.forwarding=1
 
 
-# ----------------------------------------------------------------
-# 🛠️ 【安裝模式】如果還不是 xanmod 核心，執行安裝與緩衝區調優
-# ----------------------------------------------------------------
-clear
-echo -e "${BLUE}====================================================${PLAIN}"
-echo -e "${YELLOW}  正在啟動: Linux 伺服器直播推流極致優化 + BBRv3 安裝流程  ${PLAIN}"
-echo -e "${BLUE}====================================================${PLAIN}"
-echo ""
+###################################################################
+# Additional settings - these settings can improve the network
+# security of the host and prevent against some network attacks
+# including spoofing attacks and man in the middle attacks through
+# redirection. Some network environments, however, require that these
+# settings are disabled so review and enable them as needed.
+#
+# Do not accept ICMP redirects (prevent MITM attacks)
+#net.ipv4.conf.all.accept_redirects = 0
+#net.ipv6.conf.all.accept_redirects = 0
+# _or_
+# Accept ICMP redirects only for gateways listed in our default
+# gateway list (enabled by default)
+# net.ipv4.conf.all.secure_redirects = 1
+#
+# Do not send ICMP redirects (we are not a router)
+#net.ipv4.conf.all.send_redirects = 0
+#
+# Do not accept IP source route packets (we are not a router)
+#net.ipv4.conf.all.accept_source_route = 0
+#net.ipv6.conf.all.accept_source_route = 0
+#
+# Log Martian Packets
+#net.ipv4.conf.all.log_martians = 1
+#
 
-echo -e "${YELLOW}[步驟 1/3] 正在安裝 XanMod BBRv3 官方核心相依組件...${PLAIN}"
-apt update -y && apt install -y wget gnupg curl
+###################################################################
+# Magic system request Key
+# 0=disable, 1=enable all, >1 bitmask of sysrq functions
+# See https://kernel.org
+# for what other values do
+#kernel.sysrq=438
 
-# 註冊 XanMod 官方 PGP 金鑰並添加儲存庫
-wget -qO - https://xanmod.org | gpg --dearmor -o /usr/share/keyrings/xanmod-archive-keyring.gpg --yes
-echo 'deb [signed-by=/usr/share/keyrings/xanmod-archive-keyring.gpg] http://xanmod.org releases main' | tee /etc/apt/sources.list.d/xanmod-kernel.list
+fs.file-max = 65535
 
-echo -e "${GREEN}正在下載並安裝支援 BBRv3 的 XanMod 最新 Linux 核心...${PLAIN}"
-apt update -y && apt install -y linux-image-xanmod-x64v3
-
-# 更新系統 GRUB 開機引導
-echo -e "${YELLOW}正在更新系統開機引導選單 (GRUB)...${PLAIN}"
-if command -v update-grub > /dev/null 2>&1; then
-  update-grub
-else
-  grub-mkconfig -o /boot/grub/grub.cfg
-fi
-
-echo -e "${YELLOW}[步驟 2/3] 正在備份原有的 /etc/sysctl.conf...${PLAIN}"
-cp /etc/sysctl.conf /etc/sysctl.conf.bak
-
-echo -e "${YELLOW}[步驟 3/3] 正在配置極限直播推流（TCP + UDP + BBRv3 完美調優配置）...${PLAIN}"
-cat << 'EOF' > /etc/sysctl.conf
-# ====================================================================
-# 🔥 直播推流與網絡測速 終極完美優化區（TCP + UDP 全方位覆蓋）
-# ====================================================================
-
-# 1. 提升檔案開啟數（提升至 100 萬以應對高併發直播連線）
-fs.file-max = 1000000
-
-# 2. 增大網路傳輸總隊列（防止推流突發大流量時隊列溢出）
-net.core.netdev_max_backlog = 25000
-net.core.somaxconn = 4096
-
-# 3. 核心快取全域調優（設定最相容的 8MB 緩衝區，兼顧測速與大碼率推流）
-net.core.rmem_max = 8388608
-net.core.wmem_max = 8388608
-
-# 4. TCP 專屬調優（適用於 RTMP / HLS 直播與一般網絡測速）
-net.ipv4.tcp_rmem = 4096 87380 8388608
-net.ipv4.tcp_wmem = 4096 65536 8388608
-net.ipv4.tcp_slow_start_after_idle = 0
-net.ipv4.tcp_tw_reuse = 1
-net.ipv4.tcp_fin_timeout = 30
-net.ipv4.ip_local_port_range = 1024 65535
-
-# 5. UDP 專屬調優（針對 SRT / WebRTC / 奎科等低延遲直播協定）
-net.ipv4.udp_rmem_min = 16384
-net.ipv4.udp_wmem_min = 16384
-net.ipv4.tcp_mem = 786432 1048576 1572864
-
-# 6. 啟用 BBR 擁塞控制演算法與 FQ 佇列規則（在新內核下完美激發 BBRv3 效能）
+# === 以下为 BBRv3 所需的配套加速变量 ===
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 EOF
 
-# 強制重新整理當前網路參數
-sysctl -p
+    # 让配置立即在内核中生效
+    sudo sysctl -p > /dev/null
 
-echo ""
-echo -e "${BLUE}====================================================${PLAIN}"
-echo -e "${GREEN}🎉 恭喜！核心更換與網路緩衝區終極調優配置已全部就緒！${PLAIN}"
-echo -e "${RED}⚠️  重要提示: 由於更換了底層核心，您必須手動重啟伺服器才能完整激活 BBRv3 核心！${PLAIN}"
-echo -e "請在退出後輸入指令：${YELLOW}reboot${PLAIN} 重啟系統。"
-echo -e "開機後，${GREEN}再次執行本一鍵指令${PLAIN}，即可直接查閱完美的 BBRv3 最終效能報告！"
-echo -e "${BLUE}====================================================${PLAIN}"
+    echo -e "${GREEN}[2/2] 系统变量 /etc/sysctl.conf 配置成功！${PLAIN}"
+    echo -e "${BLUE}=================== BBRv3 状态验证结果 ===================${PLAIN}"
+    
+    # 验证算法
+    CHECK_ALGO=$(sysctl net.ipv4.tcp_congestion_control | awk '{print $3}')
+    if [ "$CHECK_ALGO" == "bbr" ]; then
+        echo -e "拥塞控制算法: ${GREEN}成功激活 (bbr)${PLAIN}"
+    else
+        echo -e "拥塞控制算法: ${RED}未激活 (当前为 $CHECK_ALGO)${PLAIN}"
+    fi
+
+    # 验证原代码中的 file-max 数值
+    CHECK_FILE=$(cat /proc/sys/fs/file-max)
+    echo -e "最大文件打开数 (fs.file-max): ${GREEN}${CHECK_FILE}${PLAIN}"
+
+    # 验证 BBR 内核底层状态
+    echo -e "底层网络流检查 (含有 mrtt 关键字代表 BBRv3 已正常接管流量):"
+    ss -ti | grep -E "bbr|mrtt" | head -n 3
+
+    echo -e "${BLUE}==========================================================${PLAIN}"
+    echo -e "${GREEN}🎉 恭喜！BBRv3 安装、内核参数修改与验证已全部完成！${PLAIN}"
+
+else
+    # ----------------------------------------------------------------
+    # 状态 B: 首次运行 -> 调度调用 byJoey 的最新 BBRv3 专属安装脚本
+    # ----------------------------------------------------------------
+    echo -e "${YELLOW}[提示] 检测到当前尚未安装 BBRv3 内核，正在为您启动 byJoey/Actions-bbr-v3 官方交互式安装菜单...${PLAIN}"
+    sleep 2
+    
+    # 直接拉取并运行您指定的 byJoey 专属一键安装环境
+    bash <(curl -fsSL https://raw.githubusercontent.com/byJoey/Actions-bbr-v3/main/install.sh)
+    
+    echo -e "${GREEN}==================================================================${PLAIN}"
+    echo -e "${GREEN}  byJoey 内核部署完毕！${PLAIN}"
+    echo -e "${YELLOW}  【后续步骤引导】：${PLAIN}"
+    echo -e "${YELLOW}  1. 如果刚才在菜单中【安装/更新内核】成功，请确保键入：${RED}reboot${YELLOW} 重启。${PLAIN}"
+    echo -e "${YELLOW}  2. 服务器重启完成后，【请再次执行本脚本】。${PLAIN}"
+    echo -e "${YELLOW}  3. 第二次运行时，脚本会自动把您的 fs.file-max = 65535 及 BBR 变量安全写入并输出最终验证。${PLAIN}"
+    echo -e "${GREEN}==================================================================${PLAIN}"
+fi
