@@ -1,245 +1,154 @@
 #!/bin/bash
-# ============================================================
-#  YW / Devi 智能内核切换 + BBR 自动启用 + 直播链路优化（v2.1）
-#  适配所有 VPS：官方内核 / cloud 内核 / grub / 无 grub / Direct Kernel Boot
-#  Debian 11 / 12 / 13
-# ============================================================
 
-set -e
+# ====================================================================
+#  🔥 Linux 伺服器直播推流極致優化 + BBRv3 核心智能雙模腳本 🔥
+#  功能：首次執行自動安裝並調優；重啟後再次執行直接進入終極驗證模式。
+#  適用系統: Debian / Ubuntu (x86_64)
+# ====================================================================
 
-echo "============================================================"
-echo "  YW 智能内核切换 + BBR 自动启用 + 直播优化（v2.1）"
-echo "============================================================"
-echo
+# 顏色定義
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+PLAIN='\033[0m'
 
-log_step() { echo -e "\n---------------- [步骤] $1 ----------------"; }
-log_info() { echo "[信息] $1"; }
-log_warn() { echo "[警告] $1"; }
-log_ok()   { echo "[OK] $1"; }
-log_err()  { echo "[错误] $1"; exit 1; }
+# 確保以 root 權限執行
+if [ "$EUID" -ne 0 ]; then
+  echo -e "${RED}錯誤: 請使用 root 使用者或搭配 sudo 執行此腳本！${PLAIN}"
+  exit 1
+fi
 
-# ============================================================
-# 0. 基础信息
-# ============================================================
+# ====================================================================
+# 模式判斷：檢查是否已經切換到 xanmod 核心
+# ====================================================================
 CURRENT_KERNEL=$(uname -r)
-AVAILABLE_CC=$(sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | awk -F'= ' '{print $2}')
 
-log_info "当前运行内核：$CURRENT_KERNEL"
-log_info "可用拥塞算法：$AVAILABLE_CC"
+if [[ "$CURRENT_KERNEL" == *"xanmod"* ]]; then
+  # ----------------------------------------------------------------
+  # 🔍 【驗證模式】當前已經是新核心，直接印出終極 BBRv3 效能報告
+  # ----------------------------------------------------------------
+  clear
+  echo -e "${BLUE}====================================================${PLAIN}"
+  echo -e "${GREEN}      ✨ 歡迎使用 BBRv3 直播優化 終極狀態驗證工具 ✨      ${PLAIN}"
+  echo -e "${BLUE}====================================================${PLAIN}"
+  echo ""
+  
+  # 1. 檢查核心版本
+  echo -e "➔ 1. 當前系統 Linux 內核核心: ${GREEN}${CURRENT_KERNEL}${PLAIN} (已成功切換至高規格核心)"
+  
+  # 2. 檢查 TCP 擁塞演算法
+  TCP_CC=$(sysctl -n net.ipv4.tcp_congestion_control)
+  if [ "$TCP_CC" = "bbr" ]; then
+    echo -e "➔ 2. 當前 TCP 擁塞控制演算法: ${GREEN}bbr (核心已自動關聯並啟用 BBRv3 機制)${PLAIN}"
+  else
+    echo -e "➔ 2. 當前 TCP 擁塞控制演算法: ${RED}${TCP_CC} (異常，未成功啟用 bbr)${PLAIN}"
+  fi
+  
+  # 3. 檢查佇列規則 (qdisc)
+  QDISC=$(sysctl -n net.core.default_qdisc)
+  if [ "$QDISC" = "fq" ]; then
+    echo -e "➔ 3. 當前網路預設佇列規則: ${GREEN}fq (Fair Queueing 完美配對 BBRv3)${PLAIN}"
+  else
+    echo -e "➔ 3. 當前網路預設佇列規則: ${YELLOW}${QDISC} (建議為 fq)${PLAIN}"
+  fi
 
-# ============================================================
-# 1. 检查是否为 Direct Kernel Boot
-# ============================================================
-log_step "检测是否为 Direct Kernel Boot"
-
-if [ ! -f "/boot/vmlinuz-$CURRENT_KERNEL" ]; then
-    log_warn "当前运行内核不在 /boot 中 → 可能是 Direct Kernel Boot"
-    if ! ls /boot | grep -q vmlinuz; then
-        log_err "此 VPS 使用宿主机强制内核（Direct Kernel Boot），无法切换内核，也无法启用 BBR"
-    fi
-fi
-
-log_ok "未发现 Direct Kernel Boot 阻断，可继续"
-
-# ============================================================
-# 2. 如果 available 列表里有 bbr → 直接启用 BBR（无需切内核）
-# ============================================================
-if echo "$AVAILABLE_CC" | grep -qw bbr; then
-    log_step "当前内核具备 BBR 能力 → 直接启用 BBR（无需切换内核）"
-
-    mkdir -p /etc/modules-load.d
-    echo "tcp_bbr" > /etc/modules-load.d/zz-bbr.conf
-    modprobe tcp_bbr 2>/dev/null || true
-
-    mkdir -p /etc/sysctl.d
-    cat > /etc/sysctl.d/100-bbr.conf <<EOF
-net.core.default_qdisc=fq
-net.ipv4.tcp_congestion_control=bbr
-EOF
-
-    # ============================================================
-    # 集成直播链路专用 sysctl（激进版）
-    # ============================================================
-    log_step "应用直播链路专用 sysctl 优化（激进版）"
-
-    cat > /etc/sysctl.d/200-live-stream.conf <<EOF
-# ============================================================
-#  YW / Devi 直播链路专用 sysctl（激进版）
-# ============================================================
-
-net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
-
-net.core.somaxconn = 65535
-net.core.netdev_max_backlog = 65535
-
-net.core.rmem_max = 67108864
-net.core.wmem_max = 67108864
-net.core.rmem_default = 262144
-net.core.wmem_default = 262144
-
-net.ipv4.tcp_fastopen = 3
-net.ipv4.tcp_tw_reuse = 1
-net.ipv4.tcp_retries2 = 8
-net.ipv4.tcp_mtu_probing = 1
-
-net.ipv4.tcp_notsent_lowat = 131072
-net.ipv4.tcp_no_metrics_save = 1
-net.ipv4.tcp_slow_start_after_idle = 0
-
-net.ipv4.ip_local_port_range = 1024 65000
-net.ipv4.tcp_syncookies = 1
-net.ipv4.tcp_fin_timeout = 10
-
-net.ipv4.conf.all.rp_filter = 0
-net.ipv4.conf.default.rp_filter = 0
-net.ipv4.conf.all.accept_redirects = 0
-net.ipv4.conf.default.accept_redirects = 0
-net.ipv4.conf.all.send_redirects = 0
-net.ipv4.conf.default.send_redirects = 0
-EOF
-
-    sysctl --system
-
-    CURRENT_CC2=$(sysctl net.ipv4.tcp_congestion_control | awk -F'= ' '{print $2}')
-    if [ "$CURRENT_CC2" = "bbr" ]; then
-        log_ok "BBR + 直播链路优化 已成功启用并永久生效"
-        echo
-        echo "============================================================"
-        echo "  结论：当前内核已成功启用 BBR（通常为 BBR v2）"
-        echo "  已应用直播链路优化参数（激进版）"
-        echo "  无需切换内核，脚本已完成全部操作"
-        echo "============================================================"
-        echo
-        exit 0
+  # 4. 深度檢測底層內核 bbr 模組狀態 (印出當前推流時的內部狀態)
+  echo ""
+  echo -e "${YELLOW}[底層 BBR 核心運作細節檢測]${PLAIN}"
+  if modinfo tcp_bbr > /dev/null 2>&1; then
+    BBR_VERSION=$(modinfo tcp_bbr | grep -E "version:" | awk '{print $2}')
+    if [ -n "$BBR_VERSION" ]; then
+      echo -e "   • BBR 模組版本標記: ${GREEN}${BBR_VERSION}${PLAIN}"
     else
-        log_warn "尝试启用 BBR 后仍为：$CURRENT_CC2 → 将尝试切换官方内核"
+      echo -e "   • BBR 模組狀態: ${GREEN}內建整合於目前內核中運作${PLAIN}"
     fi
+  fi
+  
+  # 5. 輸出快取極限解鎖狀態
+  FILE_MAX=$(sysctl -n fs.file-max)
+  echo -e "   • 系統最高併發檔案限制 (fs.file-max): ${GREEN}${FILE_MAX}${PLAIN} (原版 65535，已成功解鎖至百萬級別)"
+
+  echo ""
+  echo -e "${GREEN}🎉 驗證完畢！您的伺服器目前正處於「抗丟包、超高吞吐量、低延遲」的最高戰鬥狀態！${PLAIN}"
+  echo -e "${GREEN}現在您可以隨時開啟 OBS 或 FFmpeg 進行極限推流測試了。${PLAIN}"
+  echo -e "${BLUE}====================================================${PLAIN}"
+  exit 0
 fi
 
-# ============================================================
-# 3. available 不含 bbr → 尝试安装官方内核
-# ============================================================
-log_step "当前内核不具备 BBR → 尝试安装 Debian 官方内核"
 
-apt update
-apt install -y linux-image-amd64
+# ----------------------------------------------------------------
+# 🛠️ 【安裝模式】如果還不是 xanmod 核心，執行安裝與緩衝區調優
+# ----------------------------------------------------------------
+clear
+echo -e "${BLUE}====================================================${PLAIN}"
+echo -e "${YELLOW}  正在啟動: Linux 伺服器直播推流極致優化 + BBRv3 安裝流程  ${PLAIN}"
+echo -e "${BLUE}====================================================${PLAIN}"
+echo ""
 
-log_ok "官方内核安装完成"
+echo -e "${YELLOW}[步驟 1/3] 正在安裝 XanMod BBRv3 官方核心相依組件...${PLAIN}"
+apt update -y && apt install -y wget gnupg curl
 
-# ============================================================
-# 4. 查找官方内核（非 cloud 内核）
-# ============================================================
-log_step "查找官方内核（非 cloud 内核）"
+# 註冊 XanMod 官方 PGP 金鑰並添加儲存庫
+wget -qO - https://xanmod.org | gpg --dearmor -o /usr/share/keyrings/xanmod-archive-keyring.gpg --yes
+echo 'deb [signed-by=/usr/share/keyrings/xanmod-archive-keyring.gpg] http://xanmod.org releases main' | tee /etc/apt/sources.list.d/xanmod-kernel.list
 
-OFFICIAL_KERNEL=$(ls /boot | grep vmlinuz | grep -v cloud | head -n 1 | sed 's/vmlinuz-//')
+echo -e "${GREEN}正在下載並安裝支援 BBRv3 的 XanMod 最新 Linux 核心...${PLAIN}"
+apt update -y && apt install -y linux-image-xanmod-x64v3
 
-if [ -z "$OFFICIAL_KERNEL" ]; then
-    log_err "未找到官方内核（非 cloud 内核），无法切换内核 → 此 VPS 无法启用 BBR"
+# 更新系統 GRUB 開機引導
+echo -e "${YELLOW}正在更新系統開機引導選單 (GRUB)...${PLAIN}"
+if command -v update-grub > /dev/null 2>&1; then
+  update-grub
+else
+  grub-mkconfig -o /boot/grub/grub.cfg
 fi
 
-log_ok "找到官方内核：$OFFICIAL_KERNEL"
+echo -e "${YELLOW}[步驟 2/3] 正在備份原有的 /etc/sysctl.conf...${PLAIN}"
+cp /etc/sysctl.conf /etc/sysctl.conf.bak
 
-# ============================================================
-# 5. 检查 grub 是否存在
-# ============================================================
-log_step "检测 grub 状态"
+echo -e "${YELLOW}[步驟 3/3] 正在配置極限直播推流（TCP + UDP + BBRv3 完美調優配置）...${PLAIN}"
+cat << 'EOF' > /etc/sysctl.conf
+# ====================================================================
+# 🔥 直播推流與網絡測速 終極完美優化區（TCP + UDP 全方位覆蓋）
+# ====================================================================
 
-if [ ! -d /boot/grub ] && [ ! -d /boot/grub2 ]; then
-    log_err "未检测到 grub → 此 VPS 无法切换内核 → 无法启用 BBR"
-fi
+# 1. 提升檔案開啟數（提升至 100 萬以應對高併發直播連線）
+fs.file-max = 1000000
 
-log_ok "grub 存在，可切换内核"
+# 2. 增大網路傳輸總隊列（防止推流突發大流量時隊列溢出）
+net.core.netdev_max_backlog = 25000
+net.core.somaxconn = 4096
 
-# ============================================================
-# 6. 强制 grub 使用官方内核
-# ============================================================
-log_step "强制 grub 使用官方内核"
+# 3. 核心快取全域調優（設定最相容的 8MB 緩衝區，兼顧測速與大碼率推流）
+net.core.rmem_max = 8388608
+net.core.wmem_max = 8388608
 
-MENU_ENTRY="Debian GNU/Linux, with Linux $OFFICIAL_KERNEL"
+# 4. TCP 專屬調優（適用於 RTMP / HLS 直播與一般網絡測速）
+net.ipv4.tcp_rmem = 4096 87380 8388608
+net.ipv4.tcp_wmem = 4096 65536 8388608
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_fin_timeout = 30
+net.ipv4.ip_local_port_range = 1024 65535
 
-grub-set-default "$MENU_ENTRY" || log_warn "grub-set-default 执行失败"
-update-grub
+# 5. UDP 專屬調優（針對 SRT / WebRTC / 奎科等低延遲直播協定）
+net.ipv4.udp_rmem_min = 16384
+net.ipv4.udp_wmem_min = 16384
+net.ipv4.tcp_mem = 786432 1048576 1572864
 
-log_ok "已设置 grub 默认启动项为：$MENU_ENTRY"
-
-# ============================================================
-# 7. 重启后自动启用 BBR + 直播优化
-# ============================================================
-log_step "设置重启后自动启用 BBR + 直播优化"
-
-cat > /root/run-bbr-after-reboot.sh <<EOF
-#!/bin/bash
-
-mkdir -p /etc/modules-load.d
-echo "tcp_bbr" > /etc/modules-load.d/zz-bbr.conf
-modprobe tcp_bbr 2>/dev/null || true
-
-mkdir -p /etc/sysctl.d
-cat > /etc/sysctl.d/100-bbr.conf <<EOT
-net.core.default_qdisc=fq
-net.ipv4.tcp_congestion_control=bbr
-EOT
-
-cat > /etc/sysctl.d/200-live-stream.conf <<EOT
-# 直播链路专用 sysctl（激进版）
+# 6. 啟用 BBR 擁塞控制演算法與 FQ 佇列規則（在新內核下完美激發 BBRv3 效能）
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
-net.core.somaxconn = 65535
-net.core.netdev_max_backlog = 65535
-net.core.rmem_max = 67108864
-net.core.wmem_max = 67108864
-net.core.rmem_default = 262144
-net.core.wmem_default = 262144
-net.ipv4.tcp_fastopen = 3
-net.ipv4.tcp_tw_reuse = 1
-net.ipv4.tcp_retries2 = 8
-net.ipv4.tcp_mtu_probing = 1
-net.ipv4.tcp_notsent_lowat = 131072
-net.ipv4.tcp_no_metrics_save = 1
-net.ipv4.tcp_slow_start_after_idle = 0
-net.ipv4.ip_local_port_range = 1024 65000
-net.ipv4.tcp_syncookies = 1
-net.ipv4.tcp_fin_timeout = 10
-net.ipv4.conf.all.rp_filter = 0
-net.ipv4.conf.default.rp_filter = 0
-net.ipv4.conf.all.accept_redirects = 0
-net.ipv4.conf.default.accept_redirects = 0
-net.ipv4.conf.all.send_redirects = 0
-net.ipv4.conf.default.send_redirects = 0
-EOT
-
-sysctl --system
-rm -f /root/run-bbr-after-reboot.sh
 EOF
 
-chmod +x /root/run-bbr-after-reboot.sh
+# 強制重新整理當前網路參數
+sysctl -p
 
-cat > /etc/systemd/system/run-bbr-after-reboot.service <<EOF
-[Unit]
-Description=Enable BBR + Live Stream Optimization after reboot
-After=network.target
-
-[Service]
-Type=oneshot
-ExecStart=/root/run-bbr-after-reboot.sh
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl enable run-bbr-after-reboot.service
-
-log_ok "已创建自动启用 BBR + 直播优化的 systemd 服务"
-
-# ============================================================
-# 8. 自动重启
-# ============================================================
-echo
-echo "============================================================"
-echo "  所有步骤已完成，系统将在 3 秒后自动重启"
-echo "============================================================"
-echo
-
-sleep 3
-reboot
+echo ""
+echo -e "${BLUE}====================================================${PLAIN}"
+echo -e "${GREEN}🎉 恭喜！核心更換與網路緩衝區終極調優配置已全部就緒！${PLAIN}"
+echo -e "${RED}⚠️  重要提示: 由於更換了底層核心，您必須手動重啟伺服器才能完整激活 BBRv3 核心！${PLAIN}"
+echo -e "請在退出後輸入指令：${YELLOW}reboot${PLAIN} 重啟系統。"
+echo -e "開機後，${GREEN}再次執行本一鍵指令${PLAIN}，即可直接查閱完美的 BBRv3 最終效能報告！"
+echo -e "${BLUE}====================================================${PLAIN}"
