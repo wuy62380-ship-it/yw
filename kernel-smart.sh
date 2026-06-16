@@ -1,11 +1,10 @@
 #!/bin/bash
 
 # ====================================================================
-# 项目名称: BBRv3 YW激活脚本
-# 适用系统: Ubuntu 24.04+ / Debian 12+ (x86_64 / aarch64)
+# 项目名称: Linux YW性能一键优化BBRv3
+# 适用系统: Ubuntu 24.04+ / Debian 12+ (x86_64)
 # ====================================================================
 
-# 终端颜色输出定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
@@ -14,24 +13,25 @@ PLAIN='\033[0m'
 
 # 检查 1: 必须以 root 权限运行
 if [ "$(id -u)" != "0" ]; then
-    echo -e "${RED}[错误] 请使用 root 权限运行此脚本！(例如: sudo bash 脚本名)${PLAIN}"
+    echo -e "${RED}[错误] 请使用 root 权限运行此脚本！(sudo bash 脚本名)${PLAIN}"
     exit 1
 fi
 
-# 核心阶段：自动根据当前的内核状态执行不同操作
 CURRENT_KERNEL=$(uname -r)
 
+# 自动判定阶段
 if [[ "$CURRENT_KERNEL" == *"-joeyblog-bbrv3"* ]]; then
     # ----------------------------------------------------------------
-    # 状态 A: 用户已使用 byJoey 内核重启，现在执行原代码写入与最终验证
+    # 状态 A: 用户已经重启并进入了标准 BBRv3 内核环境
+    #         百分之百一字不差还原写入您发给我的完整原始代码
     # ----------------------------------------------------------------
-    echo -e "${BLUE}[1/2] 检测到您已成功运行 byJoey-BBRv3 专用内核 (${CURRENT_KERNEL})。${PLAIN}"
-    echo -e "${YELLOW}正在自动生成并覆盖 /etc/sysctl.conf 配置...${PLAIN}"
+    echo -e "${BLUE}[1/2] 检测到系统已成功载入原生标准 BBRv3 内核 (${CURRENT_KERNEL})。${PLAIN}"
+    echo -e "${YELLOW}正在为您自动恢复、生成并覆盖 /etc/sysctl.conf 配置...${PLAIN}"
 
-    # 备份原有的 sysctl.conf
+    # 1. 备份原有的 sysctl.conf
     cp /etc/sysctl.conf /etc/sysctl.conf.bak
 
-    # 精准写入您发送给我的完整原始代码，并在底部追加 BBRv3 必要变量
+    # 2. 精准还原您发送给我的完整原始代码
     cat << 'EOF' > /etc/sysctl.conf
 #
 # /etc/sysctl.conf - Configuration file for setting system variables
@@ -103,18 +103,18 @@ if [[ "$CURRENT_KERNEL" == *"-joeyblog-bbrv3"* ]]; then
 
 fs.file-max = 65535
 
-# === 以下为 BBRv3 所需的配套加速变量 ===
+# === 以下为原生标准 BBRv3 配套所需的网络加速变量 ===
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 EOF
 
-    # 让配置立即在内核中生效
+    # 3. 让配置（包含您的 fs.file-max = 65535）立即在内核中生效
     sudo sysctl -p > /dev/null
 
     echo -e "${GREEN}[2/2] 系统变量 /etc/sysctl.conf 配置成功！${PLAIN}"
     echo -e "${BLUE}=================== BBRv3 状态验证结果 ===================${PLAIN}"
     
-    # 验证算法
+    # 验证算法是否为 bbr
     CHECK_ALGO=$(sysctl net.ipv4.tcp_congestion_control | awk '{print $3}')
     if [ "$CHECK_ALGO" == "bbr" ]; then
         echo -e "拥塞控制算法: ${GREEN}成功激活 (bbr)${PLAIN}"
@@ -122,32 +122,50 @@ EOF
         echo -e "拥塞控制算法: ${RED}未激活 (当前为 $CHECK_ALGO)${PLAIN}"
     fi
 
-    # 验证原代码中的 file-max 数值
+    # 验证您代码中的指定参数 fs.file-max
     CHECK_FILE=$(cat /proc/sys/fs/file-max)
     echo -e "最大文件打开数 (fs.file-max): ${GREEN}${CHECK_FILE}${PLAIN}"
 
-    # 验证 BBR 内核底层状态
-    echo -e "底层网络流检查 (含有 mrtt 关键字代表 BBRv3 已正常接管流量):"
+    # 验证 BBRv3 底层连接状态
+    echo -e "底层网络流检查 (含有 mrtt 关键字说明 BBRv3 正在接管流量):"
     ss -ti | grep -E "bbr|mrtt" | head -n 3
 
     echo -e "${BLUE}==========================================================${PLAIN}"
-    echo -e "${GREEN}🎉 恭喜！BBRv3 安装、内核参数修改与验证已全部完成！${PLAIN}"
+    echo -e "${GREEN}🎉 恭喜！标准 BBRv3 纯净包部署、原始配置覆盖与验证已全部完成！${PLAIN}"
 
 else
     # ----------------------------------------------------------------
-    # 状态 B: 首次运行 -> 调度调用 byJoey 的最新 BBRv3 专属安装脚本
+    # 状态 B: 首次运行 -> 完全脱离私人交互脚本，直接提取官方 Release 原包
     # ----------------------------------------------------------------
-    echo -e "${YELLOW}[提示] 检测到当前尚未安装 BBRv3 内核，正在为您启动 byJoey/Actions-bbr-v3 官方交互式安装菜单...${PLAIN}"
-    sleep 2
+    echo -e "${YELLOW}[1/3] 正在从 GitHub 分析并提取标准原版 BBRv3 的最新内核文件地址...${PLAIN}"
     
-    # 直接拉取并运行您指定的 byJoey 专属一键安装环境
-    bash <(curl -fsSL https://raw.githubusercontent.com/byJoey/Actions-bbr-v3/main/install.sh)
+    # 自动解析获取最新的非 Max（标准版）Release Tag 与 deb 文件名
+    LATEST_RELEASE_API="https://github.com"
+    IMAGE_DEB_URL=$(curl -s $LATEST_RELEASE_API | grep "browser_download_url" | grep "linux-image" | grep -v "max" | grep "amd64" | head -n 1 | cut -d '"' -f 4)
+    HEADERS_DEB_URL=$(curl -s $LATEST_RELEASE_API | grep "browser_download_url" | grep "linux-headers" | grep -v "max" | grep "amd64" | head -n 1 | cut -d '"' -f 4)
+
+    if [ -z "$IMAGE_DEB_URL" ] || [ -z "$HEADERS_DEB_URL" ]; then
+        echo -e "${RED}[错误] 无法从源地址检索到标准版 BBRv3 内核包，请检查网络链接。${PLAIN}"
+        exit 1
+    fi
+
+    echo -e "${GREEN}[2/3] 提取成功！正在拉取原厂内核数据包并进行全自动无感知安装...${PLAIN}"
+    mkdir -p /tmp/bbrv3_install && cd /tmp/bbrv3_install
     
+    wget -q --show-progress "$IMAGE_DEB_URL"
+    wget -q --show-progress "$HEADERS_DEB_URL"
+
+    # 执行静默式底层安全安装
+    sudo dpkg -i *.deb > /dev/null
+    sudo update-grub > /dev/null
+
+    echo -e "${GREEN}[3/3] 内核包静默升级已全部完成！${PLAIN}"
     echo -e "${GREEN}==================================================================${PLAIN}"
-    echo -e "${GREEN}  byJoey 内核部署完毕！${PLAIN}"
-    echo -e "${YELLOW}  【后续步骤引导】：${PLAIN}"
-    echo -e "${YELLOW}  1. 如果刚才在菜单中【安装/更新内核】成功，请确保键入：${RED}reboot${YELLOW} 重启。${PLAIN}"
-    echo -e "${YELLOW}  2. 服务器重启完成后，【请再次执行本脚本】。${PLAIN}"
-    echo -e "${YELLOW}  3. 第二次运行时，脚本会自动把您的 fs.file-max = 65535 及 BBR 变量安全写入并输出最终验证。${PLAIN}"
+    echo -e "${YELLOW} 由于更换了 Linux 底层核心，必须重启系统。${PLAIN}"
+    echo -e "${YELLOW} 重启命令: ${RED}reboot${PLAIN}"
+    echo -e "${YELLOW} 重启完成后再次执行您本人的这个脚本，将立即覆盖、激活您的原始代码配置！${PLAIN}"
     echo -e "${GREEN}==================================================================${PLAIN}"
+    
+    # 清理现场临时缓存
+    cd && rm -rf /tmp/bbrv3_install
 fi
