@@ -55,14 +55,14 @@ install() {
 server_reboot() {
     echo -e "${gl_lv}建议立即重启服务器以加载新内核...${gl_bai}"
     read -e -p "是否现在重启？(Y/N): " reboot_choice
-    if [[ "$reboot_info" =~ ^[Yy]$ ]]; then
+    if [[ "$reboot_choice" =~ ^[Yy]$ ]]; then
         reboot
     fi
 }
 
 bbr_on() {
     local CONF="/etc/sysctl.d/99-yw-optimize.conf"
-    if [ -f "$CONF" ]; then
+    if [ -f "$CONF"]; then
         sed -i '/net.core.default_qdisc/d' "$CONF"
         sed -i '/net.ipv4.tcp_congestion_control/d' "$CONF"
         if ! grep -q "tcp_congestion_control" "$CONF"; then
@@ -86,142 +86,175 @@ break_end() {
 }
 
 # ============================================================================
-# System Info Function (Detailed Layout)
+# System Info Function (Enhanced)
 # ============================================================================
 
 show_sys_info() {
     clear
-    echo -e "${gl_huang}系统信息查询${gl_bai}"
-    echo -e "-------------"
+    echo -e "${gl_huang}========================================${gl_bai}"
+    echo -e "${gl_huang}        Linux 系统信息查询              ${gl_bai}"
+    echo -e "${gl_huang}========================================${gl_bai}"
     
-    # --- 基础信息 ---
-    local hostname_val=$(hostname)
-    local os_name="Debian GNU/Linux $(lsb_release -rs 2>/dev/null || cat /etc/os-release | grep ^VERSION_ID | cut -d= -f2 | tr -d '"' | head -1)"
-    local kernel_ver=$(uname -r)
+    # --- 基本信息 ---
+    echo -e "${gl_lv}[ 基本信息 ]${gl_bai}"
+    local os_name="Unknown"
+    if [ -f /etc/os-release ]; then
+        os_name=$(. /etc/os-release && echo "$PRETTY_NAME")
+    elif command -v lsb_release &>/dev/null; then
+        os_name=$(lsb_release -s -d)
+    elif command -v cat &>/dev/null; then
+        os_name=$(cat /etc/os-release 2>/dev/null | grep ^PRETTY_NAME | cut -d= -f2 | tr -d '"')
+    fi
+    echo -e "操作系统: ${gl_huang}${os_name}${gl_bai}"
     
-    echo -e "主机名:\t\t${gl_lv}${hostname_val}${gl_bai}"
-    echo -e "系统版本:\t${gl_lv}${os_name}${gl_bai}"
-    echo -e "Linux版本:\t${gl_lv}${kernel_ver}${gl_bai}"
-    echo -e "-------------"
+    echo -e "内核版本: ${gl_huang}$(uname -r)${gl_bai}"
+    echo -e "运行时间: ${gl_huang}$(uptime -p 2>/dev/null | sed 's/time//' || echo "N/A")${gl_bai}"
+    echo -e "主机名  : ${gl_huang}$(hostname)${gl_bai}"
     
     # --- CPU信息 ---
-    local cpu_arch=$(uname -m)
-    local cpu_model=$(grep "model name" /proc/cpuinfo 2>/dev/null | head -1 | cut -d: -f2 | sed 's/^ *//')
-    local cpu_cores=$(nproc)
-    local cpu_freq=$(grep "cpu MHz" /proc/cpuinfo 2>/dev/null | head -1 | cut -d: -f2 | sed 's/^ *//' | awk '{print $1}')
-    local cpu_usage=$(top -bn1 2>/dev/null | grep "Cpu(s)" | awk '{print $2}')
-    [ -z "$cpu_usage" ] && cpu_usage="N/A"
+    echo -e "\n${gl_lv}[ CPU 信息 ]${gl_bai}"
+    echo -e "架构: ${gl_huang}$(uname -m)${gl_bai}"
     
-    echo -e "CPU架构:\t${gl_lv}${cpu_arch}${gl_bai}"
-    echo -e "CPU型号:\t${gl_lv}${cpu_model}${gl_bai}"
-    echo -e "CPU核心数:\t${gl_lv}${cpu_cores}${gl_bai}"
-    echo -e "CPU频率:\t${gl_lv}$(echo "$cpu_freq" | awk '{printf "%.1f GHz", $1/1000}')${gl_bai}"
-    echo -e "CPU占用:\t${gl_lv}${cpu_usage}${gl_bai}"
-    echo -e "系统负载:\t${gl_lv}$(uptime | awk '{print $10, $11, $12}' | sed 's/,/./g')${gl_bai}"
-    echo -e "-------------"
+    if [ -f /proc/cpuinfo ]; then
+        local cpu_model=$(grep "model name" /proc/cpuinfo | head -1 | cut -d: -f2 | sed 's/^ *//')
+        echo -e "CPU型号: ${gl_huang}${cpu_model}${gl_bai}"
+    else
+        echo -e "CPU型号: N/A"
+    fi
     
+    echo -e "CPU核心数: ${gl_huang}$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo)${gl_bai}"
+    
+    if [ -f /proc/cpuinfo ]; then
+        local cpu_freq=$(grep "cpu MHz" /proc/cpuinfo | head -1 | cut -d: -f2 | sed 's/^ *//' | awk '{printf "%.2f GHz", $1/1000}')
+        echo -e "频率: ${gl_huang}${cpu_freq}${gl_bai}"
+    else
+        echo -e "频率: N/A"
+    fi
+
     # --- 内存信息 ---
-    local total_mem_kb=$(awk '/MemTotal/{print $2}' /proc/meminfo)
-    local available_mem_kb=$(awk '/MemAvailable/{print $2}' /proc/meminfo)
-    local total_mem_mb=$((total_mem_kb / 1024 / 1024))
-    local avail_mem_mb=$((available_mem_kb / 1024 / 1024))
-    local swap_total_kb=$(awk '/SwapTotal/{print $2}' /proc/meminfo)
-    local swap_total_mb=$((swap_total_kb / 1024))
-    
-    local mem_usage_pct=$(awk "BEGIN{printf \"%.2f\", (${total_mem_mb}-${avail_mem_mb})/${total_mem_mb}*100}")
-    local swap_usage_pct="0%"
-    local swap_used_kb=$(awk '/SwapFree/{print $2}' /proc/meminfo)
-    local swap_used_mb=$(( (swap_total_mb*1024 - swap_used_kb) / 1024 ))
-    if [ "$swap_total_mb" -gt 0 ]; then
-        swap_usage_pct=$(awk "BEGIN{printf \"%.0f%%\", ${swap_used_mb}/${swap_total_mb}*100}")
-    fi
-
-    echo -e "物理内存:\t${gl_lv}${avail_mem_mb}M/${total_mem_mb}M ($mem_usage_pct%)${gl_bai}"
-    echo -e "虚拟内存:\t${gl_lv}${swap_used_mb}M/${swap_total_mb}M ($swap_usage_pct)${gl_bai}"
-    echo -e "硬盘占用:\t${gl_lv}$(df -h / | tail -1 | awk '{print $3 "/" $2 " (" $5 ")"}')${gl_bai}"
-    echo -e "-------------"
-    
-    # --- 网络流量 ---
-    local rx_bytes=0
-    local tx_bytes=0
-    if [ -f /proc/net/dev ]; then
-        # 获取非lo接口的流量
-        rx_bytes=$(awk -v interfaces="eth0 eth1 enp3s6" 'BEGIN{IGNORECASE=1; split(interfaces, arr, " ");} $0 ~ arr[1] || $0 ~ arr[2] || $0 ~ arr[3] {rx+=$2; tx+=$10} END{print rx, tx}' /proc/net/dev)
-        if [ -z "$rx_bytes" ]; then
-            # fallback to simple sum if interface names vary
-            rx_bytes=$(awk '/eth[0-9]/ || /enp[0-9]/ || /ens[0-9]/ {print $2}' /proc/net/dev | awk '{a+=$1} END{print a}')
-            tx_bytes=$(awk '/eth[0-9]/ || /enp[0-9]/ || /ens[0-9]/ {print $10}' /proc/net/dev | awk '{a+=$1} END{print a}')
+    echo -e "\n${gl_lv}[ 内存信息 ]${gl_bai}"
+    if [ -f /proc/meminfo ]; then
+        local total_mem_mb=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo)
+        local avail_mem_mb=$(awk '/MemAvailable/{printf "%d", $2/1024}' /proc/meminfo)
+        local swap_total_mb=$(awk '/SwapTotal/{printf "%d", $2/1024}' /proc/meminfo)
+        local swap_avail_mb=$(awk '/SwapFree/{printf "%d", $2/1024}' /proc/meminfo)
+        
+        echo -e "物理内存: ${gl_huang}${total_mem_mb}MB (可用: ${avail_mem_mb}MB)${gl_bai}"
+        echo -e "Swap总量: ${gl_huang}${swap_total_mb}MB (可用: ${swap_avail_mb}MB)${gl_bai}"
+        
+        # 如果 Swap 存在，显示修改建议
+        if [ "$swap_total_mb" -gt 0 ]; then
+            echo -e "  -> ${gl_huang}按任意键可修改/创建 Swap 大小${gl_bai}"
+        else
+            echo -e "  -> ${gl_huang}按任意键创建 Swap${gl_bai}"
         fi
+    else
+        echo -e "内存信息: N/A"
     fi
-    # Convert to G for display
-    local rx_gb=$(awk "BEGIN{printf \"%.2f\", ${rx_bytes}/1024/1024/1024}")
-    local tx_gb=$(awk "BEGIN{printf \"%.2f\", ${tx_bytes}/1024/1024/1024}")
-
-    echo -e "总接收:\t\t${gl_lv}${rx_gb}G${gl_bai}"
-    echo -e "总发送:\t\t${gl_lv}${tx_gb}G${gl_bai}"
-    echo -e "-------------"
     
-    # --- 网络算法 & 连接数 ---
-    local tcp_algo=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
-    local qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
-    local tcp_connections=$(ss -t state established 2>/dev/null | wc -l)
-    local udp_connections=$(ss -u state established 2>/dev/null | wc -l)
+    # --- 磁盘信息 ---
+    echo -e "\n${gl_lv}[ 磁盘信息 ]${gl_bai}"
+    if command -v df &>/dev/null; then
+        df -h | grep -v tmpfs | grep -v devtmpfs
+    else
+        echo "磁盘信息: N/A"
+    fi
     
-    echo -e "网络算法:\t${gl_lv}${tcp_algo:-n/a} ${qdisc:-n/a}${gl_bai}"
-    echo -e "TCP|UDP连接数:\t${gl_lv}${tcp_connections}|${udp_connections}${gl_bai}"
-    echo -e "-------------"
-    
-    # --- IP & 地理位置 ---
+    # --- 网络信息 ---
+    echo -e "\n${gl_lv}[ 网络信息 ]${gl_bai}"
     local ipv4="N/A"
-    local ipv6="N/A"
-    local isp_info="N/A"
-    
-    # 获取 IPv4
     if command -v ip &>/dev/null; then
-        ipv4=$(ip -4 addr | grep inet | grep -v "127.0.0.1" | awk '{print $2}' | head -1)
+        ipv4=$(ip -4 addr | grep inet | grep -v '127.0.0.1' | awk '{print $2}' | head -1)
     elif command -v hostname &>/dev/null; then
         ipv4=$(hostname -I | awk '{print $1}')
     fi
     
-    # 获取 IPv6
+    local ipv6="N/A"
     if command -v ip &>/dev/null; then
-        ipv6=$(ip -6 addr | grep inet6 | grep -v "127.0.0.1" | awk '{print $2}' | head -1)
+        ipv6=$(ip -6 addr | grep inet6 | grep -v '127.0.0.1' | awk '{print $2}' | head -1)
     fi
-
-    # 获取运营商 (使用 curl)
+    
+    local isp_info="N/A"
     if command -v curl &>/dev/null; then
         local ip_info=$(curl -s "http://ip-api.com/json?lang=zh" 2>/dev/null)
         if echo "$ip_info" | grep -q "status"; then
-            isp_info=$(echo "$ip_info" | jq -r '.isp')
-            local region=$(echo "$ip_info" | jq -r '.region')
-            local city=$(echo "$ip_info" | jq -r '.city')
-            local tz=$(echo "$ip_info" | jq -r '.timeZone' 2>/dev/null)
-            
-            echo -e "运营商:\t\t${gl_lv}${isp_info}${gl_bai}"
-            echo -e "IPv4地址:\t${gl_lv}${ipv4}${gl_bai}"
-            echo -e "IPv6地址:\t${gl_lv}${ipv6}${gl_bai}"
-            echo -e "DNS地址:\t${gl_lv}1.1.1.1 8.8.8.8${gl_bai}"
-            echo -e "地理位置:\t${gl_lv}${city} ${region}${gl_bai}"
-            echo -e "系统时间:\t${gl_lv}$(date +%H:%M) ${tz} ${tz//_/ } $(date +%Y-%m-%d)${gl_bai}"
-        else
-            echo -e "运营商:\t\t${gl_lv}获取失败${gl_bai}"
-            echo -e "IPv4地址:\t${gl_lv}${ipv4}${gl_bai}"
+            isp_info=$(echo "$ip_info" | jq -r '.isp' 2>/dev/null)
         fi
-    else
-        echo -e "运营商:\t\t${gl_lv}N/A (需要curl)${gl_bai}"
-        echo -e "IPv4地址:\t${gl_lv}${ipv4}${gl_bai}"
     fi
-    echo -e "-------------"
     
-    # --- 运行时间 ---
-    local uptime_days=$(uptime -p | sed 's/time//')
-    echo -e "运行时长:\t${gl_lv}${uptime_days}${gl_bai}"
-    echo -e "-------------"
+    echo -e "内网IP  : ${gl_huang}${ipv4}${gl_bai}"
+    echo -e "IPv6地址: ${gl_huang}${ipv6}${gl_bai}"
+    echo -e "运营商  : ${gl_huang}${isp_info}${gl_bai}"
     
-    # 按任意键返回
+    echo -e "\n${gl_huang}========================================${gl_bai}"
     echo -e "${gl_huang}[按任意键返回主菜单]${gl_bai}"
     read -rs
     clear
+}
+
+# ============================================================================
+# Change Swap Size Function
+# ============================================================================
+
+change_swap_size() {
+    local swap_file="/swapfile"
+    local current_swap=$(free -m | awk '/Swap/{print $2}')
+    
+    clear
+    echo -e "${gl_huang}========================================${gl_bai}"
+    echo -e "${gl_huang}        Swap 内存管理                   ${gl_bai}"
+    echo -e "${gl_huang}========================================${gl_bai}"
+    echo -e "当前 Swap 大小: ${gl_lv}${current_swap} MB${gl_bai}"
+    echo -e "磁盘剩余空间: $(df -m / | tail -1 | awk '{print $4}') MB"
+    echo ""
+    echo "1. 创建/增加 Swap (需指定大小 MB)"
+    echo "2. 移除 Swap (当前大小: ${current_swap} MB)"
+    echo "0. 返回主菜单"
+    echo -e "${gl_huang}========================================${gl_bai}"
+    
+    read -e -p "请输入选择: " swap_choice
+    
+    case "$swap_choice" in
+        1)
+            read -e -p "请输入要创建的 Swap 大小 (MB): " swap_size
+            if [ -z "$swap_size" ]; then
+                echo -e "${gl_red}错误: 不能为空${gl_bai}"
+                sleep 2
+                return
+            fi
+            
+            check_disk_space "$swap_size"
+            if [ $? -eq 1 ]; then
+                read -rs -n 1 -p "按任意键继续..."
+                return
+            fi
+            
+            # Create swap
+            dd if=/dev/zero of=$swap_file bs=1M count=$swap_size 2>/dev/null
+            chmod 600 $swap_file
+            mkswap $swap_file
+            swapon $swap_file
+            
+            # Update limits.conf if not present
+            if ! grep -q "swapfile none swap" /etc/fstab 2>/dev/null; then
+                echo "/swapfile none swap sw 0 0" >> /etc/fstab
+            fi
+            
+            echo -e "${gl_lv}Swap 创建成功！当前大小: ${swap_size} MB${gl_bai}"
+            ;;
+        2)
+            if [ "$current_swap" -gt 0 ]; then
+                swapoff $swap_file 2>/dev/null
+                rm -f $swap_file
+                echo -e "${gl_lv}Swap 已移除${gl_bai}"
+            else
+                echo -e "${gl_huang}当前没有 Swap 文件${gl_bai}"
+            fi
+            ;;
+        *)
+            ;;
+    esac
+    read -rs -n 1 -p "按任意键返回..."
 }
 
 # ============================================================================
@@ -874,6 +907,14 @@ optimize_web_server() {
 	_kernel_optimize_core "网站搭建优化模式" "web"
 }
 
+# --- 新增：还原网络默认设置 ---
+restore_network_defaults() {
+    echo -e "${gl_lv}正在还原网络默认设置..."
+    rm -f /etc/sysctl.d/99-network-optimize.conf
+    sysctl --system 2>/dev/null | tail -1
+    echo -e "${gl_lv}网络设置已还原${gl_bai}"
+}
+
 restore_defaults() {
 	echo -e "${gl_lv}还原到默认设置...${gl_bai}"
 
@@ -903,7 +944,7 @@ main_menu() {
         echo -e "${gl_huang}========================================${gl_bai}"
         echo -e "${gl_huang}       Linux 系统管理与优化脚本            ${gl_bai}"
         echo -e "${gl_huang}========================================${gl_bai}"
-        echo -e "${gl_lv}1. 系统信息查询"
+        echo -e "${gl_lv}1. 系统信息查询 (含 Swap 修改选项)"
         echo -e "${gl_huang}2. Linux 系统内核参数优化 (BBR/调优)"
         echo -e "${gl_hui}0. 退出程序"
         echo -e "${gl_huang}========================================${gl_bai}"
