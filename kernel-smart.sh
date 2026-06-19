@@ -2,7 +2,7 @@
 
 # ====================================================================
 # 项目名称: Linux YW性能一键优化BBRv3
-# 适用系统: Ubuntu 24.04+ / Debian 12+ (x86_64)
+# 适用系统: Ubuntu 24.04+ / Debian 12+ (支持 x86_64 / ARM64)
 # ====================================================================
 
 RED='\033[0;31m'
@@ -20,7 +20,7 @@ fi
 CURRENT_KERNEL=$(uname -r)
 
 # 自动判定阶段
-if [[ "$CURRENT_KERNEL" == *"-joeyblog-bbrv3"* ]]; then
+if [[ "$CURRENT_KERNEL" == *"-joeyblog-bbrv3"* ]] || [[ "$CURRENT_KERNEL" == *"-bbrv3"* ]]; then
     # ----------------------------------------------------------------
     # 状态 A: 用户已经重启并进入了标准 BBRv3 内核环境
     #         百分之百一字不差还原写入您发给我的完整原始代码
@@ -103,7 +103,7 @@ if [[ "$CURRENT_KERNEL" == *"-joeyblog-bbrv3"* ]]; then
 
 fs.file-max = 65535
 
-# === 以下为原生标准 BBRv3 配套所需的网络加速变量 ===
+# === 以下为原生标准 BBRv3 配套所需的 network 加速变量 ===
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 EOF
@@ -135,29 +135,60 @@ EOF
 
 else
     # ----------------------------------------------------------------
-    # 状态 B: 首次运行 -> 完全脱离私人交互脚本，直接提取官方 Release 原包
+    # 状态 B: 首次运行 -> 智能识别架构并拉取对应内核
     # ----------------------------------------------------------------
-    echo -e "${YELLOW}[1/3] 正在从 GitHub 分析并提取标准原版 BBRv3 的最新内核文件地址...${PLAIN}"
-    
-    # 自动解析获取最新的非 Max（标准版）Release Tag 与 deb 文件名
-    LATEST_RELEASE_API="https://github.com"
-    IMAGE_DEB_URL=$(curl -s $LATEST_RELEASE_API | grep "browser_download_url" | grep "linux-image" | grep -v "max" | grep "amd64" | head -n 1 | cut -d '"' -f 4)
-    HEADERS_DEB_URL=$(curl -s $LATEST_RELEASE_API | grep "browser_download_url" | grep "linux-headers" | grep -v "max" | grep "amd64" | head -n 1 | cut -d '"' -f 4)
+    echo -e "${YELLOW}[1/3] 正在检查基础环境依赖与服务器架构...${PLAIN}"
+    apt-get update -y > /dev/null
+    apt-get install -y curl wget ca-certificates > /dev/null
 
-    if [ -z "$IMAGE_DEB_URL" ] || [ -z "$HEADERS_DEB_URL" ]; then
-        echo -e "${RED}[错误] 无法从源地址检索到标准版 BBRv3 内核包，请检查网络链接。${PLAIN}"
+    # 【自动识别架构】
+    ARCH=$(uname -m)
+    if [ "$ARCH" = "x86_64" ]; then
+        ARCH_TAG="amd64"
+        echo -e "${BLUE}当前服务器架构为: x86_64 (amd64)${PLAIN}"
+    elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+        ARCH_TAG="arm64"
+        echo -e "${BLUE}当前服务器架构为: ARM64 (aarch64)${PLAIN}"
+    else
+        echo -e "${RED}[错误] 暂不支持当前服务器架构: ${ARCH}${PLAIN}"
         exit 1
     fi
+
+    echo -e "${YELLOW}正在从 GitHub 分析并提取标准原版 BBRv3 最新内核文件地址...${PLAIN}"
+    
+    # 稳定的编译流仓库
+    TAG_URL="https://github.com"
+    HTML_DATA=$(curl -sL --connect-timeout 10 "$TAG_URL")
+    
+    # 根据自适应的 ARCH_TAG 动态匹配文件路径
+    IMAGE_PATH=$(echo "$HTML_DATA" | grep -oE "/byJoey/Actions-bbr-v3/releases/download/[^\"]+linux-image[^\"]+${ARCH_TAG}\.deb" | head -n 1)
+    HEADERS_PATH=$(echo "$HTML_DATA" | grep -oE "/byJoey/Actions-bbr-v3/releases/download/[^\"]+linux-headers[^\"]+${ARCH_TAG}\.deb" | head -n 1)
+
+    if [ -z "$IMAGE_PATH" ] || [ -z "$HEADERS_PATH" ]; then
+        echo -e "${RED}[错误] 无法从源地址检索到适合您架构 (${ARCH_TAG}) 的 BBRv3 内核包！${PLAIN}"
+        exit 1
+    fi
+
+    IMAGE_DEB_URL="https://github.com${IMAGE_PATH}"
+    HEADERS_DEB_URL="https://github.com${HEADERS_PATH}"
 
     echo -e "${GREEN}[2/3] 提取成功！正在拉取原厂内核数据包并进行全自动无感知安装...${PLAIN}"
     mkdir -p /tmp/bbrv3_install && cd /tmp/bbrv3_install
     
-    wget -q --show-progress "$IMAGE_DEB_URL"
-    wget -q --show-progress "$HEADERS_DEB_URL"
+    # 下载对应架构的内核包
+    wget -q --show-progress --no-check-certificate "$IMAGE_DEB_URL"
+    wget -q --show-progress --no-check-certificate "$HEADERS_DEB_URL"
 
     # 执行静默式底层安全安装
+    echo -e "${YELLOW}正在写入系统内核引导，请稍候...${PLAIN}"
     sudo dpkg -i *.deb > /dev/null
-    sudo update-grub > /dev/null
+    
+    # 多系统引导兼容性修复
+    if command -v update-grub > /dev/null 2>&1; then
+        sudo update-grub > /dev/null
+    else
+        sudo grub-mkconfig -o /boot/grub/grub.cfg > /dev/null 2>&1
+    fi
 
     echo -e "${GREEN}[3/3] 内核包静默升级已全部完成！${PLAIN}"
     echo -e "${GREEN}==================================================================${PLAIN}"
