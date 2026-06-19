@@ -16,7 +16,10 @@
 : "${gh_proxy:=https://}"
 : "${tiaoyou_moshi:=默认优化模式}"
 
-# --- 辅助函数兼容 ---
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
 check_swap() {
     local swap_total=$(free -m | awk '/Swap/{print $2}')
     if [ "$swap_total" -lt 512 ] && [ -f /swapfile ]; then
@@ -73,23 +76,97 @@ EOF
     return 0
 }
 
-# ============================================================================
-# Helper Functions for Optimize
-# ============================================================================
-
-_get_mem_mb() {
-    awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo
-}
-
-root_use() {
-    if [[ $EUID -ne 0 ]]; then
-        echo -e "${gl_red}此脚本需要使用 root 权限运行${gl_bai}"
-        exit 1
+# --- break_end 函数定义 (关键修复) ---
+# 当用户选择返回主菜单时，此函数负责清理并返回
+break_end() {
+    local choice="$1"
+    if [ -z "$choice" ] || [ "$choice" = "0" ] || [ "$choice" = "return" ]; then
+        # 如果是返回主菜单逻辑，这里可以根据需要调用 main_menu 或只是 break
+        # 在 main_menu 中，我们使用 break 跳出 while 循环，然后重新进入
+        return 0
     fi
+    return 1
 }
 
-send_stats() {
-    :
+# ============================================================================
+# System Info Function (Enhanced & Robust)
+# ============================================================================
+
+show_sys_info() {
+    clear
+    echo -e "${gl_huang}========================================${gl_bai}"
+    echo -e "${gl_huang}        Linux 系统信息查询              ${gl_bai}"
+    echo -e "${gl_huang}========================================${gl_bai}"
+    
+    # --- 基本信息 ---
+    echo -e "${gl_lv}[ 基本信息 ]${gl_bai}"
+    local os_name="Unknown"
+    if [ -f /etc/os-release ]; then
+        os_name=$(. /etc/os-release && echo "$PRETTY_NAME")
+    elif command -v lsb_release &>/dev/null; then
+        os_name=$(lsb_release -s -d)
+    elif command -v cat &>/dev/null; then
+        os_name=$(cat /etc/os-release 2>/dev/null | grep ^PRETTY_NAME | cut -d= -f2 | tr -d '"')
+    fi
+    echo -e "操作系统: ${os_name}"
+    
+    echo -e "内核版本: $(uname -r)"
+    echo -e "运行时间: $(uptime -p 2>/dev/null | sed 's/time//' || echo "N/A")"
+    echo -e "主机名  : $(hostname)"
+    
+    # --- CPU信息 ---
+    echo -e "\n${gl_lv}[ CPU 信息 ]${gl_bai}"
+    echo -e "架构: $(uname -m)"
+    
+    if [ -f /proc/cpuinfo ]; then
+        local cpu_model=$(grep "model name" /proc/cpuinfo | head -1 | cut -d: -f2 | sed 's/^ *//')
+        echo -e "CPU型号: ${cpu_model}"
+    else
+        echo -e "CPU型号: N/A"
+    fi
+    
+    echo -e "CPU核心数: $(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo)"
+    
+    if [ -f /proc/cpuinfo ]; then
+        local cpu_freq=$(grep "cpu MHz" /proc/cpuinfo | head -1 | cut -d: -f2 | sed 's/^ *//')
+        echo -e "频率: ${cpu_freq} MHz"
+    else
+        echo -e "频率: N/A"
+    fi
+
+    # --- 内存信息 ---
+    echo -e "\n${gl_lv}[ 内存信息 ]${gl_bai}"
+    if [ -f /proc/meminfo ]; then
+        local total_mem=$(awk '/MemTotal/{printf "%.2f", $2/1024/1024}' /proc/meminfo)
+        local swap_mem=$(awk '/SwapTotal/{printf "%.2f", $2/1024/1024}' /proc/meminfo)
+        echo -e "物理内存: ${total_mem} GB"
+        echo -e "Swap总量: ${swap_mem} GB"
+    else
+        echo -e "内存信息: N/A"
+    fi
+    
+    # --- 磁盘信息 ---
+    echo -e "\n${gl_lv}[ 磁盘信息 ]${gl_bai}"
+    if command -v df &>/dev/null; then
+        df -h | grep -v tmpfs | grep -v devtmpfs
+    else
+        echo "磁盘信息: N/A"
+    fi
+    
+    # --- 网络信息 ---
+    echo -e "\n${gl_lv}[ 网络信息 ]${gl_bai}"
+    local ip_addr="N/A"
+    if command -v ip &>/dev/null; then
+        ip_addr=$(ip -4 addr | grep inet | grep -v '127.0.0.1' | awk '{print $2}' | head -1)
+    elif command -v ifconfig &>/dev/null; then
+        ip_addr=$(ifconfig | grep -E "inet (addr:)?([0-9]*\.){3}[0-9]*" | grep -v "127.0.0.1" | awk '{print $2}' | head -1)
+    fi
+    echo -e "内网IP: ${ip_addr}"
+    
+    echo -e "${gl_huang}========================================${gl_bai}"
+    echo -e "${gl_huang}[按任意键返回主菜单]${gl_bai}"
+    read -rs
+    clear
 }
 
 # ============================================================================
@@ -116,20 +193,16 @@ _kernel_optimize_core() {
 
     case "$scene" in
         high|stream|game)
-            # --- 专家级高性能/直播/游戏参数 ---
             SWAPPINESS=10
             DIRTY_RATIO=15
             DIRTY_BG_RATIO=5
             OVERCOMMIT=1
             VFS_PRESSURE=50
             MIN_FREE_KB=131072
-
-            # 网络缓冲区：针对高吞吐优化
-            RMEM_MAX=134217728 # 128MB
-            WMEM_MAX=134217728 # 128MB
+            RMEM_MAX=134217728
+            WMEM_MAX=134217728
             TCP_RMEM="4096 87380 67108864"
             TCP_WMEM="4096 65536 67108864"
-            
             SOMAXCONN=65535
             BACKLOG=250000
             SYN_BACKLOG=8192
@@ -137,7 +210,6 @@ _kernel_optimize_core() {
             SCHED_AUTOGROUP=0
             THP="never"
             NUMA=0
-            
             FIN_TIMEOUT=10
             KEEPALIVE_TIME=300
             KEEPALIVE_INTVL=30
@@ -148,7 +220,7 @@ _kernel_optimize_core() {
             TCP_MTU_PROBING=1
 
             if [ "$scene" = "stream" ] || [ "$scene" = "game" ]; then
-                UDP_RMEM_MIN=256000 # 直播/游戏专用加大UDP缓冲
+                UDP_RMEM_MIN=256000
                 GAME_EXTRA="
 net.ipv4.udp_rmem_min = 256000
 net.ipv4.udp_wmem_min = 256000
@@ -161,12 +233,10 @@ net.ipv4.udp_rmem_min = 16384
 net.ipv4.udp_wmem_min = 16384
 "
             fi
-            STREAM_EXTRA="" # High mode doesn't need extra UDP specific tweaks usually, but inherits base
-
+            STREAM_EXTRA=""
             ;;
             
         web)
-            # --- Web 服务器优化：高并发 ---
             SWAPPINESS=10
             DIRTY_RATIO=20
             DIRTY_BG_RATIO=10
@@ -197,7 +267,6 @@ net.ipv4.udp_wmem_min = 16384
             ;;
 
         balanced)
-            # --- 均衡模式 ---
             SWAPPINESS=30
             DIRTY_RATIO=20
             DIRTY_BG_RATIO=10
@@ -230,12 +299,19 @@ net.ipv4.udp_wmem_min = 16384
     esac
 
     # --- 根据内存大小自适应调整 ---
-    if [ "$MEM_MB" -ge 16384 ]; then
+    local MEM_MB_VAL
+    if [ -f /proc/meminfo ]; then
+        MEM_MB_VAL=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo)
+    else
+        MEM_MB_VAL=0
+    fi
+
+    if [ "$MEM_MB_VAL" -ge 16384 ]; then
         MIN_FREE_KB=131072
         [ "$scene" != "balanced" ] && SWAPPINESS=5
-    elif [ "$MEM_MB" -ge 4096 ]; then
+    elif [ "$MEM_MB_VAL" -ge 4096 ]; then
         MIN_FREE_KB=65536
-    elif [ "$MEM_MB" -ge 1024 ]; then
+    elif [ "$MEM_MB_VAL" -ge 1024 ]; then
         MIN_FREE_KB=32768
         if [ "$scene" != "balanced" ]; then
             RMEM_MAX=16777216
@@ -258,17 +334,24 @@ net.ipv4.udp_wmem_min = 16384
     # --- 检测 BBR 支持 ---
     local KVER
     KVER=$(uname -r | grep -oP '^\d+\.\d+')
-    if printf '%s\n%s' "4.9" "$KVER" | sort -V -C; then
-        if ! lsmod 2>/dev/null | grep -q tcp_bbr; then
-            modprobe tcp_bbr 2>/dev/null
-        fi
-        if ! sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q bbr; then
-            CC="cubic"
-            QDISC="fq_codel"
-        fi
-    else
+    local CC="cubic"
+    local QDISC="fq_codel"
+    
+    if [ -z "$KVER" ]; then
+        # Fallback if grep fails
         CC="cubic"
         QDISC="fq_codel"
+    else
+        if [ "$KVER" \> "4.9" ] || [ "$KVER" = "4.9" ]; then
+            if ! lsmod 2>/dev/null | grep -q tcp_bbr; then
+                modprobe tcp_bbr 2>/dev/null
+            fi
+            # Check if BBR is available
+            if sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q bbr; then
+                CC="bbr"
+                QDISC="fq"
+            fi
+        fi
     fi
 
     [ -f "$CONF" ] && cp "$CONF" "${CONF}.bak.$(date +%s)"
@@ -277,7 +360,7 @@ net.ipv4.udp_wmem_min = 16384
     cat > "$CONF" << SYSCTL
 # YW Linux 内核调优配置
 # 模式: $mode_name | 场景: $scene
-# 内存: ${MEM_MB}MB | 生成时间: $(date '+%Y-%m-%d %H:%M:%S')
+# 内存: ${MEM_MB_VAL}MB | 生成时间: $(date '+%Y-%m-%d %H:%M:%S')
 
 # ── TCP 拥塞控制 ──
 net.core.default_qdisc = $QDISC
@@ -319,7 +402,7 @@ net.ipv4.tcp_notsent_lowat = 16384
 
 # ── 端口与内存 ──
 net.ipv4.ip_local_port_range = $PORT_RANGE
-net.ipv4.tcp_mem = $((MEM_MB * 1024 / 8)) $((MEM_MB * 1024 / 4)) $((MEM_MB * 1024 / 2))
+net.ipv4.tcp_mem = $((MEM_MB_VAL * 1024 / 8)) $((MEM_MB_VAL * 1024 / 4)) $((MEM_MB_VAL * 1024 / 2))
 net.ipv4.tcp_max_orphans = 32768
 
 # ── 虚拟内存 ──
@@ -398,7 +481,7 @@ LIMITS
     fi
 
     echo -e "${gl_lv}${mode_name} 优化完成！配置已持久化到 ${CONF}${gl_bai}"
-    echo -e "${gl_lv}内存: ${MEM_MB}MB | 拥塞算法: ${CC} | 队列: ${QDISC}${gl_bai}"
+    echo -e "${gl_lv}内存: ${MEM_MB_VAL}MB | 拥塞算法: ${CC} | 队列: ${QDISC}${gl_bai}"
 }
 
 # ============================================================================
@@ -621,111 +704,23 @@ bbrv3() {
 }
 
 # ============================================================================
-# System Info Function (Enhanced Version)
-# ============================================================================
-
-show_sys_info() {
-    clear
-    echo -e "${gl_huang}========================================${gl_bai}"
-    echo -e "${gl_huang}        Linux 系统信息查询              ${gl_bai}"
-    echo -e "${gl_huang}========================================${gl_bai}"
-    
-    # --- 基本信息 ---
-    echo -e "${gl_lv}[ 基本信息 ]${gl_bai}"
-    
-    # 尝试获取OS名称，如果失败则显示通用信息
-    local os_name="Unknown"
-    if [ -f /etc/os-release ]; then
-        os_name=$(. /etc/os-release && echo "$PRETTY_NAME")
-    elif command -v lsb_release &>/dev/null; then
-        os_name=$(lsb_release -s -d)
-    elif command -v cat &>/dev/null; then
-        os_name=$(cat /etc/os-release | grep ^PRETTY_NAME | cut -d= -f2 | tr -d '"')
-    fi
-    echo -e "操作系统: ${os_name}"
-    
-    echo -e "内核版本: $(uname -r)"
-    echo -e "运行时间: $(uptime -p 2>/dev/null | sed 's/time//' || echo "N/A")"
-    echo -e "主机名  : $(hostname)"
-    
-    # --- CPU信息 ---
-    echo -e "\n${gl_lv}[ CPU 信息 ]${gl_bai}"
-    echo -e "架构: $(uname -m)"
-    
-    # 尝试获取CPU型号，如果/proc/cpuinfo存在则解析，否则显示通用信息
-    if [ -f /proc/cpuinfo ]; then
-        local cpu_model=$(grep "model name" /proc/cpuinfo | head -1 | cut -d: -f2 | sed 's/^ *//')
-        echo -e "CPU型号: ${cpu_model}"
-    else
-        echo -e "CPU型号: N/A"
-    fi
-    
-    echo -e "CPU核心数: $(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo)"
-    
-    # 尝试获取频率
-    if [ -f /proc/cpuinfo ]; then
-        local cpu_freq=$(grep "cpu MHz" /proc/cpuinfo | head -1 | cut -d: -f2 | sed 's/^ *//')
-        echo -e "频率: ${cpu_freq} MHz"
-    else
-        echo -e "频率: N/A"
-    fi
-
-    # --- 内存信息 ---
-    echo -e "\n${gl_lv}[ 内存信息 ]${gl_bai}"
-    if [ -f /proc/meminfo ]; then
-        local total_mem=$(awk '/MemTotal/{printf "%.2f", $2/1024/1024}' /proc/meminfo)
-        local swap_mem=$(awk '/SwapTotal/{printf "%.2f", $2/1024/1024}' /proc/meminfo)
-        echo -e "物理内存: ${total_mem} GB"
-        echo -e "Swap总量: ${swap_mem} GB"
-    else
-        echo -e "内存信息: N/A"
-    fi
-    
-    # --- 磁盘信息 ---
-    echo -e "\n${gl_lv}[ 磁盘信息 ]${gl_bai}"
-    if command -v df &>/dev/null; then
-        df -h | grep -v tmpfs | grep -v devtmpfs
-    else
-        echo "磁盘信息: N/A"
-    fi
-    
-    # --- 网络信息 ---
-    echo -e "\n${gl_lv}[ 网络信息 ]${gl_bai}"
-    local ip_addr="N/A"
-    # 尝试使用 ip 命令或 ifconfig，如果都不可用则显示 N/A
-    if command -v ip &>/dev/null; then
-        ip_addr=$(ip -4 addr | grep inet | grep -v '127.0.0.1' | awk '{print $2}' | head -1)
-    elif command -v ifconfig &>/dev/null; then
-        ip_addr=$(ifconfig | grep -E "inet (addr:)?([0-9]*\.){3}[0-9]*" | grep -v "127.0.0.1" | awk '{print $2}' | head -1)
-    fi
-    echo -e "内网IP: ${ip_addr}"
-    
-    echo -e "\n${gl_huang}========================================${gl_bai}"
-}
-
-# ============================================================================
 # Interactive Menu (General)
 # ============================================================================
 
-# 原有的内核优化菜单逻辑（作为子菜单使用）
 Kernel_optimize() {
     root_use
     while true; do
       clear
       send_stats "Linux内核调优管理"
       
-      # 优化当前模式显示逻辑
       local current_mode="未优化"
       local conf_file="/etc/sysctl.d/99-yw-optimize.conf"
       
       if [ -f "$conf_file" ]; then
-          # 优先读取配置文件中明确标记的模式名称
           local raw_mode=$(grep "^# 模式:" "$conf_file" 2>/dev/null | sed 's/^# 模式: //')
           if [ -n "$raw_mode" ]; then
-              # 提取模式名称 (格式: "高性能优化模式 | 场景: high" -> "高性能优化模式")
               current_mode=$(echo "$raw_mode" | awk -F'|' '{print $1}' | xargs)
           else
-              # 如果没有模式标记，尝试根据场景推断或显示默认
               current_mode="系统优化已启用"
           fi
       fi
@@ -794,7 +789,7 @@ Kernel_optimize() {
               cd ~
               clear
               restore_defaults
-              curl -sS ${gh_proxy}raw.githubusercontent.com/YW/sh/refs/heads/main/network-optimize.sh -o /tmp/network-optimize.sh && source /tmp/network-optimize.sh && restore_network_defaults
+            curl -sS ${gh_proxy}raw.githubusercontent.com/YW/sh/refs/heads/main/network-optimize.sh -o /tmp/network-optimize.sh && source /tmp/network-optimize.sh && restore_network_defaults
               send_stats "还原默认设置"
               ;;
 
