@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ====================================================================
-# 项目名称: Linux YW性能一键优化BBRv3
+# 项目名称: Linux YW性能一键优化BBRv3 (自适应全架构终极版)
 # 适用系统: Ubuntu 24.04+ / Debian 12+ (支持 x86_64 / ARM64)
 # ====================================================================
 
@@ -141,7 +141,7 @@ else
     apt-get update -y > /dev/null
     apt-get install -y curl wget ca-certificates > /dev/null
 
-    # 【自动识别架构】
+    # 自动识别架构
     ARCH=$(uname -m)
     if [ "$ARCH" = "x86_64" ]; then
         ARCH_TAG="amd64"
@@ -154,13 +154,13 @@ else
         exit 1
     fi
 
-    echo -e "${YELLOW}正在从 GitHub 分析并提取标准原版 BBRv3 最新内核文件地址...${PLAIN}"
+    echo -e "${YELLOW}正在从 GitHub 分析并提取最新 BBRv3 内核文件地址...${PLAIN}"
     
     # 稳定的编译流仓库
     TAG_URL="https://github.com"
     HTML_DATA=$(curl -sL --connect-timeout 10 "$TAG_URL")
     
-    # 根据自适应的 ARCH_TAG 动态匹配文件路径
+    # 【核心修复】：移除 grep -v "max"，允许自适应匹配上游 Release 产物
     IMAGE_PATH=$(echo "$HTML_DATA" | grep -oE "/byJoey/Actions-bbr-v3/releases/download/[^\"]+linux-image[^\"]+${ARCH_TAG}\.deb" | head -n 1)
     HEADERS_PATH=$(echo "$HTML_DATA" | grep -oE "/byJoey/Actions-bbr-v3/releases/download/[^\"]+linux-headers[^\"]+${ARCH_TAG}\.deb" | head -n 1)
 
