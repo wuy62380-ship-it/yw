@@ -139,7 +139,7 @@ else
     # ----------------------------------------------------------------
     echo -e "${YELLOW}[1/3] 正在检查基础环境依赖与服务器架构...${PLAIN}"
     apt-get update -y > /dev/null
-    apt-get install -y curl wget ca-certificates > /dev/null
+    apt-get install -y curl wget ca-certificates jq > /dev/null
 
     # 自动识别架构
     ARCH=$(uname -m)
@@ -156,21 +156,23 @@ else
 
     echo -e "${YELLOW}正在从 GitHub 分析并提取最新 BBRv3 内核文件地址...${PLAIN}"
     
-    # 稳定的编译流仓库
-    TAG_URL="https://github.com"
-    HTML_DATA=$(curl -sL --connect-timeout 10 "$TAG_URL")
-    
-    # 【核心修复】：移除 grep -v "max"，允许自适应匹配上游 Release 产物
-    IMAGE_PATH=$(echo "$HTML_DATA" | grep -oE "/byJoey/Actions-bbr-v3/releases/download/[^\"]+linux-image[^\"]+${ARCH_TAG}\.deb" | head -n 1)
-    HEADERS_PATH=$(echo "$HTML_DATA" | grep -oE "/byJoey/Actions-bbr-v3/releases/download/[^\"]+linux-headers[^\"]+${ARCH_TAG}\.deb" | head -n 1)
+    # 【核心重构】：利用专门设计的 API 和标准的 JSON 字段解析（精准降维打击复杂的文件命名规则）
+    API_URL="https://github.com"
+    JSON_DATA=$(curl -sL --connect-timeout 15 "$API_URL")
 
-    if [ -z "$IMAGE_PATH" ] || [ -z "$HEADERS_PATH" ]; then
-        echo -e "${RED}[错误] 无法从源地址检索到适合您架构 (${ARCH_TAG}) 的 BBRv3 内核包！${PLAIN}"
+    if [ -z "$JSON_DATA" ] || [[ "$JSON_DATA" == *"message"* ]]; then
+        echo -e "${RED}[错误] 无法访问 GitHub API，可能受到了速率限制或网络被阻断。${PLAIN}"
         exit 1
     fi
 
-    IMAGE_DEB_URL="https://github.com${IMAGE_PATH}"
-    HEADERS_DEB_URL="https://github.com${HEADERS_PATH}"
+    # 精准拉取直链 (利用 jq 直接抽取 JSON 内的 browser_download_url 属性进行架构精确匹配)
+    IMAGE_DEB_URL=$(echo "$JSON_DATA" | jq -r ".assets[].browser_download_url" | grep "linux-image" | grep "$ARCH_TAG" | grep -v "dbg" | head -n 1)
+    HEADERS_DEB_URL=$(echo "$JSON_DATA" | jq -r ".assets[].browser_download_url" | grep "linux-headers" | grep "$ARCH_TAG" | grep -v "dbg" | head -n 1)
+
+    if [ -z "$IMAGE_DEB_URL" ] || [ "$IMAGE_DEB_URL" = "null" ] || [ -z "$HEADERS_DEB_URL" ] || [ "$HEADERS_DEB_URL" = "null" ]; then
+        echo -e "${RED}[错误] 无法从官方源地址检索到适合您架构 (${ARCH_TAG}) 的真实 BBRv3 内核文件！${PLAIN}"
+        exit 1
+    fi
 
     echo -e "${GREEN}[2/3] 提取成功！正在拉取原厂内核数据包并进行全自动无感知安装...${PLAIN}"
     mkdir -p /tmp/bbrv3_install && cd /tmp/bbrv3_install
