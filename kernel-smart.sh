@@ -641,22 +641,28 @@ bbrv3() {
                     ;;
             esac
         done
-    else
-        local choice=""
-        read -e -p "确定安装BBR3内核吗？(Y/N): " choice
+	else
 
-        case "$choice" in
-            [Yy])
-                xanmod_install_or_update install
-                ;;
-            [Nn])
-                echo "已取消"
-                ;;
-            *)
-                echo "无效的选择，请输入 Y 或 N。"
-                ;;
-        esac
-    fi
+	  clear
+	  echo "设置BBR3加速"
+	  echo "------------------------------------------------"
+	  echo "仅支持Debian/Ubuntu"
+	  echo "请备份数据，将为你升级Linux内核开启BBR3"
+	  echo "------------------------------------------------"
+	  read -e -p "确定继续吗？(Y/N): " choice
+
+	  case "$choice" in
+		[Yy])
+		xanmod_install_or_update install
+		  ;;
+		[Nn])
+		  echo "已取消"
+		  ;;
+		*)
+		  echo "无效的选择，请输入 Y 或 N。"
+		  ;;
+	  esac
+	fi
 }
 
 # ============================================================================
