@@ -55,7 +55,7 @@ install() {
 server_reboot() {
     echo -e "${gl_lv}建议立即重启服务器以加载新内核...${gl_bai}"
     read -e -p "是否现在重启？(Y/N): " reboot_choice
-    if [[ "$reboot_choice" =~ ^[Yy]$ ]]; then
+    if [[ "$reboot_info" =~ ^[Yy]$ ]]; then
         reboot
     fi
 }
@@ -76,94 +76,149 @@ EOF
     return 0
 }
 
-# --- break_end 函数定义 (关键修复) ---
-# 当用户选择返回主菜单时，此函数负责清理并返回
+# --- break_end 函数定义 ---
 break_end() {
     local choice="$1"
     if [ -z "$choice" ] || [ "$choice" = "0" ] || [ "$choice" = "return" ]; then
-        # 如果是返回主菜单逻辑，这里可以根据需要调用 main_menu 或只是 break
-        # 在 main_menu 中，我们使用 break 跳出 while 循环，然后重新进入
         return 0
     fi
     return 1
 }
 
 # ============================================================================
-# System Info Function (Enhanced & Robust)
+# System Info Function (Detailed Layout)
 # ============================================================================
 
 show_sys_info() {
     clear
-    echo -e "${gl_huang}========================================${gl_bai}"
-    echo -e "${gl_huang}        Linux 系统信息查询              ${gl_bai}"
-    echo -e "${gl_huang}========================================${gl_bai}"
+    echo -e "${gl_huang}系统信息查询${gl_bai}"
+    echo -e "-------------"
     
-    # --- 基本信息 ---
-    echo -e "${gl_lv}[ 基本信息 ]${gl_bai}"
-    local os_name="Unknown"
-    if [ -f /etc/os-release ]; then
-        os_name=$(. /etc/os-release && echo "$PRETTY_NAME")
-    elif command -v lsb_release &>/dev/null; then
-        os_name=$(lsb_release -s -d)
-    elif command -v cat &>/dev/null; then
-        os_name=$(cat /etc/os-release 2>/dev/null | grep ^PRETTY_NAME | cut -d= -f2 | tr -d '"')
-    fi
-    echo -e "操作系统: ${os_name}"
+    # --- 基础信息 ---
+    local hostname_val=$(hostname)
+    local os_name="Debian GNU/Linux $(lsb_release -rs 2>/dev/null || cat /etc/os-release | grep ^VERSION_ID | cut -d= -f2 | tr -d '"' | head -1)"
+    local kernel_ver=$(uname -r)
     
-    echo -e "内核版本: $(uname -r)"
-    echo -e "运行时间: $(uptime -p 2>/dev/null | sed 's/time//' || echo "N/A")"
-    echo -e "主机名  : $(hostname)"
+    echo -e "主机名:\t\t${gl_lv}${hostname_val}${gl_bai}"
+    echo -e "系统版本:\t${gl_lv}${os_name}${gl_bai}"
+    echo -e "Linux版本:\t${gl_lv}${kernel_ver}${gl_bai}"
+    echo -e "-------------"
     
     # --- CPU信息 ---
-    echo -e "\n${gl_lv}[ CPU 信息 ]${gl_bai}"
-    echo -e "架构: $(uname -m)"
+    local cpu_arch=$(uname -m)
+    local cpu_model=$(grep "model name" /proc/cpuinfo 2>/dev/null | head -1 | cut -d: -f2 | sed 's/^ *//')
+    local cpu_cores=$(nproc)
+    local cpu_freq=$(grep "cpu MHz" /proc/cpuinfo 2>/dev/null | head -1 | cut -d: -f2 | sed 's/^ *//' | awk '{print $1}')
+    local cpu_usage=$(top -bn1 2>/dev/null | grep "Cpu(s)" | awk '{print $2}')
+    [ -z "$cpu_usage" ] && cpu_usage="N/A"
     
-    if [ -f /proc/cpuinfo ]; then
-        local cpu_model=$(grep "model name" /proc/cpuinfo | head -1 | cut -d: -f2 | sed 's/^ *//')
-        echo -e "CPU型号: ${cpu_model}"
-    else
-        echo -e "CPU型号: N/A"
-    fi
+    echo -e "CPU架构:\t${gl_lv}${cpu_arch}${gl_bai}"
+    echo -e "CPU型号:\t${gl_lv}${cpu_model}${gl_bai}"
+    echo -e "CPU核心数:\t${gl_lv}${cpu_cores}${gl_bai}"
+    echo -e "CPU频率:\t${gl_lv}$(echo "$cpu_freq" | awk '{printf "%.1f GHz", $1/1000}')${gl_bai}"
+    echo -e "CPU占用:\t${gl_lv}${cpu_usage}${gl_bai}"
+    echo -e "系统负载:\t${gl_lv}$(uptime | awk '{print $10, $11, $12}' | sed 's/,/./g')${gl_bai}"
+    echo -e "-------------"
     
-    echo -e "CPU核心数: $(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo)"
+    # --- 内存信息 ---
+    local total_mem_kb=$(awk '/MemTotal/{print $2}' /proc/meminfo)
+    local available_mem_kb=$(awk '/MemAvailable/{print $2}' /proc/meminfo)
+    local total_mem_mb=$((total_mem_kb / 1024 / 1024))
+    local avail_mem_mb=$((available_mem_kb / 1024 / 1024))
+    local swap_total_kb=$(awk '/SwapTotal/{print $2}' /proc/meminfo)
+    local swap_total_mb=$((swap_total_kb / 1024))
     
-    if [ -f /proc/cpuinfo ]; then
-        local cpu_freq=$(grep "cpu MHz" /proc/cpuinfo | head -1 | cut -d: -f2 | sed 's/^ *//')
-        echo -e "频率: ${cpu_freq} MHz"
-    else
-        echo -e "频率: N/A"
+    local mem_usage_pct=$(awk "BEGIN{printf \"%.2f\", (${total_mem_mb}-${avail_mem_mb})/${total_mem_mb}*100}")
+    local swap_usage_pct="0%"
+    local swap_used_kb=$(awk '/SwapFree/{print $2}' /proc/meminfo)
+    local swap_used_mb=$(( (swap_total_mb*1024 - swap_used_kb) / 1024 ))
+    if [ "$swap_total_mb" -gt 0 ]; then
+        swap_usage_pct=$(awk "BEGIN{printf \"%.0f%%\", ${swap_used_mb}/${swap_total_mb}*100}")
     fi
 
-    # --- 内存信息 ---
-    echo -e "\n${gl_lv}[ 内存信息 ]${gl_bai}"
-    if [ -f /proc/meminfo ]; then
-        local total_mem=$(awk '/MemTotal/{printf "%.2f", $2/1024/1024}' /proc/meminfo)
-        local swap_mem=$(awk '/SwapTotal/{printf "%.2f", $2/1024/1024}' /proc/meminfo)
-        echo -e "物理内存: ${total_mem} GB"
-        echo -e "Swap总量: ${swap_mem} GB"
-    else
-        echo -e "内存信息: N/A"
-    fi
+    echo -e "物理内存:\t${gl_lv}${avail_mem_mb}M/${total_mem_mb}M ($mem_usage_pct%)${gl_bai}"
+    echo -e "虚拟内存:\t${gl_lv}${swap_used_mb}M/${swap_total_mb}M ($swap_usage_pct)${gl_bai}"
+    echo -e "硬盘占用:\t${gl_lv}$(df -h / | tail -1 | awk '{print $3 "/" $2 " (" $5 ")"}')${gl_bai}"
+    echo -e "-------------"
     
-    # --- 磁盘信息 ---
-    echo -e "\n${gl_lv}[ 磁盘信息 ]${gl_bai}"
-    if command -v df &>/dev/null; then
-        df -h | grep -v tmpfs | grep -v devtmpfs
-    else
-        echo "磁盘信息: N/A"
+    # --- 网络流量 ---
+    local rx_bytes=0
+    local tx_bytes=0
+    if [ -f /proc/net/dev ]; then
+        # 获取非lo接口的流量
+        rx_bytes=$(awk -v interfaces="eth0 eth1 enp3s6" 'BEGIN{IGNORECASE=1; split(interfaces, arr, " ");} $0 ~ arr[1] || $0 ~ arr[2] || $0 ~ arr[3] {rx+=$2; tx+=$10} END{print rx, tx}' /proc/net/dev)
+        if [ -z "$rx_bytes" ]; then
+            # fallback to simple sum if interface names vary
+            rx_bytes=$(awk '/eth[0-9]/ || /enp[0-9]/ || /ens[0-9]/ {print $2}' /proc/net/dev | awk '{a+=$1} END{print a}')
+            tx_bytes=$(awk '/eth[0-9]/ || /enp[0-9]/ || /ens[0-9]/ {print $10}' /proc/net/dev | awk '{a+=$1} END{print a}')
+        fi
     fi
+    # Convert to G for display
+    local rx_gb=$(awk "BEGIN{printf \"%.2f\", ${rx_bytes}/1024/1024/1024}")
+    local tx_gb=$(awk "BEGIN{printf \"%.2f\", ${tx_bytes}/1024/1024/1024}")
+
+    echo -e "总接收:\t\t${gl_lv}${rx_gb}G${gl_bai}"
+    echo -e "总发送:\t\t${gl_lv}${tx_gb}G${gl_bai}"
+    echo -e "-------------"
     
-    # --- 网络信息 ---
-    echo -e "\n${gl_lv}[ 网络信息 ]${gl_bai}"
-    local ip_addr="N/A"
+    # --- 网络算法 & 连接数 ---
+    local tcp_algo=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+    local qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
+    local tcp_connections=$(ss -t state established 2>/dev/null | wc -l)
+    local udp_connections=$(ss -u state established 2>/dev/null | wc -l)
+    
+    echo -e "网络算法:\t${gl_lv}${tcp_algo:-n/a} ${qdisc:-n/a}${gl_bai}"
+    echo -e "TCP|UDP连接数:\t${gl_lv}${tcp_connections}|${udp_connections}${gl_bai}"
+    echo -e "-------------"
+    
+    # --- IP & 地理位置 ---
+    local ipv4="N/A"
+    local ipv6="N/A"
+    local isp_info="N/A"
+    
+    # 获取 IPv4
     if command -v ip &>/dev/null; then
-        ip_addr=$(ip -4 addr | grep inet | grep -v '127.0.0.1' | awk '{print $2}' | head -1)
-    elif command -v ifconfig &>/dev/null; then
-        ip_addr=$(ifconfig | grep -E "inet (addr:)?([0-9]*\.){3}[0-9]*" | grep -v "127.0.0.1" | awk '{print $2}' | head -1)
+        ipv4=$(ip -4 addr | grep inet | grep -v "127.0.0.1" | awk '{print $2}' | head -1)
+    elif command -v hostname &>/dev/null; then
+        ipv4=$(hostname -I | awk '{print $1}')
     fi
-    echo -e "内网IP: ${ip_addr}"
     
-    echo -e "${gl_huang}========================================${gl_bai}"
+    # 获取 IPv6
+    if command -v ip &>/dev/null; then
+        ipv6=$(ip -6 addr | grep inet6 | grep -v "127.0.0.1" | awk '{print $2}' | head -1)
+    fi
+
+    # 获取运营商 (使用 curl)
+    if command -v curl &>/dev/null; then
+        local ip_info=$(curl -s "http://ip-api.com/json?lang=zh" 2>/dev/null)
+        if echo "$ip_info" | grep -q "status"; then
+            isp_info=$(echo "$ip_info" | jq -r '.isp')
+            local region=$(echo "$ip_info" | jq -r '.region')
+            local city=$(echo "$ip_info" | jq -r '.city')
+            local tz=$(echo "$ip_info" | jq -r '.timeZone' 2>/dev/null)
+            
+            echo -e "运营商:\t\t${gl_lv}${isp_info}${gl_bai}"
+            echo -e "IPv4地址:\t${gl_lv}${ipv4}${gl_bai}"
+            echo -e "IPv6地址:\t${gl_lv}${ipv6}${gl_bai}"
+            echo -e "DNS地址:\t${gl_lv}1.1.1.1 8.8.8.8${gl_bai}"
+            echo -e "地理位置:\t${gl_lv}${city} ${region}${gl_bai}"
+            echo -e "系统时间:\t${gl_lv}$(date +%H:%M) ${tz} ${tz//_/ } $(date +%Y-%m-%d)${gl_bai}"
+        else
+            echo -e "运营商:\t\t${gl_lv}获取失败${gl_bai}"
+            echo -e "IPv4地址:\t${gl_lv}${ipv4}${gl_bai}"
+        fi
+    else
+        echo -e "运营商:\t\t${gl_lv}N/A (需要curl)${gl_bai}"
+        echo -e "IPv4地址:\t${gl_lv}${ipv4}${gl_bai}"
+    fi
+    echo -e "-------------"
+    
+    # --- 运行时间 ---
+    local uptime_days=$(uptime -p | sed 's/time//')
+    echo -e "运行时长:\t${gl_lv}${uptime_days}${gl_bai}"
+    echo -e "-------------"
+    
+    # 按任意键返回
     echo -e "${gl_huang}[按任意键返回主菜单]${gl_bai}"
     read -rs
     clear
@@ -181,7 +236,6 @@ _kernel_optimize_core() {
 
     echo -e "${gl_lv}切换到${mode_name}...${gl_bai}"
 
-    # 默认变量初始化
     local SWAPPINESS DIRTY_RATIO DIRTY_BG_RATIO OVERCOMMIT MIN_FREE_KB VFS_PRESSURE
     local RMEM_MAX WMEM_MAX TCP_RMEM TCP_WMEM
     local SOMAXCONN BACKLOG SYN_BACKLOG
@@ -298,7 +352,6 @@ net.ipv4.udp_wmem_min = 16384
             ;;
     esac
 
-    # --- 根据内存大小自适应调整 ---
     local MEM_MB_VAL
     if [ -f /proc/meminfo ]; then
         MEM_MB_VAL=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo)
@@ -331,14 +384,12 @@ net.ipv4.udp_wmem_min = 16384
         BACKLOG=1000
     fi
 
-    # --- 检测 BBR 支持 ---
     local KVER
     KVER=$(uname -r | grep -oP '^\d+\.\d+')
     local CC="cubic"
     local QDISC="fq_codel"
     
     if [ -z "$KVER" ]; then
-        # Fallback if grep fails
         CC="cubic"
         QDISC="fq_codel"
     else
@@ -346,7 +397,6 @@ net.ipv4.udp_wmem_min = 16384
             if ! lsmod 2>/dev/null | grep -q tcp_bbr; then
                 modprobe tcp_bbr 2>/dev/null
             fi
-            # Check if BBR is available
             if sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q bbr; then
                 CC="bbr"
                 QDISC="fq"
