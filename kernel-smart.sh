@@ -114,7 +114,7 @@ _kernel_optimize_core() {
 	# ── 写入配置文件 ──
 	echo -e "${gl_lv}写入 sysctl 优化配置...${gl_bai}"
 	cat > "$CONF" << SYSCTL
-# kejilion 内核调优配置
+# YW 内核调优配置
 # 模式: $mode_name | 场景: $scene
 # 内存: ${MEM_MB}MB | 生成时间: $(date '+%Y-%m-%d %H:%M:%S')
 
@@ -218,7 +218,7 @@ case "$1" in
 	"") # 如果没有任何参数，则弹出可交互菜单
 		clear
 		echo -e "${gl_lv}============================================${gl_bai}"
-		echo -e "${gl_cheng}      kejilion 智能内核调优控制台        ${gl_bai}"
+		echo -e "${gl_cheng}      YW 智能内核调优控制台        ${gl_bai}"
 		echo -e "${gl_lv}============================================${gl_bai}"
 		echo -e " 1. 切换到 [高性能模式] (密集计算/压测)"
 		echo -e " 2. 切换到 [网站服务器模式] (高并发连接)"
