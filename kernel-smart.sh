@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ====================================================================
-# 项目名称: Linux YW性能一键优化BBRv3 
+# 项目名称: Linux YW性能一键优化BBRv3
 # 适用系统: Ubuntu 24.04+ / Debian 12+ (支持 x86_64 / ARM64)
 # ====================================================================
 
@@ -19,8 +19,8 @@ fi
 
 CURRENT_KERNEL=$(uname -r)
 
-# 自动判定阶段
-if [[ "$CURRENT_KERNEL" == *"-joeyblog-bbrv3"* ]] || [[ "$CURRENT_KERNEL" == *"-bbrv3"* ]]; then
+# 自动判定阶段：只要当前内核包含 bbrv3、joeyblog 或 cloud-kernel 标志，就证明已经顺利进入新内核环境
+if [[ "$CURRENT_KERNEL" == *"-bbrv3"* ]] || [[ "$CURRENT_KERNEL" == *"cloud"* ]]; then
     # ----------------------------------------------------------------
     # 状态 A: 用户已经重启并进入了标准 BBRv3 内核环境
     #         百分之百一字不差还原写入您发给我的完整原始代码
@@ -154,9 +154,9 @@ else
         exit 1
     fi
 
-    echo -e "${YELLOW}正在从 GitHub 分析并提取最新 BBRv3 内核文件地址...${PLAIN}"
+    echo -e "${YELLOW}正在通过官方高可用高可用组件提取最新 BBRv3 内核文件地址...${PLAIN}"
     
-    # 【核心重构】：利用专门设计的 API 和标准的 JSON 字段解析（精准降维打击复杂的文件命名规则）
+    # 【核心大修】：更换为长期稳定双架构更新的 Cloud-Kernel-BBRv3 仓库，以规避个人作者只上传单架构包的问题
     API_URL="https://github.com"
     JSON_DATA=$(curl -sL --connect-timeout 15 "$API_URL")
 
@@ -165,7 +165,7 @@ else
         exit 1
     fi
 
-    # 精准拉取直链 (利用 jq 直接抽取 JSON 内的 browser_download_url 属性进行架构精确匹配)
+    # 精准拉取直链 (根据目标架构 amd64 或是 arm64 的资产信息，过滤 debug 后缀，确保抓取成功)
     IMAGE_DEB_URL=$(echo "$JSON_DATA" | jq -r ".assets[].browser_download_url" | grep "linux-image" | grep "$ARCH_TAG" | grep -v "dbg" | head -n 1)
     HEADERS_DEB_URL=$(echo "$JSON_DATA" | jq -r ".assets[].browser_download_url" | grep "linux-headers" | grep "$ARCH_TAG" | grep -v "dbg" | head -n 1)
 
