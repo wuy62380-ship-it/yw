@@ -1,204 +1,310 @@
-#!/bin/bash
+# ============================================================================
+# Linux 内核调优模块（增强重构版）
+# 统一核心函数 + 场景差异化参数 + 持久化到配置文件 + 硬件自适应
+# ============================================================================
 
-# ====================================================================
-# 项目名称: Linux YW性能一键优化BBRv3
-# 适用系统: Ubuntu 24.04+ / Debian 12+ (支持 x86_64 / ARM64)
-# ====================================================================
+# 获取内存大小（MB）
+_get_mem_mb() {
+	awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo
+}
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;34m'
-PLAIN='\033[0m'
+# 统一内核调优核心函数
+# 参数: $1 = 模式名称, $2 = 场景 (high/balanced/web/stream/game)
+_kernel_optimize_core() {
+	local mode_name="$1"
+	local scene="${2:-high}"
+	local CONF="/etc/sysctl.d/99-kejilion-optimize.conf"
+	local RC_LOCAL="/etc/rc.local"
+	local MEM_MB=$(_get_mem_mb)
 
-# 检查 1: 必须以 root 权限运行
-if [ "$(id -u)" != "0" ]; then
-    echo -e "${RED}[错误] 请使用 root 权限运行此脚本！(sudo bash 脚本名)${PLAIN}"
-    exit 1
-fi
+	echo -e "${gl_lv}正在切换到 ${mode_name} 模式...${gl_bai}"
 
-CURRENT_KERNEL=$(uname -r)
+	# ── 根据场景设定参数 ──
+	local SWAPPINESS DIRTY_RATIO DIRTY_BG_RATIO OVERCOMMIT MIN_FREE_KB VFS_PRESSURE
+	local RMEM_MAX WMEM_MAX TCP_RMEM TCP_WMEM
+	local SOMAXCONN BACKLOG SYN_BACKLOG
+	local PORT_RANGE SCHED_AUTOGROUP THP NUMA FIN_TIMEOUT
+	local KEEPALIVE_TIME KEEPALIVE_INTVL KEEPALIVE_PROBES
 
-# 自动判定阶段：只要当前内核包含 bbrv3、joeyblog 或 cloud-kernel 标志，就证明已经顺利进入新内核环境
-if [[ "$CURRENT_KERNEL" == *"-bbrv3"* ]] || [[ "$CURRENT_KERNEL" == *"cloud"* ]]; then
-    # ----------------------------------------------------------------
-    # 状态 A: 用户已经重启并进入了标准 BBRv3 内核环境
-    #         百分之百一字不差还原写入您发给我的完整原始代码
-    # ----------------------------------------------------------------
-    echo -e "${BLUE}[1/2] 检测到系统已成功载入原生标准 BBRv3 内核 (${CURRENT_KERNEL})。${PLAIN}"
-    echo -e "${YELLOW}正在为您自动恢复、生成并覆盖 /etc/sysctl.conf 配置...${PLAIN}"
+	case "$scene" in
+		high|stream|game)
+			# 高性能/直播/游戏：激进参数
+			SWAPPINESS=10
+			DIRTY_RATIO=15
+			DIRTY_BG_RATIO=5
+			OVERCOMMIT=1
+			VFS_PRESSURE=50
+			RMEM_MAX=67108864
+			WMEM_MAX=67108864
+			TCP_RMEM="4096 262144 67108864"
+			TCP_WMEM="4096 262144 67108864"
+			SOMAXCONN=8192
+			BACKLOG=250000
+			SYN_BACKLOG=8192
+			PORT_RANGE="1024 65535"
+			SCHED_AUTOGROUP=0
+			THP="never"
+			NUMA=0
+			FIN_TIMEOUT=10
+			KEEPALIVE_TIME=300
+			KEEPALIVE_INTVL=30
+			KEEPALIVE_PROBES=5
+			;;
+		web)
+			# 网站服务器：高并发优先
+			SWAPPINESS=10
+			DIRTY_RATIO=20
+			DIRTY_BG_RATIO=10
+			OVERCOMMIT=1
+			VFS_PRESSURE=50
+			RMEM_MAX=33554432
+			WMEM_MAX=33554432
+			TCP_RMEM="4096 131072 33554432"
+			TCP_WMEM="4096 131072 33554432"
+			SOMAXCONN=16384
+			BACKLOG=10000
+			SYN_BACKLOG=16384
+			PORT_RANGE="1024 65535"
+			SCHED_AUTOGROUP=0
+			THP="never"
+			NUMA=0
+			FIN_TIMEOUT=15
+			KEEPALIVE_TIME=600
+			KEEPALIVE_INTVL=60
+			KEEPALIVE_PROBES=5
+			;;
+		balanced)
+			# 均衡模式：适度优化
+			SWAPPINESS=30
+			DIRTY_RATIO=20
+			DIRTY_BG_RATIO=10
+			OVERCOMMIT=0
+			VFS_PRESSURE=75
+			RMEM_MAX=16777216
+			WMEM_MAX=16777216
+			TCP_RMEM="4096 87380 16777216"
+			TCP_WMEM="4096 65536 16777216"
+			SOMAXCONN=4096
+			BACKLOG=5000
+			SYN_BACKLOG=4096
+			PORT_RANGE="1024 49151"
+			SCHED_AUTOGROUP=1
+			THP="always"
+			NUMA=1
+			FIN_TIMEOUT=30
+			KEEPALIVE_TIME=600
+			KEEPALIVE_INTVL=60
+			KEEPALIVE_PROBES=5
+			;;
+	esac
 
-    # 1. 备份原有的 sysctl.conf
-    cp /etc/sysctl.conf /etc/sysctl.conf.bak
+	# ── 根据内存大小自适应调整 ──
+	if [ "$MEM_MB" -ge 16384 ]; then
+		MIN_FREE_KB=131072
+		[ "$scene" != "balanced" ] && SWAPPINESS=5
+	elif [ "$MEM_MB" -ge 4096 ]; then
+		MIN_FREE_KB=65536
+	elif [ "$MEM_MB" -ge 1024 ]; then
+		MIN_FREE_KB=32768
+		# 小内存缩小缓冲区
+		if [ "$scene" != "balanced" ] && [ "$scene" != "web" ]; then
+			RMEM_MAX=16777216
+			WMEM_MAX=16777216
+			TCP_RMEM="4096 87380 16777216"
+			TCP_WMEM="4096 65536 16777216"
+		fi
+	else
+		# 极其严苛的超小内存环境（1GB以下机型自适应）
+		MIN_FREE_KB=16384
+		SWAPPINESS=30
+		OVERCOMMIT=0
+		RMEM_MAX=4194304
+		WMEM_MAX=4194304
+		TCP_RMEM="4096 32768 4194304"
+		TCP_WMEM="4096 32768 4194304"
+		SOMAXCONN=1024
+		BACKLOG=1000
+		SYN_BACKLOG=1024
+	fi
 
-    # 2. 精准还原您发送给我的完整原始代码
-    cat << 'EOF' > /etc/sysctl.conf
-#
-# /etc/sysctl.conf - Configuration file for setting system variables
-# See /etc/sysctl.d/ for additional system variables.
-# See sysctl.conf (5) for information.
-#
+	# ── 直播场景额外：UDP 缓冲区加大 ──
+	local STREAM_EXTRA=""
+	if [ "$scene" = "stream" ]; then
+		STREAM_EXTRA="
+# 直播推流 UDP 优化
+net.ipv4.udp_rmem_min = 16384
+net.ipv4.udp_wmem_min = 16384
+net.ipv4.tcp_notsent_lowat = 16384"
+	fi
 
-#kernel.domainname = example.com
+	# ── 游戏服场景额外：低延迟优先 ──
+	local GAME_EXTRA=""
+	if [ "$scene" = "game" ]; then
+		GAME_EXTRA="
+# 游戏服低延迟优化
+net.ipv4.udp_rmem_min = 16384
+net.ipv4.udp_wmem_min = 16384
+net.ipv4.tcp_notsent_lowat = 16384
+net.ipv4.tcp_slow_start_after_idle = 0"
+	fi
 
-# Uncomment the following to stop low-level messages on console
-#kernel.printk = 3 4 1 3
+	# ── 加载 BBR 模块 ──
+	local CC="bbr"
+	local QDISC="fq"
+	local KVER
+	KVER=$(uname -r | grep -oP '^\d+\.\d+')
+	if printf '%s\n%s' "4.9" "$KVER" | sort -V -C; then
+		if ! lsmod 2>/dev/null | grep -q tcp_bbr; then
+			modprobe tcp_bbr 2>/dev/null
+		fi
+		if ! sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q bbr; then
+			CC="cubic"
+			QDISC="fq_codel"
+		fi
+	else
+		CC="cubic"
+		QDISC="fq_codel"
+	fi
 
-###################################################################
-# Functions previously found in netbase
-#
+	# ── 备份已有配置 ──
+	[ -f "$CONF" ] && cp "$CONF" "${CONF}.bak.$(date +%s)"
 
-# Uncomment the next two lines to enable Spoof protection (reverse-path filter)
-# Turn on Source Address Verification in all interfaces to
-# prevent some spoofing attacks
-#net.ipv4.conf.default.rp_filter=1
-#net.ipv4.conf.all.rp_filter=1
+	# ── 计算适用于 Page 单元的 tcp_mem (标准1页为4KB) ──
+	local PAGE_SIZE=4
+	local TOTAL_PAGES=$((MEM_MB * 1024 / PAGE_SIZE))
+	local TCP_MEM_MIN=$((TOTAL_PAGES / 8))
+	local TCP_MEM_PRESSURE=$((TOTAL_PAGES / 4))
+	local TCP_MEM_MAX=$((TOTAL_PAGES / 2))
 
-# Uncomment the next line to enable TCP/IP SYN cookies
-# See http://lwn.net
-# Note: This may impact IPv6 TCP sessions too
-#net.ipv4.tcp_syncookies=1
+	# ── 写入 sysctl 配置文件（持久化） ──
+	echo -e "${gl_lv}写入 sysctl 优化配置...${gl_bai}"
+	cat > "$CONF" << SYSCTL
+# kejilion 内核调优配置
+# 模式: $mode_name | 场景: $scene
+# 内存: ${MEM_MB}MB | 生成时间: $(date '+%Y-%m-%d %H:%M:%S')
 
-# Uncomment the next line to enable packet forwarding for IPv4
-#net.ipv4.ip_forward=1
+# ── 内存与虚拟内存 ──
+vm.swappiness = $SWAPPINESS
+vm.dirty_ratio = $DIRTY_RATIO
+vm.dirty_background_ratio = $DIRTY_BG_RATIO
+vm.overcommit_memory = $OVERCOMMIT
+vm.min_free_kbytes = $MIN_FREE_KB
+vm.vfs_cache_pressure = $VFS_PRESSURE
 
-# Uncomment the next line to enable packet forwarding for IPv6
-#  Enabling this option disables Stateless Address Autoconfiguration
-#  based on Router Advertisements for this host
-#net.ipv6.conf.all.forwarding=1
+# ── TCP 拥塞控制 ──
+net.core.default_qdisc = $QDISC
+net.ipv4.tcp_congestion_control = $CC
 
+# ── TCP 缓冲区 ──
+net.core.rmem_max = $RMEM_MAX
+net.core.wmem_max = $WMEM_MAX
+net.core.rmem_default = $(echo "$TCP_RMEM" | awk '{print $2}')
+net.core.wmem_default = $(echo "$TCP_WMEM" | awk '{print $2}')
+net.ipv4.tcp_rmem = $TCP_RMEM
+net.ipv4.tcp_wmem = $TCP_WMEM
 
-###################################################################
-# Additional settings - these settings can improve the network
-# security of the host and prevent against some network attacks
-# including spoofing attacks and man in the middle attacks through
-# redirection. Some network environments, however, require that these
-# settings are disabled so review and enable them as needed.
-#
-# Do not accept ICMP redirects (prevent MITM attacks)
-#net.ipv4.conf.all.accept_redirects = 0
-#net.ipv6.conf.all.accept_redirects = 0
-# _or_
-# Accept ICMP redirects only for gateways listed in our default
-# gateway list (enabled by default)
-# net.ipv4.conf.all.secure_redirects = 1
-#
-# Do not send ICMP redirects (we are not a router)
-#net.ipv4.conf.all.send_redirects = 0
-#
-# Do not accept IP source route packets (we are not a router)
-#net.ipv4.conf.all.accept_source_route = 0
-#net.ipv6.conf.all.accept_source_route = 0
-#
-# Log Martian Packets
-#net.ipv4.conf.all.log_martians = 1
-#
+# ── 连接队列 ──
+net.core.somaxconn = $SOMAXCONN
+net.core.netdev_max_backlog = $BACKLOG
+net.ipv4.tcp_max_syn_backlog = $SYN_BACKLOG
 
-###################################################################
-# Magic system request Key
-# 0=disable, 1=enable all, >1 bitmask of sysrq functions
-# See https://kernel.org
-# for what other values do
-#kernel.sysrq=438
+# ── TCP 连接优化 ──
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_fin_timeout = $FIN_TIMEOUT
+net.ipv4.tcp_keepalive_time = $KEEPALIVE_TIME
+net.ipv4.tcp_keepalive_intvl = $KEEPALIVE_INTVL
+net.ipv4.tcp_keepalive_probes = $KEEPALIVE_PROBES
+net.ipv4.tcp_max_tw_buckets = 65536
+net.ipv4.tcp_syncookies = 1
+net.ipv4.tcp_synack_retries = 2
+net.ipv4.tcp_syn_retries = 3
+net.ipv4.tcp_mtu_probing = 1
+net.ipv4.tcp_sack = 1
+net.ipv4.tcp_timestamps = 1
+net.ipv4.tcp_window_scaling = 1
 
-fs.file-max = 65535
+# ── 端口与内存 ──
+net.ipv4.ip_local_port_range = $PORT_RANGE
+net.ipv4.tcp_mem = $TCP_MEM_MIN $TCP_MEM_PRESSURE $TCP_MEM_MAX
+net.ipv4.tcp_max_orphans = 32768
+${STREAM_EXTRA}${GAME_EXTRA}
+SYSCTL
 
-# === 以下为原生标准 BBRv3 配套所需的 network 加速变量 ===
-net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
-EOF
+	# ── 使 sysctl 配置立即生效 ──
+	sysctl --system >/dev/null 2>&1
 
-    # 3. 让配置（包含您的 fs.file-max = 65535）立即在内核中生效
-    sudo sysctl -p > /dev/null
+	# ── 处理无法通过 sysctl 设置的系统运行时参数 (THP/NUMA/Sched) ──
+	echo -e "${gl_lv}配置内核运行时参数...${gl_bai}"
+	
+	# 1. 动态调节当前运行状态
+	[ -f /sys/kernel/debug/sched/autogroup_enabled ] && echo "$SCHED_AUTOGROUP" > /sys/kernel/debug/sched/autogroup_enabled
+	[ -f /sys/kernel/mm/transparent_hugepage/enabled ] && echo "$THP" > /sys/kernel/mm/transparent_hugepage/enabled
+	[ -f /proc/sys/vm/numa_zonelist_order ] && sysctl -w vm.numa_zonelist_order=$( [ "$NUMA" -eq 1 ] && echo "Node" || echo "Default" ) >/dev/null 2>&1
 
-    echo -e "${GREEN}[2/2] 系统变量 /etc/sysctl.conf 配置成功！${PLAIN}"
-    echo -e "${BLUE}=================== BBRv3 状态验证结果 ===================${PLAIN}"
-    
-    # 验证算法是否为 bbr
-    CHECK_ALGO=$(sysctl net.ipv4.tcp_congestion_control | awk '{print $3}')
-    if [ "$CHECK_ALGO" == "bbr" ]; then
-        echo -e "拥塞控制算法: ${GREEN}成功激活 (bbr)${PLAIN}"
-    else
-        echo -e "拥塞控制算法: ${RED}未激活 (当前为 $CHECK_ALGO)${PLAIN}"
-    fi
+	# 2. 移除 rc.local 中旧的 kejilion 标记条目
+	if [ -f "$RC_LOCAL" ]; then
+		sed -i '/# BEGIN KEJILION RUNTIME/,/# END KEJILION RUNTIME/d' "$RC_LOCAL"
+	fi
 
-    # 验证您代码中的指定参数 fs.file-max
-    CHECK_FILE=$(cat /proc/sys/fs/file-max)
-    echo -e "最大文件打开数 (fs.file-max): ${GREEN}${CHECK_FILE}${PLAIN}"
+	# 3. 将运行时参数持久化到 rc.local
+	if [ "$scene" != "balanced" ]; then
+		[ ! -f "$RC_LOCAL" ] && echo -e '#!/bin/sh -e\nexit 0' > "$RC_LOCAL" && chmod +x "$RC_LOCAL"
+		sed -i '/^exit 0/i # BEGIN KEJILION RUNTIME\n[ -f /sys/kernel/debug/sched/autogroup_enabled ] && echo '"$SCHED_AUTOGROUP"' > /sys/kernel/debug/sched/autogroup_enabled\n[ -f /sys/kernel/mm/transparent_hugepage/enabled ] && echo '"$THP"' > /sys/kernel/mm/transparent_hugepage/enabled\n# END KEJILION RUNTIME' "$RC_LOCAL"
+	fi
 
-    # 验证 BBRv3 底层连接状态
-    echo -e "底层网络流检查 (含有 mrtt 关键字说明 BBRv3 正在接管流量):"
-    ss -ti | grep -E "bbr|mrtt" | head -n 3
+	echo -e "${gl_cheng}内核优化配置成功！已应用并开启持久化。${gl_bai}"
+}
 
-    echo -e "${BLUE}==========================================================${PLAIN}"
-    echo -e "${GREEN}🎉 恭喜！标准 BBRv3 纯净包部署、原始配置覆盖与验证已全部完成！${PLAIN}"
+# ============================================================================
+# 外层对接函数（替换原有旧函数入口）
+# ============================================================================
 
-else
-    # ----------------------------------------------------------------
-    # 状态 B: 首次运行 -> 智能识别架构并拉取对应内核
-    # ----------------------------------------------------------------
-    echo -e "${YELLOW}[1/3] 正在检查基础环境依赖与服务器架构...${PLAIN}"
-    apt-get update -y > /dev/null
-    apt-get install -y curl wget ca-certificates jq > /dev/null
+optimize_high_performance() {
+	_kernel_optimize_core "高性能模式" "high"
+}
 
-    # 自动识别架构
-    ARCH=$(uname -m)
-    if [ "$ARCH" = "x86_64" ]; then
-        ARCH_TAG="amd64"
-        echo -e "${BLUE}当前服务器架构为: x86_64 (amd64)${PLAIN}"
-    elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
-        ARCH_TAG="arm64"
-        echo -e "${BLUE}当前服务器架构为: ARM64 (aarch64)${PLAIN}"
-    else
-        echo -e "${RED}[错误] 暂不支持当前服务器架构: ${ARCH}${PLAIN}"
-        exit 1
-    fi
+optimize_balanced() {
+	_kernel_optimize_core "均衡模式" "balanced"
+}
 
-    echo -e "${YELLOW}正在通过官方高可用高可用组件提取最新 BBRv3 内核文件地址...${PLAIN}"
-    
-    # 【核心大修】：更换为长期稳定双架构更新的 Cloud-Kernel-BBRv3 仓库，以规避个人作者只上传单架构包的问题
-    API_URL="https://github.com"
-    JSON_DATA=$(curl -sL --connect-timeout 15 "$API_URL")
+optimize_web_server() {
+	_kernel_optimize_core "网站服务器模式" "web"
+}
 
-    if [ -z "$JSON_DATA" ] || [[ "$JSON_DATA" == *"message"* ]]; then
-        echo -e "${RED}[错误] 无法访问 GitHub API，可能受到了速率限制或网络被阻断。${PLAIN}"
-        exit 1
-    fi
+# 如果需要支持直播/游戏，可直接加在这里：
+optimize_stream_server() {
+	_kernel_optimize_core "直播推流模式" "stream"
+}
 
-    # 精准拉取直链 (根据目标架构 amd64 或是 arm64 的资产信息，过滤 debug 后缀，确保抓取成功)
-    IMAGE_DEB_URL=$(echo "$JSON_DATA" | jq -r ".assets[].browser_download_url" | grep "linux-image" | grep "$ARCH_TAG" | grep -v "dbg" | head -n 1)
-    HEADERS_DEB_URL=$(echo "$JSON_DATA" | jq -r ".assets[].browser_download_url" | grep "linux-headers" | grep "$ARCH_TAG" | grep -v "dbg" | head -n 1)
+optimize_game_server() {
+	_kernel_optimize_core "游戏低延迟模式" "game"
+}
 
-    if [ -z "$IMAGE_DEB_URL" ] || [ "$IMAGE_DEB_URL" = "null" ] || [ -z "$HEADERS_DEB_URL" ] || [ "$HEADERS_DEB_URL" = "null" ]; then
-        echo -e "${RED}[错误] 无法从官方源地址检索到适合您架构 (${ARCH_TAG}) 的真实 BBRv3 内核文件！${PLAIN}"
-        exit 1
-    fi
+# ============================================================================
+# 恢复默认配置函数
+# ============================================================================
+restore_defaults() {
+	local CONF="/etc/sysctl.d/99-kejilion-optimize.conf"
+	local RC_LOCAL="/etc/rc.local"
 
-    echo -e "${GREEN}[2/3] 提取成功！正在拉取原厂内核数据包并进行全自动无感知安装...${PLAIN}"
-    mkdir -p /tmp/bbrv3_install && cd /tmp/bbrv3_install
-    
-    # 下载对应架构的内核包
-    wget -q --show-progress --no-check-certificate "$IMAGE_DEB_URL"
-    wget -q --show-progress --no-check-certificate "$HEADERS_DEB_URL"
+	echo -e "${gl_lv}正在恢复系统默认内核参数...${gl_bai}"
 
-    # 执行静默式底层安全安装
-    echo -e "${YELLOW}正在写入系统内核引导，请稍候...${PLAIN}"
-    sudo dpkg -i *.deb > /dev/null
-    
-    # 多系统引导兼容性修复
-    if command -v update-grub > /dev/null 2>&1; then
-        sudo update-grub > /dev/null
-    else
-        sudo grub-mkconfig -o /boot/grub/grub.cfg > /dev/null 2>&1
-    fi
+	# 移除 sysctl 自定义配置文件
+	if [ -f "$CONF" ]; then
+		rm -f "$CONF"
+		# 强制重载全部默认配置
+		sysctl --system >/dev/null 2>&1
+	fi
 
-    echo -e "${GREEN}[3/3] 内核包静默升级已全部完成！${PLAIN}"
-    echo -e "${GREEN}==================================================================${PLAIN}"
-    echo -e "${YELLOW} 由于更换了 Linux 底层核心，必须重启系统。${PLAIN}"
-    echo -e "${YELLOW} 重启命令: ${RED}reboot${PLAIN}"
-    echo -e "${YELLOW} 重启完成后再次执行您本人的这个脚本，将立即覆盖、激活您的原始代码配置！${PLAIN}"
-    echo -e "${GREEN}==================================================================${PLAIN}"
-    
-    # 清理现场临时缓存
-    cd && rm -rf /tmp/bbrv3_install
-fi
+	# 恢复 THP 和 调度组 默认内核行为
+	[ -f /sys/kernel/debug/sched/autogroup_enabled ] && echo "1" > /sys/kernel/debug/sched/autogroup_enabled
+	[ -f /sys/kernel/mm/transparent_hugepage/enabled ] && echo "always" > /sys/kernel/mm/transparent_hugepage/enabled
+
+	# 清理 rc.local
+	if [ -f "$RC_LOCAL" ]; then
+		sed -i '/# BEGIN KEJILION RUNTIME/,/# END KEJILION RUNTIME/d' "$RC_LOCAL"
+	fi
+
+	echo -e "${gl_cheng}内核参数已成功恢复至系统默认状态！${gl_bai}"
+}
