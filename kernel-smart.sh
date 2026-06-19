@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
-# Linux 内核与网络调优模块 (YW Edition - Deep Optimized)
-# 包含：通用内核调优 + XanMod BBRv3 内核管理
+# Linux 内核与网络调优模块 (YW)
+# 包含：通用内核调优 + XanMod BBRv3 内核管理 + 实时信息查询 + 深度直播优化
 # ============================================================================
 
 # --- 颜色定义兼容 ---
@@ -10,7 +10,8 @@
 : "${gl_huang:=\033[33m}"
 : "${gl_hui:=\033[90m}"
 : "${gl_red:=\033[31m}"
-: "${gl_hong:=\033[31m}"
+: "${gl_hong:=\033[31m"}
+: "${gl_blue:=\033[34m}"
 
 # --- 全局变量兼容 ---
 : "${gh_proxy:=https://}"
@@ -93,6 +94,78 @@ send_stats() {
 }
 
 # ============================================================================
+# System Info & Diagnostics
+# ============================================================================
+
+show_sys_info() {
+    root_use
+    clear
+    echo -e "${gl_lv}========================================${gl_bai}"
+    echo -e "${gl_lv}         系统信息与网络状态诊断          ${gl_bai}"
+    echo -e "${gl_lv}========================================${gl_bai}"
+    echo ""
+
+    # 1. 内核版本
+    local kernel_ver=$(uname -r)
+    local is_xanmod=false
+    if echo "$kernel_ver" | grep -q "xanmod"; then
+        is_xanmod=true
+    fi
+    
+    echo -e "[${gl_huang}内核版本${gl_bai}] : ${gl_bai}${kernel_ver} ${gl_lv}$( [ "$is_xanmod" = true ] && echo "(XanMod BBRv3 内核)" || echo "(标准内核)" )"
+
+    # 2. 网络拥塞控制算法
+    local current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+    echo -e "[${gl_huang}拥塞算法${gl_bai}] : ${gl_bai}${current_cc}"
+    
+    # 检查支持的算法
+    local supported_cc=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null)
+    echo -e "[${gl_huang}可用算法  ${gl_bai}] : ${gl_bai}${supported_cc}"
+
+    # 3. TCP 缓冲区设置 (关键优化指标)
+    local tcp_rmem_max=$(sysctl -n net.core.rmem_max 2>/dev/null)
+    local tcp_wmem_max=$(sysctl -n net.core.wmem_max 2>/dev/null)
+    local tcp_rmem_default=$(sysctl -n net.core.rmem_default 2>/dev/null)
+    
+    echo ""
+    echo -e "${gl_lv}--- TCP 缓冲区设置 ---${gl_bai}"
+    echo -e "最大接收缓冲区 : ${gl_bai}${tcp_rmem_max} bytes"
+    echo -e "最大发送缓冲区 : ${gl_bai}${tcp_wmem_max} bytes"
+    echo -e "默认接收缓冲区 : ${gl_bai}${tcp_rmem_default} bytes"
+
+    # 4. UDP 缓冲区设置 (直播关键指标)
+    local udp_rmem_min=$(sysctl -n net.ipv4.udp_rmem_min 2>/dev/null)
+    echo ""
+    echo -e "${gl_lv}--- UDP 缓冲区设置 (直播优化) ---${gl_bai}"
+    echo -e "最小接收缓冲   : ${gl_bai}${udp_rmem_min} bytes"
+
+    # 5. 内存信息
+    local mem_total=$(free -m | awk '/MemTotal/{print $2}')
+    local cpu_cores=$(nproc)
+    echo ""
+    echo -e "${gl_lv}--- 系统资源 ---${gl_bai}"
+    echo -e "物理内存     : ${gl_bai}${mem_total} MB"
+    echo -e "CPU 核心数   : ${gl_bai}${cpu_cores}"
+
+    # 6. BBRv3 检测
+    if [ "$is_xanmod" = true ]; then
+        echo ""
+        echo -e "${gl_lv}--- BBRv3 状态 ---${gl_bai}"
+        if sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q "bbr"; then
+            echo -e "BBR3 模块    : ${gl_lv}✅ 已加载"${gl_bai}
+        else
+            echo -e "BBR3 模块    : ${gl_red}❌ 未加载"${gl_bai}
+            echo -e "${gl_huang}提示: 请确认是否安装了 XanMod 内核并重启。"${gl_bai}
+        fi
+    fi
+
+    echo ""
+    echo -e "${gl_huang}提示: 请确认拥塞算法是否为 bbr/bbr3，且缓冲区大小为预期值。${gl_bai}"
+    echo -e "按任意键返回主菜单..."
+    read -n 1 -s -r -p ""
+}
+
+# ============================================================================
 # Core Optimization Logic (General)
 # ============================================================================
 
@@ -161,7 +234,7 @@ net.ipv4.udp_rmem_min = 16384
 net.ipv4.udp_wmem_min = 16384
 "
 			fi
-			STREAM_EXTRA="" # High mode doesn't need extra UDP specific tweaks usually, but inherits base
+			STREAM_EXTRA=""
 
 			;;
 			
@@ -399,6 +472,13 @@ LIMITS
 
 	echo -e "${gl_lv}${mode_name} 优化完成！配置已持久化到 ${CONF}${gl_bai}"
 	echo -e "${gl_lv}内存: ${MEM_MB}MB | 拥塞算法: ${CC} | 队列: ${QDISC}${gl_bai}"
+	
+	# 应用完成后自动询问是否查看信息
+    echo -e "${gl_huang}是否立即查看优化结果详情？(Y/N):"
+    read -e -p "" confirm_show
+    if [[ "$confirm_show" =~ ^[Yy]$ ]]; then
+        show_sys_info
+    fi
 }
 
 # ============================================================================
@@ -578,6 +658,7 @@ bbrv3() {
 			  echo "内核管理"
 			  echo "------------------------"
 			  echo "1. 更新BBRv3内核              2. 卸载BBRv3内核"
+			  echo "3. 查看当前网络状态           4. 返回主菜单"
 			  echo "------------------------"
 			  echo "0. 返回上一级选单"
 			  echo "------------------------"
@@ -590,6 +671,12 @@ bbrv3() {
 				  2)
 					xanmod_uninstall
 					;;
+                  3)
+                    show_sys_info
+                    ;;
+                  4)
+                    break
+                    ;;
 				  *)
 					break
 					;;
@@ -646,6 +733,10 @@ Kernel_optimize() {
 		  fi
 	  fi
 
+	  echo -e "${gl_lv}========================================${gl_bai}"
+	  echo -e "${gl_lv}           YW 内核与网络调优系统          ${gl_bai}"
+	  echo -e "${gl_lv}========================================${gl_bai}"
+	  echo ""
 	  echo "Linux系统内核参数优化"
 	  echo -e "当前模式: ${gl_lv}${current_mode}${gl_bai}"
 	  echo "------------------------------------------------"
@@ -658,8 +749,8 @@ Kernel_optimize() {
 	  echo -e "4. 直播优化模式：       针对直播推流优化，UDP 缓冲区加大，减少延迟。"
 	  echo -e "5. 游戏服优化模式：     针对游戏服务器优化，低延迟优先。"
 	  echo -e "6. BBRv3 内核安装      安装 XanMod BBRv3 内核 (仅Debian/Ubuntu)"
-	  echo -e "7. 还原默认设置：       将系统设置还原为默认配置。"
-	  echo -e "8. 自动调优：           根据测试数据自动调优内核参数。${gl_huang}★${gl_bai}"
+	  echo -e "7. 系统信息查询        查看当前算法、缓冲区及网络状态${gl_huang}★${gl_bai}"
+	  echo -e "8. 还原默认设置：       将系统设置还原为默认配置。"
 	  echo "--------------------"
 	  echo "0. 返回上一级选单"
 	  echo "--------------------"
@@ -705,20 +796,17 @@ Kernel_optimize() {
 			  clear
 			  bbrv3
 			  ;;
-
 		  7)
+			  cd ~
+			  clear
+			  show_sys_info
+			  ;;
+		  8)
 			  cd ~
 			  clear
 			  restore_defaults
 			  curl -sS ${gh_proxy}raw.githubusercontent.com/YW/sh/refs/heads/main/network-optimize.sh -o /tmp/network-optimize.sh && source /tmp/network-optimize.sh && restore_network_defaults
 			  send_stats "还原默认设置"
-			  ;;
-
-		  8)
-			  cd ~
-			  clear
-			  curl -sS ${gh_proxy}raw.githubusercontent.com/YW/sh/refs/heads/main/network-optimize.sh | bash
-			  send_stats "内核自动调优"
 			  ;;
 
 		  *)
