@@ -621,7 +621,7 @@ bbrv3() {
 }
 
 # ============================================================================
-# System Info Function
+# System Info Function (Enhanced Version)
 # ============================================================================
 
 show_sys_info() {
@@ -630,27 +630,75 @@ show_sys_info() {
     echo -e "${gl_huang}        Linux 系统信息查询              ${gl_bai}"
     echo -e "${gl_huang}========================================${gl_bai}"
     
+    # --- 基本信息 ---
     echo -e "${gl_lv}[ 基本信息 ]${gl_bai}"
-    echo -e "操作系统: $(lsb_release -si 2>/dev/null || cat /etc/os-release | grep ^NAME | cut -d= -f2)"
+    
+    # 尝试获取OS名称，如果失败则显示通用信息
+    local os_name="Unknown"
+    if [ -f /etc/os-release ]; then
+        os_name=$(. /etc/os-release && echo "$PRETTY_NAME")
+    elif command -v lsb_release &>/dev/null; then
+        os_name=$(lsb_release -s -d)
+    elif command -v cat &>/dev/null; then
+        os_name=$(cat /etc/os-release | grep ^PRETTY_NAME | cut -d= -f2 | tr -d '"')
+    fi
+    echo -e "操作系统: ${os_name}"
+    
     echo -e "内核版本: $(uname -r)"
-    echo -e "运行时间: $(uptime -p | sed 's/time//')"
+    echo -e "运行时间: $(uptime -p 2>/dev/null | sed 's/time//' || echo "N/A")"
     echo -e "主机名  : $(hostname)"
     
+    # --- CPU信息 ---
     echo -e "\n${gl_lv}[ CPU 信息 ]${gl_bai}"
     echo -e "架构: $(uname -m)"
-    echo -e "CPU型号: $(grep "model name" /proc/cpuinfo | head -1 | cut -d: -f2 | xargs)"
-    echo -e "CPU核心数: $(nproc)"
-    echo -e "频率: $(grep "cpu MHz" /proc/cpuinfo | head -1 | cut -d: -f2 | xargs) MHz"
+    
+    # 尝试获取CPU型号，如果/proc/cpuinfo存在则解析，否则显示通用信息
+    if [ -f /proc/cpuinfo ]; then
+        local cpu_model=$(grep "model name" /proc/cpuinfo | head -1 | cut -d: -f2 | sed 's/^ *//')
+        echo -e "CPU型号: ${cpu_model}"
+    else
+        echo -e "CPU型号: N/A"
+    fi
+    
+    echo -e "CPU核心数: $(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo)"
+    
+    # 尝试获取频率
+    if [ -f /proc/cpuinfo ]; then
+        local cpu_freq=$(grep "cpu MHz" /proc/cpuinfo | head -1 | cut -d: -f2 | sed 's/^ *//')
+        echo -e "频率: ${cpu_freq} MHz"
+    else
+        echo -e "频率: N/A"
+    fi
 
+    # --- 内存信息 ---
     echo -e "\n${gl_lv}[ 内存信息 ]${gl_bai}"
-    echo -e "物理内存: $(free -m | awk '/Mem:/ {printf "%.2f GB", $2/1024}')"
-    echo -e "Swap总量: $(free -m | awk '/Swap:/ {printf "%.2f GB", $2/1024}')"
+    if [ -f /proc/meminfo ]; then
+        local total_mem=$(awk '/MemTotal/{printf "%.2f", $2/1024/1024}' /proc/meminfo)
+        local swap_mem=$(awk '/SwapTotal/{printf "%.2f", $2/1024/1024}' /proc/meminfo)
+        echo -e "物理内存: ${total_mem} GB"
+        echo -e "Swap总量: ${swap_mem} GB"
+    else
+        echo -e "内存信息: N/A"
+    fi
     
+    # --- 磁盘信息 ---
     echo -e "\n${gl_lv}[ 磁盘信息 ]${gl_bai}"
-    df -h | grep -v tmpfs | grep -v devtmpfs
+    if command -v df &>/dev/null; then
+        df -h | grep -v tmpfs | grep -v devtmpfs
+    else
+        echo "磁盘信息: N/A"
+    fi
     
+    # --- 网络信息 ---
     echo -e "\n${gl_lv}[ 网络信息 ]${gl_bai}"
-    echo -e "内网IP: $(ip -4 addr | grep inet | grep -v 'inet6' | grep -v '127.0.0.1' | awk '{print $2}' | head -1)"
+    local ip_addr="N/A"
+    # 尝试使用 ip 命令或 ifconfig，如果都不可用则显示 N/A
+    if command -v ip &>/dev/null; then
+        ip_addr=$(ip -4 addr | grep inet | grep -v '127.0.0.1' | awk '{print $2}' | head -1)
+    elif command -v ifconfig &>/dev/null; then
+        ip_addr=$(ifconfig | grep -E "inet (addr:)?([0-9]*\.){3}[0-9]*" | grep -v "127.0.0.1" | awk '{print $2}' | head -1)
+    fi
+    echo -e "内网IP: ${ip_addr}"
     
     echo -e "\n${gl_huang}========================================${gl_bai}"
 }
