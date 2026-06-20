@@ -70,7 +70,6 @@ server_reboot() {
 bbr_on() {
     local CONF="/etc/sysctl.d/99-yw-optimize.conf"
     if [ -f "$CONF" ]; then
-        # 确保只写入一次 BBR 配置
         if ! grep -q "tcp_congestion_control = bbr" "$CONF" 2>/dev/null; then
             sed -i '/net.ipv4.tcp_congestion_control/d' "$CONF"
             echo "net.ipv4.tcp_congestion_control = bbr" >> "$CONF"
@@ -87,6 +86,94 @@ break_end() {
         return 0
     fi
     return 1
+}
+
+# ============================================================================
+# Swap Management Module
+# ============================================================================
+
+change_swap_size() {
+    local swap_file="/swapfile"
+    local current_swap=$(free -m | awk '/Swap/{print $2}')
+    
+    clear
+    echo -e "${gl_huang}========================================${gl_bai}"
+    echo -e "${gl_huang}        Swap 虚拟内存管理               ${gl_bai}"
+    echo -e "${gl_huang}========================================${gl_bai}"
+    echo -e "当前 Swap 大小: ${gl_lv}${current_swap} MB${gl_bai}"
+    echo -e "磁盘剩余空间: $(df -m / | tail -1 | awk '{print $4}') MB"
+    echo ""
+    echo -e "请选择预设大小:"
+    echo -e "1. 创建/增加到 1 GB"
+    echo -e "2. 创建/增加到 2 GB"
+    echo -e "3. 创建/增加到 4 GB"
+    echo -e "4. 创建/增加到 6 GB"
+    echo -e "5. 自定义大小 (MB)"
+    echo -e "6. 移除当前 Swap (大小: ${current_swap} MB)"
+    echo -e "0. 返回主菜单"
+    echo -e "${gl_huang}========================================${gl_bai}"
+    
+    read -e -p "请输入选择: " swap_choice
+    
+    case "$swap_choice" in
+        1) swap_size=1024 ;;
+        2) swap_size=2048 ;;
+        3) swap_size=4096 ;;
+        4) swap_size=6144 ;;
+        5)
+            read -e -p "请输入自定义大小 (MB, 最小512): " swap_size
+            if [ -z "$swap_size" ] || [ "$swap_size" -lt 512 ]; then
+                echo -e "${gl_red}错误: 最小大小为512MB${gl_bai}"
+                read -rs -n 1 -p "按任意键返回..."
+                return 0
+            fi
+            ;;
+        6)
+            if [ "$current_swap" -gt 0 ]; then
+                swapoff "$swap_file" 2>/dev/null
+                rm -f "$swap_file"
+                echo -e "${gl_lv}Swap 已移除${gl_bai}"
+                # Remove from fstab
+        grep -v "/swapfile none swap sw 0 0" /etc/fstab > /tmp/fstab.tmp
+        mv /tmp/fstab.tmp /etc/fstab 2>/dev/null
+                ;;
+            else
+                echo -e "${gl_huang}当前没有 Swap 文件${gl_bai}"
+                ;;
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+
+    if [ -n "$swap_size" ]; then
+        # Check disk space
+        local needed_mb=$((swap_size + 100)) # Buffer for allocation
+        local available_mb=$(df -m / | tail -1 | awk '{print $4}')
+        
+        if [ "$available_mb" -lt "$needed_mb" ]; then
+            echo -e "${gl_red}磁盘空间不足，需要 ${needed_mb}MB${gl_bai}"
+            read -rs -n 1 -p "按任意键返回..."
+            return 0
+        fi
+
+        echo -e "${gl_lv}正在创建 Swap 文件 (${swap_size}MB)...${gl_bai}"
+        
+        # Create and activate Swap
+        dd if=/dev/zero of="${swap_file}" bs=1M count="${swap_size}" 2>/dev/null
+        chmod 600 "${swap_file}"
+        mkswap "${swap_file}" >/dev/null 2>&1
+        swapon "${swap_file}" >/dev/null 2>&1
+        
+        # Update fstab for persistence
+        if ! grep -q "/swapfile none" /etc/fstab 2>/dev/null; then
+            echo "/swapfile none swap sw 0 0" >> /etc/fstab
+        fi
+        
+        echo -e "${gl_lv}✅ Swap 创建成功！当前大小: ${swap_size} MB${gl_bai}"
+    fi
+    
+    read -rs -n 1 -p "按任意键返回..."
 }
 
 # ============================================================================
@@ -667,7 +754,7 @@ Kernel_optimize() {
       echo -e "--------------------"
       echo -e "1. 高性能优化模式：     最大化系统性能，激进的内存和网络参数。"
       echo -e "2. 均衡优化模式：       在性能与资源消耗之间取得平衡，适合日常使用。"
-      echo -e "3. 网站优化模式：       针对网站服务器优化，超高并发连接队列。"
+      echo - e "3. 网站优化模式：       针对网站服务器优化，超高并发连接队列。"
       echo -e "4. 直播优化模式：       针对直播推流优化，UDP 缓冲区加大，减少延迟。"
       echo -e "5. 游戏服优化模式：     针对游戏服务器优化，低延迟优先。"
       echo -e "6. BBRv3 内核安装      安装 XanMod BBRv3 内核 (仅Debian/Ubuntu)"
@@ -957,13 +1044,17 @@ show_sys_info() {
         echo -e "${gl_kjlan}=============="
         
         # --- 选项 ---
-        echo -e "${gl_huang}1. 释放内存缓存 (Drop Caches)"
+        echo -e "${gl_huang}1. 管理虚拟内存 (Swap)"
+        echo -e "2. 释放内存缓存 (Drop Caches)"
         echo -e "0. 返回主菜单"
         echo -e "${gl_huang}=============="
         read -e -p "请输入选择: " menu_choice
         
         case "$menu_choice" in
             1)
+                change_swap_size
+                ;;
+            2)
                 echo -e "${gl_huang}正在释放内存缓存..."
                 echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
                 echo -e "${gl_lv}内存缓存已释放！当前可用内存: ${mem_avail_mb}M${gl_bai}"
