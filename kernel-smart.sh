@@ -21,7 +21,6 @@
 # ============================================================================
 
 send_stats() {
-    # Placeholder for statistics logging
     :
     return 0
 }
@@ -29,13 +28,15 @@ send_stats() {
 check_swap() {
     local swap_total=$(free -m | awk '/Swap/{print $2}')
     if [ "$swap_total" -lt 512 ] && [ -f /swapfile ]; then
-        echo "Swap file detected, skipping creation."
+        echo -e "${gl_huang}Swap file detected, skipping creation.${gl_bai}"
+        return 0
     elif [ "$swap_total" -lt 512 ]; then
+        # Create Swap
         dd if=/dev/zero of=/swapfile bs=1M count=512 2>/dev/null
         chmod 600 /swapfile
-        mkswap /swapfile > /dev/null 2>&1
-        swapon /swapfile > /dev/null 2>&1
-        echo "Swap created and activated."
+        mkswap /swapfile >/dev/null 2>&1
+        swapon /swapfile >/dev/null 2>&1
+        echo -e "${gl_lv}Swap created and activated (512MB).${gl_bai}"
     fi
 }
 
@@ -69,13 +70,10 @@ server_reboot() {
 bbr_on() {
     local CONF="/etc/sysctl.d/99-yw-optimize.conf"
     if [ -f "$CONF" ]; then
-        sed -i '/net.core.default_qdisc/d' "$CONF"
-        sed -i '/net.ipv4.tcp_congestion_control/d' "$CONF"
-        if ! grep -q "tcp_congestion_control" "$CONF"; then
-            cat >> "$CONF" << EOF
-net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
-EOF
+        # 确保只写入一次 BBR 配置
+        if ! grep -q "tcp_congestion_control = bbr" "$CONF" 2>/dev/null; then
+            sed -i '/net.ipv4.tcp_congestion_control/d' "$CONF"
+            echo "net.ipv4.tcp_congestion_control = bbr" >> "$CONF"
         fi
         sysctl -p "$CONF" >/dev/null 2>&1
     fi
@@ -101,7 +99,7 @@ _kernel_optimize_core() {
     local CONF="/etc/sysctl.d/99-yw-optimize.conf"
     local MEM_MB=$(_get_mem_mb)
 
-    echo -e "${gl_lv}切换到${mode_name}...${gl_bai}"
+    echo -e "${gl_lv}正在应用${mode_name}参数..."
 
     local SWAPPINESS DIRTY_RATIO DIRTY_BG_RATIO OVERCOMMIT MIN_FREE_KB VFS_PRESSURE
     local RMEM_MAX WMEM_MAX TCP_RMEM TCP_WMEM
@@ -271,16 +269,17 @@ net.ipv4.udp_wmem_min = 16384
         fi
     fi
 
-    [ -f "$CONF" ] && cp "$CONF" "${CONF}.bak.$(date +%s)"
+    # --- 写入配置 ---
+    local backup_conf="${CONF}.bak.$(date +%s)"
+    [ -f "$CONF" ] && cp "$CONF" "$backup_conf"
 
-    echo -e "${gl_lv}写入优化配置...${gl_bai}"
-    
-    # --- 使用 flock 保证并发安全 ---
+    # Use flock to prevent concurrent writes
     local lock_file="/tmp/99-yw-optimize.lock"
     exec 200> "$lock_file"
     flock -x 200
     
-    cat > "$CONF" << SYSCTL
+    # Write Header
+    cat > "$CONF" << EOF
 # YW Linux 内核调优配置
 # 模式: $mode_name | 场景: $scene
 # 内存: ${MEM_MB_VAL}MB | 生成时间: $(date '+%Y-%m-%d %H:%M:%S')
@@ -368,29 +367,17 @@ echo "# conntrack 未启用"
 fi)
 $GAME_EXTRA
 $STREAM_EXTRA
-SYSCTL
+EOF
 
-    # 释放锁
+    # Release lock
     flock -u 200
     exec 200>&-
 
-    echo -e "${gl_lv}应用优化参数...${gl_bai}"
-    local applied=0 skipped=0
-    while IFS= read -r line; do
-        [[ "$line" =~ ^[[:space:]]*# ]] && continue
-        [[ -z "${line// /}" ]] && continue
-        if sysctl -w "$line" >/dev/null 2>&1; then
-            applied=$((applied + 1))
-        else
-            skipped=$((skipped + 1))
-        fi
-    done < "$CONF"
-    echo -e "${gl_lv}已应用 ${applied} 项参数${skipped:+，跳过 ${skipped} 项不支持的参数}${gl_bai}"
-
-    if [ -f /sys/kernel/mm/transparent_hugepage/enabled ]; then
-        echo "$THP" > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null
-    fi
-
+    echo -e "${gl_lv}正在加载配置..."
+    # Load config immediately
+    sysctl -p "$CONF" >/dev/null 2>&1
+    
+    # Apply Limits
     if ! grep -q "# YW-optimize" /etc/security/limits.conf 2>/dev/null; then
         cat >> /etc/security/limits.conf << 'LIMITS'
 
@@ -400,21 +387,26 @@ SYSCTL
 root soft nofile 1048576
 root hard nofile 1048576
 LIMITS
+        # Apply limits immediately to current session
+        ulimit -n 1048576 2>/dev/null
+    else
+        # If already present, just ensure current session has high limits
+        ulimit -n 1048576 2>/dev/null
     fi
 
-    if [ "$CC" = "bbr" ]; then
-        echo "tcp_bbr" > /etc/modules-load.d/bbr.conf 2>/dev/null
-        sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf 2>/dev/null
-    fi
+    # Apply Swap if needed
+    check_swap
 
-    # --- 性能验证反馈 ---
-    echo -e "${gl_lv}✅ 性能验证:${gl_bai}"
-    echo -e "   - 拥塞控制: \e[32m${CC}\e[0m"
-    echo -e "   - 队列算法: \e[32m${QDISC}\e[0m"
-    echo -e "   - 虚拟内存: \e[33m${SWAPPINESS}\e[0m"
+    # Apply BBR if needed
+    bbr_on
+
+    # Verification
+    echo -e "${gl_lv}✅ 验证结果:${gl_bai}"
+    echo -e "   - 拥塞控制: \e[32m$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)\e[0m"
+    echo -e "   - Swap偏好: \e[32m$(sysctl -n vm.swappiness 2>/dev/null)\e[0m"
+    echo -e "   - 文件描述符: \e[32m$(ulimit -n)\e[0m"
     
-    echo -e "${gl_lv}${mode_name} 优化完成！配置已持久化到 ${CONF}${gl_bai}"
-    echo -e "${gl_lv}内存: ${MEM_MB_VAL}MB | 拥塞算法: ${CC} | 队列: ${QDISC}${gl_bai}"
+    echo -e "${gl_lv}✅ ${mode_name} 优化完成！配置已持久化到 ${CONF}${gl_bai}"
 }
 
 # ============================================================================
@@ -455,7 +447,6 @@ bbrv3() {
         install wget gnupg ca-certificates
         mkdir -p /usr/share/keyrings /etc/apt/sources.list.d
         
-        # --- 增加重试机制 ---
         local retry_count=0
         local max_retries=3
         while [ $retry_count -lt $max_retries ]; do
