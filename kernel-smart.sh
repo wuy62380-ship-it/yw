@@ -10,7 +10,7 @@
 : "${gl_hui:=\033[90m}"
 : "${gl_red:=\033[31m}"
 : "${gl_hong:=\033[31m}"
-: "${gl_kjlan:=\033[32m}" # 确保颜色变量定义
+: "${gl_kjlan:=\033[32m}"
 
 # --- 全局变量 ---
 : "${gh_proxy:=https://}"
@@ -20,9 +20,7 @@
 # Helper Functions
 # ============================================================================
 
-# --- 关键修复：确保 send_stats 定义在最前面且不为空 ---
 send_stats() {
-    # 如果需要记录日志，可以在这里添加逻辑
     :
     return 0
 }
@@ -97,7 +95,6 @@ break_end() {
 # ============================================================================
 
 show_sys_info() {
-    # 发送统计信号
     send_stats "系统信息查询"
 
     local ip_address_func
@@ -142,7 +139,7 @@ show_sys_info() {
     # 2. 获取 CPU 型号
     cpu_info=$(lscpu 2>/dev/null | awk -F':' '/Model name:/ {print $2}' | sed 's/^[ \t]*//')
 
-    # 3. 获取 CPU 占用率 (需要短暂延迟)
+    # 3. 获取 CPU 占用率
     cpu_usage_percent=$(awk '{u=$2+$4; t=$2+$4+$5; if (NR==1){u1=u; t1=t;} else printf "%.0f\n", (($2+$4-u1) * 100 / (t-t1))}' \
         <(grep 'cpu ' /proc/stat) <(sleep 1; grep 'cpu ' /proc/stat))
 
@@ -247,8 +244,11 @@ show_sys_info() {
     echo -e "${gl_kjlan}-------------"
     echo -e "${gl_kjlan}运行时长:       ${gl_bai}${runtime}"
     
-    # 返回主菜单
-    break_end
+    # 等待用户按键
+    read -rs -n 1 -p "按任意键返回主菜单..."
+    clear
+    # 返回 0 表示成功，进入下一次循环
+    return 0
 }
 
 # ============================================================================
@@ -548,7 +548,7 @@ SYSCTL
 * soft nofile 1048576
 * hard nofile 1048576
 root soft nofile 1048576
-root hard nofile 10485576
+root hard nofile 1048576
 LIMITS
     fi
 
@@ -946,6 +946,7 @@ main_menu() {
         
         case "$choice" in
             1)
+                # 调用 show_sys_info，它内部会处理等待按键并 return 0
                 show_sys_info
                 ;;
             2)
