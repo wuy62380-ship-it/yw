@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# Linux 内核与网络调优模块 (Yield Optimization - Production Ready)
+# Linux 内核与网络调优模块 (YW)
 # ============================================================================
 
 # --- 颜色定义 ---
@@ -31,7 +31,6 @@ check_swap() {
         echo -e "${gl_huang}Swap file detected, skipping creation.${gl_bai}"
         return 0
     elif [ "$swap_total" -lt 512 ]; then
-        # Create Swap
         dd if=/dev/zero of=/swapfile bs=1M count=512 2>/dev/null
         chmod 600 /swapfile
         mkswap /swapfile >/dev/null 2>&1
@@ -133,22 +132,19 @@ change_swap_size() {
                 swapoff "$swap_file" 2>/dev/null
                 rm -f "$swap_file"
                 echo -e "${gl_lv}Swap 已移除${gl_bai}"
-                # Remove from fstab
-        grep -v "/swapfile none swap sw 0 0" /etc/fstab > /tmp/fstab.tmp
-        mv /tmp/fstab.tmp /etc/fstab 2>/dev/null
+                grep -v "/swapfile none" /etc/fstab > /tmp/fstab.tmp
+                mv /tmp/fstab.tmp /etc/fstab 2>/dev/null
                 ;;
             else
                 echo -e "${gl_huang}当前没有 Swap 文件${gl_bai}"
                 ;;
             ;;
         *)
-            return 0
             ;;
     esac
 
     if [ -n "$swap_size" ]; then
-        # Check disk space
-        local needed_mb=$((swap_size + 100)) # Buffer for allocation
+        local needed_mb=$((swap_size + 100))
         local available_mb=$(df -m / | tail -1 | awk '{print $4}')
         
         if [ "$available_mb" -lt "$needed_mb" ]; then
@@ -158,14 +154,11 @@ change_swap_size() {
         fi
 
         echo -e "${gl_lv}正在创建 Swap 文件 (${swap_size}MB)...${gl_bai}"
-        
-        # Create and activate Swap
         dd if=/dev/zero of="${swap_file}" bs=1M count="${swap_size}" 2>/dev/null
         chmod 600 "${swap_file}"
         mkswap "${swap_file}" >/dev/null 2>&1
         swapon "${swap_file}" >/dev/null 2>&1
         
-        # Update fstab for persistence
         if ! grep -q "/swapfile none" /etc/fstab 2>/dev/null; then
             echo "/swapfile none swap sw 0 0" >> /etc/fstab
         fi
@@ -360,12 +353,10 @@ net.ipv4.udp_wmem_min = 16384
     local backup_conf="${CONF}.bak.$(date +%s)"
     [ -f "$CONF" ] && cp "$CONF" "$backup_conf"
 
-    # Use flock to prevent concurrent writes
     local lock_file="/tmp/99-yw-optimize.lock"
     exec 200> "$lock_file"
     flock -x 200
     
-    # Write Header
     cat > "$CONF" << EOF
 # YW Linux 内核调优配置
 # 模式: $mode_name | 场景: $scene
@@ -424,7 +415,7 @@ vm.vfs_cache_pressure = $VFS_PRESSURE
 
 # ── CPU/内核调度 ──
 kernel.sched_autogroup_enabled = $SCHED_AUTOGROUP
-\$([ -f /proc/sys/kernel/numa_balancing ] && echo "kernel.numa_balancing = $NUMA" || echo "# numa_balancing 不支持")
+$( [ -f /proc/sys/kernel/numa_balancing ] && echo "kernel.numa_balancing = $NUMA" || echo "# numa_balancing 不支持" )
 
 # ── 安全防护 ──
 net.ipv4.conf.all.rp_filter = 1
@@ -443,28 +434,25 @@ fs.file-max = 1048576
 fs.nr_open = 1048576
 
 # ── 连接跟踪 ──
-\$(if [ -f /proc/sys/net/netfilter/nf_conntrack_max ]; then
-echo "net.netfilter.nf_conntrack_max = \$((SOMAXCONN * 32))"
+$( if [ -f /proc/sys/net/netfilter/nf_conntrack_max ]; then
+echo "net.netfilter.nf_conntrack_max = $((SOMAXCONN * 32))"
 echo "net.netfilter.nf_conntrack_tcp_timeout_established = 7200"
 echo "net.netfilter.nf_conntrack_tcp_timeout_time_wait = 30"
 echo "net.netfilter.nf_conntrack_tcp_timeout_close_wait = 15"
 echo "net.netfilter.nf_conntrack_tcp_timeout_fin_wait = 15"
 else
 echo "# conntrack 未启用"
-fi)
+fi )
 $GAME_EXTRA
 $STREAM_EXTRA
 EOF
 
-    # Release lock
     flock -u 200
     exec 200>&-
 
     echo -e "${gl_lv}正在加载配置..."
-    # Load config immediately
     sysctl -p "$CONF" >/dev/null 2>&1
     
-    # Apply Limits
     if ! grep -q "# YW-optimize" /etc/security/limits.conf 2>/dev/null; then
         cat >> /etc/security/limits.conf << 'LIMITS'
 
@@ -474,20 +462,14 @@ EOF
 root soft nofile 1048576
 root hard nofile 1048576
 LIMITS
-        # Apply limits immediately to current session
         ulimit -n 1048576 2>/dev/null
     else
-        # If already present, just ensure current session has high limits
         ulimit -n 1048576 2>/dev/null
     fi
 
-    # Apply Swap if needed
     check_swap
-
-    # Apply BBR if needed
     bbr_on
 
-    # Verification
     echo -e "${gl_lv}✅ 验证结果:${gl_bai}"
     echo -e "   - 拥塞控制: \e[32m$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)\e[0m"
     echo -e "   - Swap偏好: \e[32m$(sysctl -n vm.swappiness 2>/dev/null)\e[0m"
@@ -754,7 +736,7 @@ Kernel_optimize() {
       echo -e "--------------------"
       echo -e "1. 高性能优化模式：     最大化系统性能，激进的内存和网络参数。"
       echo -e "2. 均衡优化模式：       在性能与资源消耗之间取得平衡，适合日常使用。"
-      echo - e "3. 网站优化模式：       针对网站服务器优化，超高并发连接队列。"
+      echo -e "3. 网站优化模式：       针对网站服务器优化，超高并发连接队列。"
       echo -e "4. 直播优化模式：       针对直播推流优化，UDP 缓冲区加大，减少延迟。"
       echo -e "5. 游戏服优化模式：     针对游戏服务器优化，低延迟优先。"
       echo -e "6. BBRv3 内核安装      安装 XanMod BBRv3 内核 (仅Debian/Ubuntu)"
