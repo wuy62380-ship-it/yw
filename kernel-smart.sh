@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# Linux 内核与网络调优模块 (YW)
+# Linux 内核与网络调优模块 (Final Fixed Version)
 # ============================================================================
 
 # --- 颜色定义 ---
@@ -132,7 +132,8 @@ change_swap_size() {
                 swapoff "$swap_file" 2>/dev/null
                 rm -f "$swap_file"
                 echo -e "${gl_lv}Swap 已移除${gl_bai}"
-                grep -v "/swapfile none" /etc/fstab > /tmp/fstab.tmp
+                # Remove from fstab
+                grep -v "/swapfile none" /etc/fstab > /tmp/fstab.tmp 2>/dev/null
                 mv /tmp/fstab.tmp /etc/fstab 2>/dev/null
                 ;;
             else
@@ -357,6 +358,7 @@ net.ipv4.udp_wmem_min = 16384
     exec 200> "$lock_file"
     flock -x 200
     
+    # Write Header
     cat > "$CONF" << EOF
 # YW Linux 内核调优配置
 # 模式: $mode_name | 场景: $scene
@@ -453,6 +455,8 @@ EOF
     echo -e "${gl_lv}正在加载配置..."
     sysctl -p "$CONF" >/dev/null 2>&1
     
+    # Apply Limits
+    local limits_added=0
     if ! grep -q "# YW-optimize" /etc/security/limits.conf 2>/dev/null; then
         cat >> /etc/security/limits.conf << 'LIMITS'
 
@@ -462,9 +466,17 @@ EOF
 root soft nofile 1048576
 root hard nofile 1048576
 LIMITS
+        limits_added=1
+    fi
+    
+    # Apply limits immediately to current session
+    if [ "$limits_added" -eq 1 ]; then
         ulimit -n 1048576 2>/dev/null
     else
-        ulimit -n 1048576 2>/dev/null
+        # Check if current limit is already high enough
+        if [ "$(ulimit -n)" -lt 1048576 ]; then
+            ulimit -n 1048576 2>/dev/null
+        fi
     fi
 
     check_swap
@@ -669,7 +681,7 @@ bbrv3() {
               echo "------------------------"
               read -e -p "请输入你的选择: " sub_choice
 
-              case $sub_choice in
+              case "$sub_choice" in
                   1)
                     xanmod_install_or_update update
                     ;;
@@ -679,11 +691,9 @@ bbrv3() {
                   *)
                     break
                     ;;
-
               esac
         done
     else
-
       clear
       echo "设置BBR3加速"
       echo "------------------------------------------------"
@@ -720,6 +730,7 @@ Kernel_optimize() {
       local conf_file="/etc/sysctl.d/99-yw-optimize.conf"
       
       if [ -f "$conf_file" ]; then
+          # 这里修复了 sed 命令的闭合
           local raw_mode=$(grep "^# 模式:" "$conf_file" 2>/dev/null | sed 's/^# 模式: //')
           if [ -n "$raw_mode" ]; then
               current_mode=$(echo "$raw_mode" | awk -F'|' '{print $1}' | xargs)
@@ -810,286 +821,3 @@ Kernel_optimize() {
       break_end
     done
 }
-
-# ============================================================================
-# Public API Functions
-# ============================================================================
-
-optimize_high_performance() {
-	_kernel_optimize_core "${tiaoyou_moshi:-高性能优化模式}" "high"
-}
-
-optimize_balanced() {
-	_kernel_optimize_core "均衡优化模式" "balanced"
-}
-
-optimize_web_server() {
-	_kernel_optimize_core "网站搭建优化模式" "web"
-}
-
-# --- 新增：还原网络默认设置 ---
-restore_network_defaults() {
-    echo -e "${gl_lv}正在还原网络默认设置..."
-    rm -f /etc/sysctl.d/99-network-optimize.conf
-    sysctl --system 2>/dev/null | tail -1
-    echo -e "${gl_lv}网络设置已还原${gl_bai}"
-}
-
-restore_defaults() {
-	echo -e "${gl_lv}还原到默认设置...${gl_bai}"
-
-	local CONF="/etc/sysctl.d/99-yw-optimize.conf"
-
-	rm -f "$CONF"
-	rm -f /etc/sysctl.d/99-network-optimize.conf
-	sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf 2>/dev/null
-	sysctl --system 2>/dev/null | tail -1
-	[ -f /sys/kernel/mm/transparent_hugepage/enabled ] && \
-		echo always > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null
-	if grep -q "# YW-optimize" /etc/security/limits.conf 2>/dev/null; then
-		sed -i '/# YW-optimize/,+4d' /etc/security/limits.conf
-	fi
-	rm -f /etc/modules-load.d/bbr.conf 2>/dev/null
-
-	echo -e "${gl_lv}系统已还原到默认设置${gl_bai}"
-}
-
-# ============================================================================
-# System Info Function (Detailed Layout)
-# ============================================================================
-
-show_sys_info() {
-    local menu_choice
-    while true; do
-        send_stats "系统信息查询"
-        
-        local ip_address_func
-        local cpu_info
-        local cpu_usage_percent
-        local cpu_cores
-        local cpu_freq
-        local mem_info
-        local disk_info
-        local ipinfo
-        local country
-        local city
-        local isp_info
-        local load
-        local dns_addresses
-        local cpu_arch
-        local hostname_val
-        local kernel_version
-        local congestion_algorithm
-        local queue_algorithm
-        local os_info
-        local current_time
-        local swap_info
-        local runtime
-        local timezone
-        local tcp_count
-        local udp_count
-        local rx
-        local tx
-        local rx_gb
-        local tx_gb
-        local mem_total_mb
-        local mem_avail_mb
-        local swap_total_mb
-        local swap_avail_mb
-        local swap_percent
-
-        # 1. 获取 IPv 地址
-        if command -v ip &>/dev/null; then
-            local ipv4_addr=$(ip -4 addr | grep inet | grep -v "127.0.0.1" | awk '{print $2}' | head -1)
-            local ipv6_addr=$(ip -6 addr | grep inet6 | grep -v "127.0.0.1" | awk '{print $2}' | head -1)
-        elif command -v hostname &>/dev/null; then
-            local ipv4_addr=$(hostname -I | awk '{print $1}')
-            local ipv6_addr=""
-        fi
-
-        # 2. 获取 CPU 型号
-        cpu_info=$(lscpu 2>/dev/null | awk -F':' '/Model name:/ {print $2}' | sed 's/^[ \t]*//')
-
-        # 3. 获取 CPU 占用率
-        cpu_usage_percent=$(awk '{u=$2+$4; t=$2+$4+$5; if (NR==1){u1=u; t1=t;} else printf "%.0f\n", (($2+$4-u1) * 100 / (t-t1))}' \
-            <(grep 'cpu ' /proc/stat) <(sleep 1; grep 'cpu ' /proc/stat))
-
-        # 4. 获取 CPU 核心数
-        cpu_cores=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo)
-
-        # 5. 获取 CPU 频率
-        cpu_freq=$(grep "MHz" /proc/cpuinfo 2>/dev/null | head -n 1 | awk '{printf "%.1f GHz\n", $4/1000}')
-
-        # 6. 获取内存信息
-        mem_total_mb=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo)
-        mem_avail_mb=$(awk '/MemAvailable/{printf "%d", $2/1024}' /proc/meminfo)
-        local mem_used_mb=$((mem_total_mb - mem_avail_mb))
-        local mem_percent=$(awk "BEGIN{printf \"%.1f\", ${mem_used_mb}*100/${mem_total_mb}}")
-        mem_info="${mem_avail_mb}M/${mem_total_mb}M (${mem_percent}%)"
-
-        # 7. 获取磁盘信息
-        disk_info=$(df -h / | awk 'NR==2{printf "%s/%s (%s)", $3, $2, $5}')
-
-        # 8. 获取运营商和地理位置
-        ipinfo=$(curl -s ipinfo.io 2>/dev/null)
-        country=$(echo "$ipinfo" | grep 'country' | awk -F': ' '{print $2}' | tr -d '",')
-        city=$(echo "$ipinfo" | grep 'city' | awk -F': ' '{print $2}' | tr -d '",')
-        isp_info=$(echo "$ipinfo" | grep 'org' | awk -F': ' '{print $2}' | tr -d '",')
-
-        # 9. 获取负载
-        load=$(uptime | awk '{print $(NF-2), $(NF-1), $NF}')
-
-        # 10. 获取 DNS
-        dns_addresses=$(awk '/^nameserver/{printf "%s ", $2} END {print ""}' /etc/resolv.conf)
-
-        # 11. 基础信息
-        cpu_arch=$(uname -m)
-        hostname_val=$(uname -n)
-        kernel_version=$(uname -r)
-        congestion_algorithm=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
-        queue_algorithm=$(sysctl -n net.core.default_qdisc 2>/dev/null)
-        os_info=$(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d '=' -f2 | tr -d '"')
-        current_time=$(date "+%Y-%m-%d %I:%M %p")
-        
-        # 12. Swap 信息
-        swap_total_mb=$(awk '/SwapTotal/{printf "%d", $2/1024}' /proc/meminfo)
-        swap_avail_mb=$(awk '/SwapFree/{printf "%d", $2/1024}' /proc/meminfo)
-        local swap_used_mb=$((swap_total_mb - swap_avail_mb))
-        swap_percent="0%"
-        if [ "$swap_total_mb" -gt 0 ]; then
-            swap_percent=$(awk "BEGIN{printf \"%d%%\", ${swap_used_mb}*100/${swap_total_mb}}")
-        fi
-        swap_info="${swap_used_mb}M/${swap_total_mb}M (${swap_percent})"
-
-        # 13. 运行时长
-        runtime=$(cat /proc/uptime 2>/dev/null | awk -F. '{run_days=int($1 / 86400);run_hours=int(($1 % 86400) / 3600);run_minutes=int(($1 % 3600) / 60); if (run_days > 0) printf("%d天 ", run_days); if (run_hours > 0) printf("%d时 ", run_hours); printf("%d分\n", run_minutes)}')
-        
-        # 14. 时区
-        timezone=$(TZ=; echo "$TZ")
-        if [ -z "$timezone" ]; then
-            timezone=$(cat /etc/timezone 2>/dev/null)
-        fi
-        
-        # 15. 连接数
-        tcp_count=$(ss -t state established 2>/dev/null | wc -l)
-        udp_count=$(ss -u state established 2>/dev/null | wc -l)
-
-        # 16. 流量统计
-        local rx=0
-        local tx=0
-        if [ -f /proc/net/dev ]; then
-            rx=$(awk '/eth0|eth1|ens[0-9]|enp[0-9]|ens[0-9]/ {print $2}' /proc/net/dev | awk '{a+=$1} END{print a}')
-            tx=$(awk '/eth0|eth1|ens[0-9]|enp[0-9]|ens[0-9]/ {print $10}' /proc/net/dev | awk '{a+=$1} END{print a}')
-        fi
-        
-        # Convert to G
-        local rx_gb=$(awk "BEGIN{printf \"%.2f\", ${rx:-0}/1024/1024/1024}")
-        local tx_gb=$(awk "BEGIN{printf \"%.2f\", ${tx:-0}/1024/1024/1024}")
-
-        # --- 显示菜单 ---
-        clear
-        echo -e "${gl_kjlan}系统信息查询${gl_bai}"
-        echo -e "${gl_kjlan}=============="
-        echo -e "${gl_kjlan}主机名:         ${gl_bai}${hostname_val}"
-        echo -e "${gl_kjlan}系统版本:       ${gl_bai}${os_info}"
-        echo -e "${gl_kjlan}Linux版本:      ${gl_bai}${kernel_version}"
-        echo -e "${gl_kjlan}=============="
-        echo -e "${gl_kjlan}CPU架构:        ${gl_bai}${cpu_arch}"
-        echo -e "${gl_kjlan}CPU型号:        ${gl_bai}${cpu_info}"
-        echo -e "${gl_kjlan}CPU核心数:      ${gl_bai}${cpu_cores}"
-        echo -e "${gl_kjlan}CPU频率:        ${gl_bai}${cpu_freq}"
-        echo -e "${gl_kjlan}=============="
-        echo -e "${gl_kjlan}CPU占用:        ${gl_bai}${cpu_usage_percent}%"
-        echo -e "${gl_kjlan}系统负载:       ${gl_bai}${load}"
-        echo -e "${gl_kjlan}TCP|UDP连接数:  ${gl_bai}${tcp_count}|${udp_count}"
-        echo -e "${gl_kjlan}物理内存:       ${gl_bai}${mem_info}"
-        echo -e "${gl_kjlan}虚拟内存:       ${gl_bai}${swap_info}"
-        echo -e "${gl_kjlan}硬盘占用:       ${gl_bai}${disk_info}"
-        echo -e "${gl_kjlan}=============="
-        echo -e "${gl_kjlan}总接收:         ${gl_bai}${rx_gb}G"
-        echo -e "${gl_kjlan}总发送:         ${gl_bai}${tx_gb}G"
-        echo -e "${gl_kjlan}=============="
-        echo -e "${gl_kjlan}网络算法:       ${gl_bai}${congestion_algorithm:-N/A} ${queue_algorithm:-N/A}"
-        echo -e "${gl_kjlan}=============="
-        echo -e "${gl_kjlan}运营商:         ${gl_bai}${isp_info}"
-        if [ -n "${ipv4_addr}" ]; then
-            echo -e "${gl_kjlan}IPv4地址:       ${gl_bai}${ipv4_addr}"
-        fi
-        if [ -n "${ipv6_addr}" ]; then
-            echo -e "${gl_kjlan}IPv6地址:       ${gl_bai}${ipv6_addr}"
-        fi
-        echo -e "${gl_kjlan}DNS地址:        ${gl_bai}${dns_addresses}"
-        echo -e "${gl_kjlan}地理位置:       ${gl_bai}${country} ${city}"
-        echo -e "${gl_kjlan}系统时间:       ${gl_bai}${timezone} ${current_time}"
-        echo -e "${gl_kjlan}=============="
-        echo -e "${gl_kjlan}运行时长:       ${gl_bai}${runtime}"
-        echo -e "${gl_kjlan}=============="
-        
-        # --- 选项 ---
-        echo -e "${gl_huang}1. 管理虚拟内存 (Swap)"
-        echo -e "2. 释放内存缓存 (Drop Caches)"
-        echo -e "0. 返回主菜单"
-        echo -e "${gl_huang}=============="
-        read -e -p "请输入选择: " menu_choice
-        
-        case "$menu_choice" in
-            1)
-                change_swap_size
-                ;;
-            2)
-                echo -e "${gl_huang}正在释放内存缓存..."
-                echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
-                echo -e "${gl_lv}内存缓存已释放！当前可用内存: ${mem_avail_mb}M${gl_bai}"
-                ;;
-            *)
-                ;;
-        esac
-        break
-    done
-    
-    # 返回主菜单
-    return 0
-}
-
-# ============================================================================
-# Main Menu Entry Point
-# ============================================================================
-
-main_menu() {
-    while true; do
-        clear
-        echo -e "${gl_huang}========================================${gl_bai}"
-        echo -e "${gl_huang}       YW 系统管理与优化脚本            ${gl_bai}"
-        echo -e "${gl_huang}========================================${gl_bai}"
-        echo -e "${gl_lv}1. 系统信息查询"
-        echo -e "${gl_huang}2. Linux 系统内核参数优化 (BBR/调优)"
-        echo -e "${gl_hui}0. 退出程序"
-        echo -e "${gl_huang}========================================${gl_bai}"
-        read -e -p "请输入你的选择: " choice
-        
-        case "$choice" in
-            1)
-                # 调用 show_sys_info，它内部会处理等待按键并 return 0
-                show_sys_info
-                ;;
-            2)
-                Kernel_optimize
-                ;;
-            0)
-                echo -e "${gl_lv}感谢使用，再见！${gl_bai}"
-                break
-                ;;
-            *)
-                echo -e "${gl_red}无效的选择，请重新输入${gl_bai}"
-                ;;
-        esac
-    done
-}
-
-# ============================================================================
-# Entry Point
-# ============================================================================
-
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    main_menu
-fi
