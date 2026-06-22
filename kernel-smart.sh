@@ -73,7 +73,6 @@ install() {
 
 server_reboot() {
     echo -e "${gl_lv}建议立即重启服务器以加载新内核...${gl_bai}"
-    # 【修复】修复了原版 read -p 里面多了个冒号引号的语法笔误
     read -e -p "是否现在重启？: " reboot_choice
     if [[ "$reboot_choice" =~ ^[Yy]$ ]]; then reboot; fi
 }
@@ -140,7 +139,6 @@ change_swap_size() {
             if [ "$current_swap" -gt 0 ]; then
                 swapoff "$swap_file" 2>/dev/null
                 rm -f "$swap_file"
-                # 【安全修复】使用 sed -i 原地修改，绝对禁止 mv 覆盖 /etc/fstab 导致系统无法启动
                 sed -i '/swapfile.*swap/d' /etc/fstab
                 echo -e "${gl_lv}Swap 已移除${gl_bai}"
             else
@@ -164,7 +162,7 @@ change_swap_size() {
         fi
 
         echo -e "${gl_lv}正在创建 Swap 文件 (${swap_size}MB)...${gl_bai}"
-        swapoff "$swap_file" 2>/dev/null # 防止增加大小时冲突
+        swapoff "$swap_file" 2>/dev/null
         dd if=/dev/zero of="${swap_file}" bs=1M count="${swap_size}" 2>/dev/null
         chmod 600 "${swap_file}"
         mkswap "${swap_file}" >/dev/null 2>&1
@@ -197,7 +195,6 @@ _kernel_optimize_core() {
     local KEEPALIVE_TIME KEEPALIVE_INTVL KEEPALIVE_PROBES
     local CC="bbr" QDISC="fq" UDP_RMEM_MIN=16384
 
-    # 【网络专家修复】提取共有变量，防止 web/balanced 模式下写入空值导致 sysctl 报错
     local TCP_NOTSENT_LOWAT=16384
     local TCP_FASTOPEN=3
     local TCP_TW_REUSE=1
@@ -205,7 +202,6 @@ _kernel_optimize_core() {
     local GAME_EXTRA=""
     local STREAM_EXTRA=""
     
-    # 【网络专家新增】防抖动与防慢启动关键参数
     local TCP_SLOW_START_AFTER_IDLE=0
     local TCP_ECN=0 
 
@@ -224,7 +220,6 @@ _kernel_optimize_core() {
             TCP_RMEM="4096 87380 67108864"; TCP_WMEM="4096 65536 67108864"
             SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"
             SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=15
-            # 【优化】Web(HTTP/2)不需要长 Keepalive 浪费 FD，120秒是最佳实践
             KEEPALIVE_TIME=120; KEEPALIVE_INTVL=15; KEEPALIVE_PROBES=3 
             ;;
         stream)
@@ -234,7 +229,6 @@ _kernel_optimize_core() {
             SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"
             SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=10
             KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5
-            # 【优化】UDP缓冲给128KB是甜点位，避免无脑256KB导致小机器OOM
             UDP_RMEM_MIN=131072
             STREAM_EXTRA="
 net.ipv4.udp_rmem_min = 131072
@@ -243,7 +237,6 @@ net.ipv4.udp_wmem_min = 131072"
         game)
             SWAPPINESS=10; DIRTY_RATIO=10; DIRTY_BG_RATIO=5; OVERCOMMIT=1; VFS_PRESSURE=50
             MIN_FREE_KB=131072
-            # 【核心优化】游戏包极小，大Buffer会引发Bufferbloat导致延迟飙升，降至16MB
             RMEM_MAX=16777216; WMEM_MAX=16777216 
             TCP_RMEM="4096 32768 16777216"; TCP_WMEM="4096 32768 16777216"
             SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"
@@ -261,7 +254,7 @@ net.ipv4.udp_wmem_min = 131072"
             SOMAXCONN=4096; BACKLOG=5000; SYN_BACKLOG=4096; PORT_RANGE="32768 60999"
             SCHED_AUTOGROUP=1; THP="always"; NUMA=1; FIN_TIMEOUT=30
             KEEPALIVE_TIME=600; KEEPALIVE_INTVL=60; KEEPALIVE_PROBES=5
-            TCP_SLOW_START_AFTER_IDLE=1 # 均衡模式关闭极端防慢启动
+            TCP_SLOW_START_AFTER_IDLE=1 
             ;;
         *)
             echo -e "${gl_red}错误: 未知场景 ${scene}${gl_bai}"; return 1 ;;
@@ -293,7 +286,6 @@ net.ipv4.udp_wmem_min = 131072"
         if sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q bbr; then CC="bbr"; QDISC="fq"; fi
     fi
 
-    # 【逻辑修复】防止极小内存 VPS 算出 0 0 0 导致内核拒绝连接
     local TCP_MEM_MIN=$((MEM_MB_VAL * 256))
     local TCP_MEM_DEF=$((MEM_MB_VAL * 512))
     local TCP_MEM_MAX=$((MEM_MB_VAL * 1024))
@@ -301,7 +293,6 @@ net.ipv4.udp_wmem_min = 131072"
     [ "$TCP_MEM_DEF" -lt 16384 ] && TCP_MEM_DEF=16384
     [ "$TCP_MEM_MAX" -lt 32768 ] && TCP_MEM_MAX=32768
 
-    # 【网络优化】动态计算连接池大小
     local TW_BUCKETS=$((SOMAXCONN * 4))
     local MAX_ORPHANS=$((SOMAXCONN * 2))
     [ "$TW_BUCKETS" -gt 262144 ] && TW_BUCKETS=262144
@@ -444,7 +435,6 @@ EOF
 # BBRv3 (XanMod) Management
 # ============================================================================
 
-# 【代码重构】将嵌套函数全部提取到顶层，避免性能损耗和代码混乱
 xanmod_add_repo() {
     local keyring="/usr/share/keyrings/xanmod-archive-keyring.gpg"
     local list_file="/etc/apt/sources.list.d/xanmod-release.list"
@@ -606,107 +596,6 @@ bbrv3() {
 }
 
 # ============================================================================
-# Interactive Menu (General)
-# ============================================================================
-
-Kernel_optimize() {
-    root_use
-    while true; do
-      clear
-      send_stats "Linux内核调优管理"
-      
-      local current_mode="未优化"
-      local conf_file="/etc/sysctl.d/99-yw-optimize.conf"
-      if [ -f "$conf_file" ]; then
-          local raw_mode=$(grep "^# 模式:" "$conf_file" 2>/dev/null | sed 's/^# 模式: //')
-          [ -n "$raw_mode" ] && current_mode=$(echo "$raw_mode" | awk -F'|' '{print $1}' | xargs) || current_mode="系统优化已启用"
-      fi
-
-      echo -e "${gl_lv}Linux系统内核参数优化${gl_bai}"
-      echo "------------------------------------------------"
-      echo -e "当前模式: ${gl_huang}${current_mode}${gl_bai}"
-      echo -e "提供多种系统参数调优模式，用户可以根据自身使用场景进行选择切换。"
-      echo -e "${gl_huang}提示: ${gl_bai}生产环境请谨慎使用！"
-      echo -e "--------------------"
-      echo -e "1. 高性能优化模式：     最大化系统性能，激进的内存和网络参数。"
-      echo -e "2. 均衡优化模式：       在性能与资源消耗之间取得平衡，适合日常使用。"
-      echo -e "3. 网站优化模式：       针对网站服务器优化，超高并发连接队列。"
-      echo -e "4. 直播优化模式：       针对直播推流优化，UDP 缓冲区加大，减少延迟。"
-      echo -e "5. 游戏服优化模式：     针对游戏服务器优化，低延迟优先。"
-      echo -e "6. BBRv3 内核安装      安装 XanMod BBRv3 内核 (仅Debian/Ubuntu)"
-      echo -e "7. 还原默认设置：       将系统设置还原为默认配置。"
-      echo -e "8. 自动调优：           根据测试数据自动调优内核参数。${gl_huang}★${gl_bai}"
-      echo -e "9. 释放内存缓存：       强制清理系统 Cache (谨慎使用)"
-      echo "--------------------"
-      echo "0. 返回主菜单"
-      echo "--------------------"
-      read -e -p "请输入你的选择: " sub_choice
-      
-      case $sub_choice in
-          1)
-              cd ~; clear
-              # 【逻辑修复】去掉 local，使子函数能正确继承变量
-              tiaoyou_moshi="高性能优化模式"
-              optimize_high_performance
-              send_stats "高性能模式优化"
-              ;;
-          2)
-              cd ~; clear
-              tiaoyou_moshi="均衡优化模式"
-              optimize_balanced
-              send_stats "均衡模式优化"
-              ;;
-          3)
-              cd ~; clear
-              tiaoyou_moshi="网站优化模式"
-              optimize_web_server
-              send_stats "网站优化模式"
-              ;;
-          4)
-              cd ~; clear
-              tiaoyou_moshi="直播优化模式"
-              _kernel_optimize_core "直播优化模式" "stream"
-              send_stats "直播推流优化"
-              ;;
-          5)
-              cd ~; clear
-              tiaoyou_moshi="游戏服优化模式"
-              _kernel_optimize_core "游戏服优化模式" "game"
-              send_stats "游戏服优化"
-              ;;
-          6) cd ~; clear; bbrv3 ;;
-          7)
-              cd ~; clear
-              restore_defaults
-              curl -sS ${gh_proxy}raw.githubusercontent.com/YW/sh/refs/heads/main/network-optimize.sh -o /tmp/network-optimize.sh && source /tmp/network-optimize.sh && restore_network_defaults
-              send_stats "还原默认设置"
-              ;;
-          8)
-              # 【UX优化】执行远程脚本前增加安全阻断提示
-              echo -e "${gl_huang}即将拉取并执行远程网络优化脚本..."
-              read -e -p "按回车键继续，或按 Ctrl+C 取消: "
-              curl -sS ${gh_proxy}raw.githubusercontent.com/YW/sh/refs/heads/main/network-optimize.sh | bash
-              send_stats "内核自动调优"
-              ;;
-          9)
-              # 【UX优化】增加二次确认，防止生产环境误操作导致 IO 抖动
-              echo -e "${gl_red}警告：强制释放内存缓存可能导致短暂 IO 抖动，生产环境请谨慎！${gl_bai}"
-              read -e -p "确定要执行 echo 3 > /proc/sys/vm/drop_caches 吗？: " drop_choice
-              if [[ "$drop_choice" =~ ^[Yy]$ ]]; then
-                  sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
-                  echo -e "${gl_lv}✅ 内存缓存已释放${gl_bai}"
-              else
-                  echo "已取消"
-              fi
-              read -rs -n 1 -p "按任意键继续..."
-              ;;
-          0|"") break ;;
-          *) echo -e "${gl_red}无效的选择${gl_bai}" ; read -rs -n 1 -p "按任意键继续..." ;;
-      esac
-    done
-}
-
-# ============================================================================
 # Public API Functions
 # ============================================================================
 
@@ -735,6 +624,58 @@ restore_defaults() {
 }
 
 # ============================================================================
+# Network Status Verify Function (New)
+# ============================================================================
+
+verify_network_status() {
+    clear
+    echo -e "${gl_huang}========================================${gl_bai}"
+    echo -e "${gl_huang}       内核与网络调优状态验证             ${gl_bai}"
+    echo -e "${gl_huang}========================================${gl_bai}"
+
+    echo -e "\n${gl_lv}[1] 核心拥塞控制 (BBR/Cubic)${gl_bai}"
+    echo "当前算法: $(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
+    echo "队列调度: $(sysctl -n net.core.default_qdisc 2>/dev/null)"
+
+    echo -e "\n${gl_lv}[2] 专家级防抖动与低延迟特化${gl_bai}"
+    local ecn_val=$(sysctl -n net.ipv4.tcp_ecn 2>/dev/null)
+    local slow_val=$(sysctl -n net.ipv4.tcp_slow_start_after_idle 2>/dev/null)
+    echo "ECN (显式拥塞通知): ${ecn_val} $( [ "$ecn_val" -eq 0 ] && echo -e "${gl_lv}[已关闭防抖动]${gl_bai}" || echo -e "${gl_red}[警告:可能引发延迟]${gl_bai}" )"
+    echo "慢启动重启: ${slow_val} $( [ "$slow_val" -eq 0 ] && echo -e "${gl_lv}[已关闭防卡顿]${gl_bai}" || echo "[均衡模式默认开启]" )"
+
+    echo -e "\n${gl_lv}[3] TCP 缓冲区 (根据模式不同数值不同)${gl_bai}"
+    local rmem_max=$(sysctl -n net.core.rmem_max 2>/dev/null)
+    local wmem_max=$(sysctl -n net.core.wmem_max 2>/dev/null)
+    echo "最大接收缓冲: ${rmem_max}"
+    echo "最大发送缓冲: ${wmem_max}"
+    if [ "$rmem_max" -eq 16777216 ]; then
+        echo -e ">>> 识别结果: ${gl_huang}游戏服模式 (16MB 防止 Bufferbloat)${gl_bai}"
+    elif [ "$rmem_max" -ge 67108864 ]; then
+        echo -e ">>> 识别结果: ${gl_huang}高性能/网站/直播模式 (64MB 极限吞吐)${gl_bai}"
+    elif [ "$rmem_max" -eq 4194304 ]; then
+        echo -e ">>> 识别结果: ${gl_huang}低内存自适应模式 (4MB)${gl_bai}"
+    else
+        echo -e ">>> 识别结果: 均衡模式或未优化"
+    fi
+
+    echo -e "\n${gl_lv}[4] 并发连接与端口池${gl_bai}"
+    echo "连接队列: $(sysctl -n net.core.somaxconn 2>/dev/null)"
+    echo "端口范围: $(sysctl -n net.ipv4.ip_local_port_range 2>/dev/null)"
+    echo "TIME_WAIT 池: $(sysctl -n net.ipv4.tcp_max_tw_buckets 2>/dev/null)"
+
+    echo -e "\n${gl_lv}[5] 内存与Swap策略${gl_bai}"
+    echo "Swap 倾向: $(sysctl -n vm.swappiness 2>/dev/null)"
+    echo "保留内存: $(sysctl -n vm.min_free_kbytes 2>/dev/null) KB"
+
+    echo -e "\n${gl_lv}[6] 文件描述符限制${gl_bai}"
+    echo "当前进程限制: $(ulimit -n)"
+    echo "系统全局限制: $(sysctl -n fs.file-max 2>/dev/null)"
+
+    echo -e "\n${gl_huang}========================================${gl_bai}"
+    echo -e "验证完成。"
+}
+
+# ============================================================================
 # System Info Function
 # ============================================================================
 
@@ -755,7 +696,6 @@ show_sys_info() {
 
         local disk_info=$(df -h / | awk 'NR==2{printf "%s/%s (%s)", $3, $2, $5}')
 
-        # 【容错优化】增加超时，防止 ipinfo 卡死脚本
         local ipinfo=$(curl -s --connect-timeout 3 --max-time 5 ipinfo.io 2>/dev/null || echo "{}")
         local country=$(echo "$ipinfo" | awk -F'"' '/country/{print $4}')
         local city=$(echo "$ipinfo" | awk -F'"' '/city/{print $4}')
@@ -783,7 +723,6 @@ show_sys_info() {
         local tcp_count=$(ss -t state established 2>/dev/null | wc -l)
         local udp_count=$(ss -u state established 2>/dev/null | wc -l)
 
-        # 【逻辑优化】使用排除法统计流量，兼容所有非常规网卡
         local rx=$(awk 'NR>2 && $1 !~ /^lo:/ && $1 !~ /^sit/ {gsub(/:/,""); a+=$2} END{print a+0}' /proc/net/dev)
         local tx=$(awk 'NR>2 && $1 !~ /^lo:/ && $1 !~ /^sit/ {gsub(/:/,""); a+=$10} END{print a+0}' /proc/net/dev)
         local rx_gb=$(awk "BEGIN{printf \"%.2f\", ${rx}/1024/1024/1024}")
@@ -826,7 +765,6 @@ show_sys_info() {
         echo -e "${gl_kjlan}运行时长:       ${gl_bai}${runtime}"
         echo -e "${gl_kjlan}=============="
         
-        # 【UX优化】信息查询里仅保留管理 Swap，删除了危险的释放缓存选项
         echo -e "${gl_huang}1. 管理虚拟内存"
         echo -e "0. 返回主菜单"
         echo -e "${gl_huang}=============="
@@ -839,6 +777,110 @@ show_sys_info() {
         esac
     done
     return 0
+}
+
+# ============================================================================
+# Interactive Menu (General)
+# ============================================================================
+
+Kernel_optimize() {
+    root_use
+    while true; do
+      clear
+      send_stats "Linux内核调优管理"
+      
+      local current_mode="未优化"
+      local conf_file="/etc/sysctl.d/99-yw-optimize.conf"
+      if [ -f "$conf_file" ]; then
+          local raw_mode=$(grep "^# 模式:" "$conf_file" 2>/dev/null | sed 's/^# 模式: //')
+          [ -n "$raw_mode" ] && current_mode=$(echo "$raw_mode" | awk -F'|' '{print $1}' | xargs) || current_mode="系统优化已启用"
+      fi
+
+      echo -e "${gl_lv}Linux系统内核参数优化${gl_bai}"
+      echo "------------------------------------------------"
+      echo -e "当前模式: ${gl_huang}${current_mode}${gl_bai}"
+      echo -e "提供多种系统参数调优模式，用户可以根据自身使用场景进行选择切换。"
+      echo -e "${gl_huang}提示: ${gl_bai}生产环境请谨慎使用！"
+      echo -e "--------------------"
+      echo -e "1. 高性能优化模式：     最大化系统性能，激进的内存和网络参数。"
+      echo -e "2. 均衡优化模式：       在性能与资源消耗之间取得平衡，适合日常使用。"
+      echo -e "3. 网站优化模式：       针对网站服务器优化，超高并发连接队列。"
+      echo -e "4. 直播优化模式：       针对直播推流优化，UDP 缓冲区加大，减少延迟。"
+      echo -e "5. 游戏服优化模式：     针对游戏服务器优化，低延迟优先。"
+      echo -e "6. BBRv3 内核安装      安装 XanMod BBRv3 内核 (仅Debian/Ubuntu)"
+      echo -e "7. 还原默认设置：       将系统设置还原为默认配置。"
+      echo -e "8. 自动调优：           根据测试数据自动调优内核参数。${gl_huang}★${gl_bai}"
+      echo -e "9. 释放内存缓存：       强制清理系统 Cache (谨慎使用)"
+      echo -e "10. 验证当前网络状态：  查看内核参数是否生效 ${gl_huang}★${gl_bai}"
+      echo "--------------------"
+      echo "0. 返回主菜单"
+      echo "--------------------"
+      read -e -p "请输入你的选择: " sub_choice
+      
+      case $sub_choice in
+          1)
+              cd ~; clear
+              tiaoyou_moshi="高性能优化模式"
+              optimize_high_performance
+              send_stats "高性能模式优化"
+              ;;
+          2)
+              cd ~; clear
+              tiaoyou_moshi="均衡优化模式"
+              optimize_balanced
+              send_stats "均衡模式优化"
+              ;;
+          3)
+              cd ~; clear
+              tiaoyou_moshi="网站优化模式"
+              optimize_web_server
+              send_stats "网站优化模式"
+              ;;
+          4)
+              cd ~; clear
+              tiaoyou_moshi="直播优化模式"
+              _kernel_optimize_core "直播优化模式" "stream"
+              send_stats "直播推流优化"
+              ;;
+          5)
+              cd ~; clear
+              tiaoyou_moshi="游戏服优化模式"
+              _kernel_optimize_core "游戏服优化模式" "game"
+              send_stats "游戏服优化"
+              ;;
+          6) cd ~; clear; bbrv3 ;;
+          7)
+              cd ~; clear
+              restore_defaults
+              curl -sS ${gh_proxy}raw.githubusercontent.com/YW/sh/refs/heads/main/network-optimize.sh -o /tmp/network-optimize.sh && source /tmp/network-optimize.sh && restore_network_defaults
+              send_stats "还原默认设置"
+              ;;
+          8)
+              echo -e "${gl_huang}即将拉取并执行远程网络优化脚本..."
+              read -e -p "按回车键继续，或按 Ctrl+C 取消: "
+              curl -sS ${gh_proxy}raw.githubusercontent.com/YW/sh/refs/heads/main/network-optimize.sh | bash
+              send_stats "内核自动调优"
+              ;;
+          9)
+              echo -e "${gl_red}警告：强制释放内存缓存可能导致短暂 IO 抖动，生产环境请谨慎！${gl_bai}"
+              read -e -p "确定要执行 echo 3 > /proc/sys/vm/drop_caches 吗？: " drop_choice
+              if [[ "$drop_choice" =~ ^[Yy]$ ]]; then
+                  sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
+                  echo -e "${gl_lv}✅ 内存缓存已释放${gl_bai}"
+              else
+                  echo "已取消"
+              fi
+              read -rs -n 1 -p "按任意键继续..."
+              ;;
+          10)
+              # 【新增功能】调用验证函数
+              verify_network_status
+              read -rs -n 1 -p "按任意键返回菜单..."
+              ;;
+          0|"") break ;;
+          *) echo -e "${gl_red}无效的选择${gl_bai}" ; read -rs -n 1 -p "按任意键继续..." ;;
+      esac
+    done
 }
 
 # ============================================================================
