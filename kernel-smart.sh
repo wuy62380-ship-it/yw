@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# Linux 内核与网络调优模块
+# YW 内核与网络调优模块
 # ============================================================================
 
 # --- 颜色定义 ---
@@ -54,7 +54,6 @@ check_disk_space() {
     return 0
 }
 
-# 【优化】增加基础错误日志输出，避免静默失败
 install() {
     if command -v apt >/dev/null 2>&1; then
         if ! apt-get install -y "$@" >/tmp/yw_apt.log 2>&1; then
@@ -74,7 +73,8 @@ install() {
 
 server_reboot() {
     echo -e "${gl_lv}建议立即重启服务器以加载新内核...${gl_bai}"
-    read -e -p "是否现在重启？": " reboot_choice
+    # 【修复】修复了原版 read -p 里面多了个冒号引号的语法笔误
+    read -e -p "是否现在重启？: " reboot_choice
     if [[ "$reboot_choice" =~ ^[Yy]$ ]]; then reboot; fi
 }
 
@@ -140,8 +140,8 @@ change_swap_size() {
             if [ "$current_swap" -gt 0 ]; then
                 swapoff "$swap_file" 2>/dev/null
                 rm -f "$swap_file"
-                # 【致命修复】使用 sed -i 原地修改，绝对禁止 mv 覆盖 /etc/fstab
-                sed -i '/\/swapfile\s\+none\s\+swap/d' /etc/fstab
+                # 【安全修复】使用 sed -i 原地修改，绝对禁止 mv 覆盖 /etc/fstab 导致系统无法启动
+                sed -i '/swapfile.*swap/d' /etc/fstab
                 echo -e "${gl_lv}Swap 已移除${gl_bai}"
             else
                 echo -e "${gl_huang}当前没有 Swap 文件${gl_bai}"
@@ -164,8 +164,7 @@ change_swap_size() {
         fi
 
         echo -e "${gl_lv}正在创建 Swap 文件 (${swap_size}MB)...${gl_bai}"
-        # 先关闭旧的，防止增加大小时冲突
-        swapoff "$swap_file" 2>/dev/null
+        swapoff "$swap_file" 2>/dev/null # 防止增加大小时冲突
         dd if=/dev/zero of="${swap_file}" bs=1M count="${swap_size}" 2>/dev/null
         chmod 600 "${swap_file}"
         mkswap "${swap_file}" >/dev/null 2>&1
@@ -181,7 +180,7 @@ change_swap_size() {
 }
 
 # ============================================================================
-# Core Optimization Logic (General)
+# Core Optimization Logic (Network Expert Level)
 # ============================================================================
 
 _kernel_optimize_core() {
@@ -198,34 +197,26 @@ _kernel_optimize_core() {
     local KEEPALIVE_TIME KEEPALIVE_INTVL KEEPALIVE_PROBES
     local CC="bbr" QDISC="fq" UDP_RMEM_MIN=16384
 
-    # 【致命修复】提取共有变量，防止 web/balanced 模式下写入空值导致 sysctl 报错
+    # 【网络专家修复】提取共有变量，防止 web/balanced 模式下写入空值导致 sysctl 报错
     local TCP_NOTSENT_LOWAT=16384
     local TCP_FASTOPEN=3
     local TCP_TW_REUSE=1
     local TCP_MTU_PROBING=1
     local GAME_EXTRA=""
     local STREAM_EXTRA=""
+    
+    # 【网络专家新增】防抖动与防慢启动关键参数
+    local TCP_SLOW_START_AFTER_IDLE=0
+    local TCP_ECN=0 
 
     case "$scene" in
-        high|stream|game)
+        high)
             SWAPPINESS=10; DIRTY_RATIO=15; DIRTY_BG_RATIO=5; OVERCOMMIT=1; VFS_PRESSURE=50
             MIN_FREE_KB=131072; RMEM_MAX=134217728; WMEM_MAX=134217728
             TCP_RMEM="4096 87380 67108864"; TCP_WMEM="4096 65536 67108864"
             SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"
             SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=10
             KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5
-
-            if [ "$scene" = "stream" ] || [ "$scene" = "game" ]; then
-                UDP_RMEM_MIN=256000
-                GAME_EXTRA="
-net.ipv4.udp_rmem_min = 256000
-net.ipv4.udp_wmem_min = 256000
-net.ipv4.tcp_slow_start_after_idle = 0"
-            else
-                GAME_EXTRA="
-net.ipv4.udp_rmem_min = 16384
-net.ipv4.udp_wmem_min = 16384"
-            fi
             ;;
         web)
             SWAPPINESS=10; DIRTY_RATIO=20; DIRTY_BG_RATIO=10; OVERCOMMIT=1; VFS_PRESSURE=50
@@ -233,15 +224,44 @@ net.ipv4.udp_wmem_min = 16384"
             TCP_RMEM="4096 87380 67108864"; TCP_WMEM="4096 65536 67108864"
             SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"
             SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=15
-            KEEPALIVE_TIME=600; KEEPALIVE_INTVL=60; KEEPALIVE_PROBES=5
+            # 【优化】Web(HTTP/2)不需要长 Keepalive 浪费 FD，120秒是最佳实践
+            KEEPALIVE_TIME=120; KEEPALIVE_INTVL=15; KEEPALIVE_PROBES=3 
+            ;;
+        stream)
+            SWAPPINESS=10; DIRTY_RATIO=15; DIRTY_BG_RATIO=5; OVERCOMMIT=1; VFS_PRESSURE=50
+            MIN_FREE_KB=131072; RMEM_MAX=134217728; WMEM_MAX=134217728
+            TCP_RMEM="4096 87380 67108864"; TCP_WMEM="4096 65536 67108864"
+            SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"
+            SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=10
+            KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5
+            # 【优化】UDP缓冲给128KB是甜点位，避免无脑256KB导致小机器OOM
+            UDP_RMEM_MIN=131072
+            STREAM_EXTRA="
+net.ipv4.udp_rmem_min = 131072
+net.ipv4.udp_wmem_min = 131072"
+            ;;
+        game)
+            SWAPPINESS=10; DIRTY_RATIO=10; DIRTY_BG_RATIO=5; OVERCOMMIT=1; VFS_PRESSURE=50
+            MIN_FREE_KB=131072
+            # 【核心优化】游戏包极小，大Buffer会引发Bufferbloat导致延迟飙升，降至16MB
+            RMEM_MAX=16777216; WMEM_MAX=16777216 
+            TCP_RMEM="4096 32768 16777216"; TCP_WMEM="4096 32768 16777216"
+            SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"
+            SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=5
+            KEEPALIVE_TIME=60; KEEPALIVE_INTVL=10; KEEPALIVE_PROBES=3
+            UDP_RMEM_MIN=131072
+            GAME_EXTRA="
+net.ipv4.udp_rmem_min = 131072
+net.ipv4.udp_wmem_min = 131072"
             ;;
         balanced)
             SWAPPINESS=30; DIRTY_RATIO=20; DIRTY_BG_RATIO=10; OVERCOMMIT=0; VFS_PRESSURE=75
             MIN_FREE_KB=32768; RMEM_MAX=16777216; WMEM_MAX=16777216
             TCP_RMEM="4096 87380 16777216"; TCP_WMEM="4096 65536 16777216"
-            SOMAXCONN=4096; BACKLOG=5000; SYN_BACKLOG=4096; PORT_RANGE="1024 49151"
+            SOMAXCONN=4096; BACKLOG=5000; SYN_BACKLOG=4096; PORT_RANGE="32768 60999"
             SCHED_AUTOGROUP=1; THP="always"; NUMA=1; FIN_TIMEOUT=30
             KEEPALIVE_TIME=600; KEEPALIVE_INTVL=60; KEEPALIVE_PROBES=5
+            TCP_SLOW_START_AFTER_IDLE=1 # 均衡模式关闭极端防慢启动
             ;;
         *)
             echo -e "${gl_red}错误: 未知场景 ${scene}${gl_bai}"; return 1 ;;
@@ -255,7 +275,7 @@ net.ipv4.udp_wmem_min = 16384"
         MIN_FREE_KB=65536
     elif [ "$MEM_MB_VAL" -ge 1024 ]; then
         MIN_FREE_KB=32768
-        if [ "$scene" != "balanced" ]; then
+        if [ "$scene" != "balanced" ] && [ "$scene" != "game" ]; then
             RMEM_MAX=16777216; WMEM_MAX=16777216
             TCP_RMEM="4096 87380 16777216"; TCP_WMEM="4096 65536 16777216"
         fi
@@ -280,6 +300,12 @@ net.ipv4.udp_wmem_min = 16384"
     [ "$TCP_MEM_MIN" -lt 8192 ] && TCP_MEM_MIN=8192
     [ "$TCP_MEM_DEF" -lt 16384 ] && TCP_MEM_DEF=16384
     [ "$TCP_MEM_MAX" -lt 32768 ] && TCP_MEM_MAX=32768
+
+    # 【网络优化】动态计算连接池大小
+    local TW_BUCKETS=$((SOMAXCONN * 4))
+    local MAX_ORPHANS=$((SOMAXCONN * 2))
+    [ "$TW_BUCKETS" -gt 262144 ] && TW_BUCKETS=262144
+    [ "$MAX_ORPHANS" -gt 131072 ] && MAX_ORPHANS=131072
 
     local backup_conf="${CONF}.bak.$(date +%s)"
     [ -f "$CONF" ] && cp "$CONF" "$backup_conf"
@@ -321,7 +347,8 @@ net.ipv4.tcp_fin_timeout = $FIN_TIMEOUT
 net.ipv4.tcp_keepalive_time = $KEEPALIVE_TIME
 net.ipv4.tcp_keepalive_intvl = $KEEPALIVE_INTVL
 net.ipv4.tcp_keepalive_probes = $KEEPALIVE_PROBES
-net.ipv4.tcp_max_tw_buckets = 65536
+net.ipv4.tcp_max_tw_buckets = $TW_BUCKETS
+net.ipv4.tcp_max_orphans = $MAX_ORPHANS
 net.ipv4.tcp_syncookies = 1
 net.ipv4.tcp_synack_retries = 2
 net.ipv4.tcp_syn_retries = 3
@@ -331,10 +358,13 @@ net.ipv4.tcp_timestamps = 1
 net.ipv4.tcp_window_scaling = 1
 net.ipv4.tcp_notsent_lowat = $TCP_NOTSENT_LOWAT
 
+# ── 网络低延迟/防抖动特化 ──
+net.ipv4.tcp_slow_start_after_idle = $TCP_SLOW_START_AFTER_IDLE
+net.ipv4.tcp_ecn = $TCP_ECN
+
 # ── 端口与内存 ──
 net.ipv4.ip_local_port_range = $PORT_RANGE
 net.ipv4.tcp_mem = $TCP_MEM_MIN $TCP_MEM_DEF $TCP_MEM_MAX
-net.ipv4.tcp_max_orphans = 32768
 
 # ── 虚拟内存 ──
 vm.swappiness = $SWAPPINESS
@@ -403,6 +433,8 @@ EOF
 
     echo -e "${gl_lv}✅ 验证结果:${gl_bai}"
     echo -e "   - 拥塞控制: \e[32m$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)\e[0m"
+    echo -e "   - 防抖动(ECN): \e[32m$(sysctl -n net.ipv4.tcp_ecn 2>/dev/null)\e[0m"
+    echo -e "   - 慢启动重启: \e[32m$(sysctl -n net.ipv4.tcp_slow_start_after_idle 2>/dev/null)\e[0m"
     echo -e "   - Swap偏好: \e[32m$(sysctl -n vm.swappiness 2>/dev/null)\e[0m"
     echo -e "   - 文件描述符: \e[32m$(ulimit -n)\e[0m"
     echo -e "${gl_lv}✅ ${mode_name} 优化完成！配置已持久化到 ${CONF}${gl_bai}"
@@ -412,7 +444,7 @@ EOF
 # BBRv3 (XanMod) Management
 # ============================================================================
 
-# 【重构】将嵌套函数全部提取到顶层，避免重复解析和糟糕的代码结构
+# 【代码重构】将嵌套函数全部提取到顶层，避免性能损耗和代码混乱
 xanmod_add_repo() {
     local keyring="/usr/share/keyrings/xanmod-archive-keyring.gpg"
     local list_file="/etc/apt/sources.list.d/xanmod-release.list"
@@ -565,7 +597,7 @@ bbrv3() {
         echo "仅支持Debian/Ubuntu"
         echo "请备份数据，将为你升级Linux内核开启BBR3"
         echo "------------------------------------------------"
-        read -e -p "确定继续吗？": " choice
+        read -e -p "确定继续吗？: " choice
         case "$choice" in
             [Yy]) xanmod_install_or_update install ;;
             *) echo "已取消" ;;
@@ -604,7 +636,6 @@ Kernel_optimize() {
       echo -e "6. BBRv3 内核安装      安装 XanMod BBRv3 内核 (仅Debian/Ubuntu)"
       echo -e "7. 还原默认设置：       将系统设置还原为默认配置。"
       echo -e "8. 自动调优：           根据测试数据自动调优内核参数。${gl_huang}★${gl_bai}"
-      # 【UX优化】将释放缓存移至此处，避免在信息查询里误触
       echo -e "9. 释放内存缓存：       强制清理系统 Cache (谨慎使用)"
       echo "--------------------"
       echo "0. 返回主菜单"
@@ -660,7 +691,7 @@ Kernel_optimize() {
           9)
               # 【UX优化】增加二次确认，防止生产环境误操作导致 IO 抖动
               echo -e "${gl_red}警告：强制释放内存缓存可能导致短暂 IO 抖动，生产环境请谨慎！${gl_bai}"
-              read -e -p "确定要执行 echo 3 > /proc/sys/vm/drop_caches 吗？": " drop_choice
+              read -e -p "确定要执行 echo 3 > /proc/sys/vm/drop_caches 吗？: " drop_choice
               if [[ "$drop_choice" =~ ^[Yy]$ ]]; then
                   sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
                   echo -e "${gl_lv}✅ 内存缓存已释放${gl_bai}"
@@ -752,7 +783,7 @@ show_sys_info() {
         local tcp_count=$(ss -t state established 2>/dev/null | wc -l)
         local udp_count=$(ss -u state established 2>/dev/null | wc -l)
 
-        # 【逻辑优化】使用排除法统计流量，兼容 ens33, enp0s3, bond0 等所有非常规网卡
+        # 【逻辑优化】使用排除法统计流量，兼容所有非常规网卡
         local rx=$(awk 'NR>2 && $1 !~ /^lo:/ && $1 !~ /^sit/ {gsub(/:/,""); a+=$2} END{print a+0}' /proc/net/dev)
         local tx=$(awk 'NR>2 && $1 !~ /^lo:/ && $1 !~ /^sit/ {gsub(/:/,""); a+=$10} END{print a+0}' /proc/net/dev)
         local rx_gb=$(awk "BEGIN{printf \"%.2f\", ${rx}/1024/1024/1024}")
@@ -795,7 +826,7 @@ show_sys_info() {
         echo -e "${gl_kjlan}运行时长:       ${gl_bai}${runtime}"
         echo -e "${gl_kjlan}=============="
         
-        # 【UX优化】信息查询里移除了释放缓存，只保留管理 Swap 和返回
+        # 【UX优化】信息查询里仅保留管理 Swap，删除了危险的释放缓存选项
         echo -e "${gl_huang}1. 管理虚拟内存"
         echo -e "0. 返回主菜单"
         echo -e "${gl_huang}=============="
@@ -818,7 +849,7 @@ main_menu() {
     while true; do
         clear
         echo -e "${gl_huang}========================================${gl_bai}"
-        echo -e "${gl_huang}       Linux 系统管理与优化脚本            ${gl_bai}"
+        echo -e "${gl_huang}       YW 系统管理与优化脚本            ${gl_bai}"
         echo -e "${gl_huang}========================================${gl_bai}"
         echo -e "${gl_lv}1. 系统信息查询"
         echo -e "${gl_huang}2. Linux 系统内核参数优化 (BBR/调优)"
