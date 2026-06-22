@@ -178,7 +178,7 @@ change_swap_size() {
 }
 
 # ============================================================================
-# Core Optimization Logic (Network Expert Level)
+# Core Optimization Logic (Network Expert Level + Auto Detect)
 # ============================================================================
 
 _kernel_optimize_core() {
@@ -260,7 +260,11 @@ net.ipv4.udp_wmem_min = 131072"
             echo -e "${gl_red}错误: 未知场景 ${scene}${gl_bai}"; return 1 ;;
     esac
 
+    # ========================================================================
+    # 【核心亮点】智能硬件检测与“调虎离山”Swap 策略
+    # ========================================================================
     local MEM_MB_VAL=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
+    local HAS_SWAP=$(free -m | awk '/Swap/{print $2}')
 
     if [ "$MEM_MB_VAL" -ge 16384 ]; then
         MIN_FREE_KB=131072; [ "$scene" != "balanced" ] && SWAPPINESS=5
@@ -273,10 +277,28 @@ net.ipv4.udp_wmem_min = 131072"
             TCP_RMEM="4096 87380 16777216"; TCP_WMEM="4096 65536 16777216"
         fi
     else
-        MIN_FREE_KB=16384; SWAPPINESS=30; OVERCOMMIT=0
+        # 【触发极小内存保护 ( < 1GB )】
+        # 网络缓冲区死守底线，绝对不能超过物理内存，否则内核崩溃
+        MIN_FREE_KB=16384; OVERCOMMIT=0
         RMEM_MAX=4194304; WMEM_MAX=4194304
         TCP_RMEM="4096 32768 4194304"; TCP_WMEM="4096 32768 4194304"
         SOMAXCONN=1024; BACKLOG=1000
+
+        # 【专家策略：调虎离山】
+        # 虽然网络不能用Swap，但如果检测到了Swap，我们就把普通程序(如PHP/MySQL)疯狂扔进Swap，
+        # 腾出宝贵的物理内存死死护住网络栈！并开启 zswap 压缩减速 Swap 拖累。
+        if [ "$HAS_SWAP" -gt 0 ]; then
+            SWAPPINESS=60  # 极其激进地使用 Swap 兜底普通程序
+            echo -e "${gl_huang}检测到极小内存(${MEM_MB_VAL}MB)但存在Swap，已启动'调虎离山'策略：\n-> 网络缓冲区锁定4MB防死机\n-> 激进将普通程序移入Swap以保护物理内存${gl_bai}"
+            # 尝试开启 zswap (用 CPU 换内存，让 Swap 变快)
+            if [ -f /sys/module/zswap/parameters/enabled ]; then
+                echo Y > /sys/module/zswap/parameters/enabled 2>/dev/null
+            fi
+        else
+            # 连 Swap 都没有，那就只能老实点，防止 OOM
+            SWAPPINESS=10
+            echo -e "${gl_red}检测到极小内存(${MEM_MB_VAL}MB)且无Swap！网络参数已强制降级保命，强烈建议在菜单中添加 Swap！${gl_bai}"
+        fi
     fi
 
     local KVER=$(uname -r | grep -oP '^\d+\.\d+')
@@ -426,7 +448,7 @@ EOF
     echo -e "   - 拥塞控制: \e[32m$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)\e[0m"
     echo -e "   - 防抖动(ECN): \e[32m$(sysctl -n net.ipv4.tcp_ecn 2>/dev/null)\e[0m"
     echo -e "   - 慢启动重启: \e[32m$(sysctl -n net.ipv4.tcp_slow_start_after_idle 2>/dev/null)\e[0m"
-    echo -e "   - Swap偏好: \e[32m$(sysctl -n vm.swappiness 2>/dev/null)\e[0m"
+    echo -e "   - Swap倾向(保护策略): \e[32m$(sysctl -n vm.swappiness 2>/dev/null)\e[0m"
     echo -e "   - 文件描述符: \e[32m$(ulimit -n)\e[0m"
     echo -e "${gl_lv}✅ ${mode_name} 优化完成！配置已持久化到 ${CONF}${gl_bai}"
 }
@@ -624,7 +646,7 @@ restore_defaults() {
 }
 
 # ============================================================================
-# Network Status Verify Function (New)
+# Network Status Verify Function
 # ============================================================================
 
 verify_network_status() {
@@ -643,17 +665,23 @@ verify_network_status() {
     echo "ECN (显式拥塞通知): ${ecn_val} $( [ "$ecn_val" -eq 0 ] && echo -e "${gl_lv}[已关闭防抖动]${gl_bai}" || echo -e "${gl_red}[警告:可能引发延迟]${gl_bai}" )"
     echo "慢启动重启: ${slow_val} $( [ "$slow_val" -eq 0 ] && echo -e "${gl_lv}[已关闭防卡顿]${gl_bai}" || echo "[均衡模式默认开启]" )"
 
-    echo -e "\n${gl_lv}[3] TCP 缓冲区 (根据模式不同数值不同)${gl_bai}"
+    echo -e "\n${gl_lv}[3] TCP 缓冲区与内存保护策略${gl_bai}"
     local rmem_max=$(sysctl -n net.core.rmem_max 2>/dev/null)
-    local wmem_max=$(sysctl -n net.core.wmem_max 2>/dev/null)
+    local swappiness=$(sysctl -n vm.swappiness 2>/dev/null)
     echo "最大接收缓冲: ${rmem_max}"
-    echo "最大发送缓冲: ${wmem_max}"
+    echo "Swap 倾向: ${swappiness}"
+    
     if [ "$rmem_max" -eq 16777216 ]; then
         echo -e ">>> 识别结果: ${gl_huang}游戏服模式 (16MB 防止 Bufferbloat)${gl_bai}"
     elif [ "$rmem_max" -ge 67108864 ]; then
         echo -e ">>> 识别结果: ${gl_huang}高性能/网站/直播模式 (64MB 极限吞吐)${gl_bai}"
     elif [ "$rmem_max" -eq 4194304 ]; then
-        echo -e ">>> 识别结果: ${gl_huang}低内存自适应模式 (4MB)${gl_bai}"
+        echo -e ">>> 识别结果: ${gl_huang}低内存极限保护模式 (4MB)${gl_bai}"
+        if [ "$swappiness" -ge 60 ]; then
+            echo -e ">>> 特殊机制: ${gl_lv}[已触发调虎离山] 正在激进利用Swap保护网络物理内存${gl_bai}"
+        else
+            echo -e ">>> 特殊机制: ${gl_red}[无Swap兜底] 极易因流量突爆发OOM，请尽快添加Swap！${gl_bai}"
+        fi
     else
         echo -e ">>> 识别结果: 均衡模式或未优化"
     fi
@@ -663,16 +691,11 @@ verify_network_status() {
     echo "端口范围: $(sysctl -n net.ipv4.ip_local_port_range 2>/dev/null)"
     echo "TIME_WAIT 池: $(sysctl -n net.ipv4.tcp_max_tw_buckets 2>/dev/null)"
 
-    echo -e "\n${gl_lv}[5] 内存与Swap策略${gl_bai}"
-    echo "Swap 倾向: $(sysctl -n vm.swappiness 2>/dev/null)"
-    echo "保留内存: $(sysctl -n vm.min_free_kbytes 2>/dev/null) KB"
-
-    echo -e "\n${gl_lv}[6] 文件描述符限制${gl_bai}"
+    echo -e "\n${gl_lv}[5] 文件描述符限制${gl_bai}"
     echo "当前进程限制: $(ulimit -n)"
     echo "系统全局限制: $(sysctl -n fs.file-max 2>/dev/null)"
 
     echo -e "\n${gl_huang}========================================${gl_bai}"
-    echo -e "验证完成。"
 }
 
 # ============================================================================
@@ -873,7 +896,6 @@ Kernel_optimize() {
               read -rs -n 1 -p "按任意键继续..."
               ;;
           10)
-              # 【新增功能】调用验证函数
               verify_network_status
               read -rs -n 1 -p "按任意键返回菜单..."
               ;;
