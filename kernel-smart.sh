@@ -58,7 +58,7 @@ install() {
     if command -v apt >/dev/null 2>&1; then
         if ! apt-get install -y "$@" >/tmp/yw_apt.log 2>&1; then echo -e "${gl_red}APT 失败:${gl_bai}"; tail -n 3 /tmp/yw_apt.log; return 1; fi
     elif command -v yum >/dev/null 2>&1; then
-        if ! yum install -y "$@" >/tmp/yw_yum.log 2>&1; then echo -e "${gl_red}YUM 失败:${gl_bai}"; tail -n 3 /tmp/yw_yum.log; return 1; fi
+        if ! yum install -y "$@" >/tmp/yw_yum.log 2>/dev/null; then echo -e "${gl_red}YUM 失败:${gl_bai}"; tail -n 3 /tmp/yw_yum.log; return 1; fi
     fi
     return 0
 }
@@ -521,13 +521,11 @@ show_sys_info() {
         echo -e "${gl_kjlan}运行时长:       ${gl_bai}${runtime}"
         echo -e "${gl_kjlan}=============="
         
-        echo -e "${gl_huang}1. 管理虚拟内存"
-        echo -e "0. 返回主菜单"
+        echo -e "${gl_huang}0. 返回主菜单"
         echo -e "${gl_huang}=============="
         read -e -p "请输入选择: " menu_choice
         
         case "$menu_choice" in
-            1) change_swap_size ;;
             0|"") break ;;
             *) break ;;
         esac
@@ -582,6 +580,10 @@ Kernel_optimize() {
     done
 }
 
+# ============================================================================
+# Main Menu Entry Point (已加入选项 3)
+# ============================================================================
+
 main_menu() {
     while true; do
         clear
@@ -590,10 +592,17 @@ main_menu() {
         echo -e "${gl_huang}========================================${gl_bai}"
         echo -e "${gl_lv}1. 系统信息查询"
         echo -e "${gl_huang}2. Linux 系统内核参数优化 (BBR/调优)"
+        echo -e "${gl_huang}3. 管理虚拟内存"
         echo -e "${gl_hui}0. 退出程序"
         echo -e "${gl_huang}========================================${gl_bai}"
         read -e -p "请输入你的选择: " choice
-        case $choice in 1) show_sys_info ;; 2) Kernel_optimize ;; 0) echo -e "${gl_lv}感谢使用，再见！${gl_bai}"; break ;; *) echo -e "${gl_red}无效的选择，请重新输入${gl_bai}" ; sleep 1 ;; esac
+        case $choice in
+            1) show_sys_info ;;
+            2) Kernel_optimize ;;
+            3) change_swap_size ;;  # 新增：首页直接管理虚拟内存
+            0) echo -e "${gl_lv}感谢使用，再见！${gl_bai}"; break ;;
+            *) echo -e "${gl_red}无效的选择，请重新输入${gl_bai}" ; sleep 1 ;;
+        esac
     done
 }
 
