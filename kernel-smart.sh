@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# YW 内核与网络调优模块 (全场景极限特化 + 完整信息面板版)
+# Linux 内核与网络调优模块 (YW全场景极限特化 + 中转网关专属版)
 # ============================================================================
 
 # --- 颜色定义 ---
@@ -131,7 +131,7 @@ change_swap_size() {
 }
 
 # ============================================================================
-# Core Optimization Logic (全场景极限特化)
+# Core Optimization Logic (全场景极限特化 + 中转网关专属)
 # ============================================================================
 
 _kernel_optimize_core() {
@@ -147,7 +147,7 @@ _kernel_optimize_core() {
     local KEEPALIVE_TIME KEEPALIVE_INTVL KEEPALIVE_PROBES
     local CC="bbr" QDISC="fq" UDP_RMEM_MIN=16384
     local TCP_NOTSENT_LOWAT=16384 TCP_FASTOPEN=3 TCP_TW_REUSE=1 TCP_MTU_PROBING=1
-    local GAME_EXTRA="" STREAM_EXTRA="" HIGH_EXTRA="" WEB_EXTRA="" BALANCED_EXTRA=""
+    local GAME_EXTRA="" STREAM_EXTRA="" HIGH_EXTRA="" WEB_EXTRA="" BALANCED_EXTRA="" GATEWAY_EXTRA=""
     local TCP_SLOW_START_AFTER_IDLE=0 TCP_ECN=0 
 
     case "$scene" in
@@ -187,6 +187,21 @@ _kernel_optimize_core() {
             KEEPALIVE_TIME=60; KEEPALIVE_INTVL=10; KEEPALIVE_PROBES=3; UDP_RMEM_MIN=131072
             GAME_EXTRA="net.ipv4.udp_rmem_min = 131072\nnet.ipv4.udp_wmem_min = 131072\nnet.core.optmem_max = 20480"
             ;;
+        gateway)
+            # 【极客中转特化】专为 V2Ray/SS 中转加密直播设计
+            SWAPPINESS=10; DIRTY_RATIO=20; DIRTY_BG_RATIO=10; OVERCOMMIT=1; VFS_PRESSURE=50
+            MIN_FREE_KB=32768
+            # 8MB 极限防 Bufferbloat，保证跨国丢包不卡画面
+            RMEM_MAX=8388608; WMEM_MAX=8388608 
+            TCP_RMEM="4096 16384 8388608"; TCP_WMEM="4096 16384 8388608"
+            SOMAXCONN=65535; BACKLOG=100000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"
+            SCHED_AUTOGROUP=0; THP="never"; NUMA=0
+            # 温和保活，绝对不杀 V2Ray 长连接隧道
+            FIN_TIMEOUT=30
+            KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5
+            UDP_RMEM_MIN=16384 # 拒绝拉大 UDP，省内存给 CPU 算加密
+            GATEWAY_EXTRA="# ── 中转网关专属：保 CPU 算加密，不抢软中断 ──\nnet.core.optmem_max = 20480"
+            ;;
         balanced)
             SWAPPINESS=30; DIRTY_RATIO=20; DIRTY_BG_RATIO=10; OVERCOMMIT=0; VFS_PRESSURE=75
             MIN_FREE_KB=32768; RMEM_MAX=16777216; WMEM_MAX=16777216
@@ -208,18 +223,19 @@ _kernel_optimize_core() {
         MIN_FREE_KB=65536
     elif [ "$MEM_MB_VAL" -ge 1024 ]; then
         MIN_FREE_KB=32768
-        if [ "$scene" != "balanced" ] && [ "$scene" != "game" ]; then
+        if [ "$scene" != "balanced" ] && [ "$scene" != "game" ] && [ "$scene" != "gateway" ]; then
             RMEM_MAX=16777216; WMEM_MAX=16777216; TCP_RMEM="4096 87380 16777216"; TCP_WMEM="4096 65536 16777216"
         fi
-        if [ "$scene" = "game" ]; then
+        if [ "$scene" = "game" ] || [ "$scene" = "gateway" ]; then
             RMEM_MAX=16777216; WMEM_MAX=16777216; TCP_RMEM="4096 32768 16777216"; TCP_WMEM="4096 32768 16777216"
             GAME_EXTRA="net.ipv4.udp_rmem_min = 131072\nnet.ipv4.udp_wmem_min = 131072"
+            GATEWAY_EXTRA="# ── 中转网关低内存自适应 ──"
         fi
     else
         MIN_FREE_KB=16384; OVERCOMMIT=0; SWAPPINESS=10
         RMEM_MAX=4194304; WMEM_MAX=4194304; SOMAXCONN=1024; BACKLOG=1000
         TCP_RMEM="4096 32768 4194304"; TCP_WMEM="4096 32768 4194304"
-        HIGH_EXTRA=""; WEB_EXTRA=""; STREAM_EXTRA=""; GAME_EXTRA=""; BALANCED_EXTRA=""
+        HIGH_EXTRA=""; WEB_EXTRA=""; STREAM_EXTRA=""; GAME_EXTRA=""; BALANCED_EXTRA=""; GATEWAY_EXTRA=""
         if [ "$HAS_SWAP" -gt 0 ]; then
             SWAPPINESS=60 
             echo -e "${gl_huang}检测极小内存(${MEM_MB_VAL}MB)，启动调虎离山策略${gl_bai}"
@@ -345,6 +361,7 @@ fi )
  $STREAM_EXTRA
  $GAME_EXTRA
  $BALANCED_EXTRA
+ $GATEWAY_EXTRA
 EOF
 
     flock -u 200; exec 200>&-
@@ -414,7 +431,10 @@ verify_network_status() {
     local rmem=$(sysctl -n net.core.rmem_max 2>/dev/null)
     local mode="未知"
     case $rmem in
-        8388608) mode="电竞级游戏模式 (8MB 绝杀缓冲)" ;;
+        8388608) 
+            if sysctl -n net.ipv4.tcp_keepalive_time 2>/dev/null | grep -q "300"; then mode="中转网关模式 (8MB 极致防卡顿+保隧道)"
+            else mode="电竞级游戏模式 (8MB 绝杀缓冲)"
+            fi ;;
         16777216) mode="通用游戏/中等内存 (16MB)" ;;
         4194304) mode="极限低内存保护 (4MB)" ;;
         67108864|134217728) 
@@ -438,25 +458,20 @@ verify_network_status() {
 show_sys_info() {
     while true; do
         send_stats "系统信息查询"
-        
         local cpu_info=$(lscpu 2>/dev/null | awk -F':' '/Model name:/ {print $2}' | sed 's/^[ \t]*//')
         local cpu_usage_percent=$(awk '{u=$2+$4; t=$2+$4+$5; if (NR==1){u1=u; t1=t;} else printf "%.0f\n", (($2+$4-u1) * 100 / (t-t1))}' <(grep 'cpu ' /proc/stat) <(sleep 1; grep 'cpu ' /proc/stat))
         local cpu_cores=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo)
         local cpu_freq=$(grep "MHz" /proc/cpuinfo 2>/dev/null | head -n 1 | awk '{printf "%.1f GHz\n", $4/1000}')
-        
         local mem_total_mb=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo)
         local mem_avail_mb=$(awk '/MemAvailable/{printf "%d", $2/1024}' /proc/meminfo)
         local mem_used_mb=$((mem_total_mb - mem_avail_mb))
         local mem_percent=$(awk "BEGIN{printf \"%.1f\", ${mem_used_mb}*100/${mem_total_mb}}")
         local mem_info="${mem_avail_mb}M/${mem_total_mb}M (${mem_percent}%)"
-
         local disk_info=$(df -h / | awk 'NR==2{printf "%s/%s (%s)", $3, $2, $5}')
-
         local ipinfo=$(curl -s --connect-timeout 3 --max-time 5 ipinfo.io 2>/dev/null || echo "{}")
         local country=$(echo "$ipinfo" | awk -F'"' '/country/{print $4}')
         local city=$(echo "$ipinfo" | awk -F'"' '/city/{print $4}')
         local isp_info=$(echo "$ipinfo" | awk -F'"' '/org/{print $4}')
-
         local load=$(uptime | awk '{print $(NF-2), $(NF-1), $NF}')
         local dns_addresses=$(awk '/^nameserver/{printf "%s ", $2} END {print ""}' /etc/resolv.conf)
         local cpu_arch=$(uname -m)
@@ -466,24 +481,20 @@ show_sys_info() {
         local queue_algorithm=$(sysctl -n net.core.default_qdisc 2>/dev/null)
         local os_info=$(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d '=' -f2 | tr -d '"')
         local current_time=$(date "+%Y-%m-%d %I:%M %p")
-        
         local swap_total_mb=$(awk '/SwapTotal/{printf "%d", $2/1024}' /proc/meminfo)
         local swap_avail_mb=$(awk '/SwapFree/{printf "%d", $2/1024}' /proc/meminfo)
         local swap_used_mb=$((swap_total_mb - swap_avail_mb))
         local swap_percent="0%"
         [ "$swap_total_mb" -gt 0 ] && swap_percent=$(awk "BEGIN{printf \"%d%%\", ${swap_used_mb}*100/${swap_total_mb}}")
         local swap_info="${swap_used_mb}M/${swap_total_mb}M (${swap_percent}%)"
-
         local runtime=$(cat /proc/uptime 2>/dev/null | awk -F. '{run_days=int($1 / 86400);run_hours=int(($1 % 86400) / 3600);run_minutes=int(($1 % 3600) / 60); if (run_days > 0) printf("%d天 ", run_days); if (run_hours > 0) printf("%d时 ", run_hours); printf("%d分\n", run_minutes)}')
         local timezone=$(cat /etc/timezone 2>/dev/null || echo "Unknown")
         local tcp_count=$(ss -t state established 2>/dev/null | wc -l)
         local udp_count=$(ss -u state established 2>/dev/null | wc -l)
-
         local rx=$(awk 'NR>2 && $1 !~ /^lo:/ && $1 !~ /^sit/ {gsub(/:/,""); a+=$2} END{print a+0}' /proc/net/dev)
         local tx=$(awk 'NR>2 && $1 !~ /^lo:/ && $1 !~ /^sit/ {gsub(/:/,""); a+=$10} END{print a+0}' /proc/net/dev)
         local rx_gb=$(awk "BEGIN{printf \"%.2f\", ${rx}/1024/1024/1024}")
         local tx_gb=$(awk "BEGIN{printf \"%.2f\", ${tx}/1024/1024/1024}")
-
         local ipv4_addr=$(ip -4 addr 2>/dev/null | grep inet | grep -v "127.0.0.1" | awk '{print $2}' | head -1)
         local ipv6_addr=$(ip -6 addr 2>/dev/null | grep inet6 | grep -v "::1" | awk '{print $2}' | head -1)
 
@@ -520,15 +531,10 @@ show_sys_info() {
         echo -e "${gl_kjlan}=============="
         echo -e "${gl_kjlan}运行时长:       ${gl_bai}${runtime}"
         echo -e "${gl_kjlan}=============="
-        
         echo -e "${gl_huang}0. 返回主菜单"
         echo -e "${gl_huang}=============="
         read -e -p "请输入选择: " menu_choice
-        
-        case "$menu_choice" in
-            0|"") break ;;
-            *) break ;;
-        esac
+        case "$menu_choice" in 0|"") break ;; *) break ;; esac
     done
     return 0
 }
@@ -554,11 +560,12 @@ Kernel_optimize() {
         echo -e "3. 网站优化模式：       极限TW池，抗大促并发"
         echo -e "4. 直播优化模式：       UDP极限拉爆+网卡软中断狂暴"
         echo -e "5. 游戏服优化模式：     8MB电竞级TCP防Bufferbloat"
-        echo -e "6. BBRv3 内核安装      安装 XanMod BBRv3 内核"
-        echo -e "7. 还原默认设置：       将系统设置还原为默认配置。"
-        echo -e "8. 自动调优：           根据测试数据自动调优内核参数。${gl_huang}★${gl_bai}"
-        echo -e "9. 释放内存缓存：       强制清理系统 Cache (谨慎使用)"
-        echo -e "10. 验证当前网络状态：  查看内核参数是否生效 ${gl_huang}★${gl_bai}"
+        echo -e "6. 中转网关模式：       专精V2Ray/SS加密中转防卡顿 ${gl_huang}★${gl_bai}"
+        echo -e "7. BBRv3 内核安装      安装 XanMod BBRv3 内核"
+        echo -e "8. 还原默认设置：       将系统设置还原为默认配置。"
+        echo -e "9. 自动调优：           根据测试数据自动调优内核参数。${gl_huang}★${gl_bai}"
+        echo -e "10. 释放内存缓存：      强制清理系统 Cache (谨慎使用)"
+        echo -e "11. 验证当前网络状态：  查看内核参数是否生效 ${gl_huang}★${gl_bai}"
         echo "--------------------"
         echo "0. 返回主菜单"
         echo "--------------------"
@@ -569,11 +576,12 @@ Kernel_optimize() {
             3) cd ~; clear; tiaoyou_moshi="网站优化模式"; _kernel_optimize_core "$tiaoyou_moshi" "web" ;;
             4) cd ~; clear; tiaoyou_moshi="直播优化模式"; _kernel_optimize_core "$tiaoyou_moshi" "stream" ;;
             5) cd ~; clear; tiaoyou_moshi="游戏服优化模式"; _kernel_optimize_core "$tiaoyou_moshi" "game" ;;
-            6) cd ~; clear; bbrv3 ;;
-            7) cd ~; clear; restore_defaults ;;
-            8) echo -e "${gl_huang}即将拉取并执行远程网络优化脚本..."; read -e -p "按回车键继续，或按 Ctrl+C 取消: "; curl -sS ${gh_proxy}raw.githubusercontent.com/YW/sh/refs/heads/main/network-optimize.sh | bash ;;
-            9) echo -e "${gl_red}警告：强制释放内存缓存可能导致短暂 IO 抖动，生产环境请谨慎！${gl_bai}"; read -e -p "确定要执行 echo 3 > /proc/sys/vm/drop_caches 吗？: " drop_choice; if [[ "$drop_choice" =~ ^[Yy]$ ]]; then sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null && echo -e "${gl_lv}✅ 内存缓存已释放${gl_bai}"; else echo "已取消"; fi; read -rs -n 1 -p "按任意键继续..." ;;
-            10) verify_network_status; read -rs -n 1 -p "按任意键返回菜单..." ;;
+            6) cd ~; clear; tiaoyou_moshi="中转网关模式"; _kernel_optimize_core "$tiaoyou_moshi" "gateway" ;; # 新增中转专属
+            7) cd ~; clear; bbrv3 ;;
+            8) cd ~; clear; restore_defaults ;;
+            9) echo -e "${gl_huang}即将拉取并执行远程网络优化脚本..."; read -e -p "按回车键继续，或按 Ctrl+C 取消: "; curl -sS ${gh_proxy}raw.githubusercontent.com/YW/sh/refs/heads/main/network-optimize.sh | bash ;;
+            10) echo -e "${gl_red}警告：强制释放内存缓存可能导致短暂 IO 抖动，生产环境请谨慎！${gl_bai}"; read -e -p "确定要执行 echo 3 > /proc/sys/vm/drop_caches 吗？: " drop_choice; if [[ "$drop_choice" =~ ^[Yy]$ ]]; then sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null && echo -e "${gl_lv}✅ 内存缓存已释放${gl_bai}"; else echo "已取消"; fi; read -rs -n 1 -p "按任意键继续..." ;;
+            11) verify_network_status; read -rs -n 1 -p "按任意键返回菜单..." ;;
             0|"") break ;;
             *) echo -e "${gl_red}无效的选择${gl_bai}" ; read -rs -n 1 -p "按任意键继续..." ;;
         esac
@@ -581,7 +589,7 @@ Kernel_optimize() {
 }
 
 # ============================================================================
-# Main Menu Entry Point (已加入选项 3)
+# Main Menu Entry Point
 # ============================================================================
 
 main_menu() {
@@ -599,7 +607,7 @@ main_menu() {
         case $choice in
             1) show_sys_info ;;
             2) Kernel_optimize ;;
-            3) change_swap_size ;;  # 新增：首页直接管理虚拟内存
+            3) change_swap_size ;;
             0) echo -e "${gl_lv}感谢使用，再见！${gl_bai}"; break ;;
             *) echo -e "${gl_red}无效的选择，请重新输入${gl_bai}" ; sleep 1 ;;
         esac
