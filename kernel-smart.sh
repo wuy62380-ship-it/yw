@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# Linux 内核与网络调优模块 (YW全场景极限特化 + 中转网关专属)
+# Linux YW内核与网络调优模块 (YW全场景极限特化 + 中转网关专属)
 # ============================================================================
 
 # --- 邮色定义 ---
@@ -74,7 +74,7 @@ auto_setup_zram() {
         # 配置 zram 参数：占用物理内存的 50%，使用 zstd 压缩算法
         sed -i 's/^ALGO=.*/ALGO=zstd/' /etc/default/zramswap 2>/dev/null
         sed -i 's/^PERCENT=.*/PERCENT=50/' /etc/default/zramswap 2>/dev/null
-        # 启动服务
+        # 启动服务并设为开机自启（永久生效）
         systemctl enable zramswap >/dev/null 2>&1
         systemctl restart zramswap >/dev/null 2>&1
         if grep -q "/dev/zram" /proc/swaps 2>/dev/null; then
@@ -209,7 +209,6 @@ _kernel_optimize_core() {
             SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"
             SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=10
             KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5
-            # 【转义符修复】必须使用 $'...' 让 \n 生效为真正的回车换行
             HIGH_EXTRA=$'vm.dirty_ratio = 40\nvm.dirty_background_ratio = 10'
             ;;
         web)
@@ -492,12 +491,21 @@ restore_defaults() {
     sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf 2>/dev/null; sysctl --system >/dev/null 2>&1
     [ -f /sys/kernel/mm/transparent_hugepage/enabled ] && echo always > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null
     sed -i '/# YW-optimize/,+4d' /etc/security/limits.conf 2>/dev/null
+    
     # 还原时顺带清理可能残留的 zswap 配置并运行时关闭
     if [ -f /sys/module/zswap/parameters/enabled ]; then
         echo N > /sys/module/zswap/parameters/enabled 2>/dev/null
     fi
     sed -i '/vm.zswap.enabled/d' /etc/sysctl.conf 2>/dev/null
-    echo -e "${gl_lv}已还原${gl_bai}"
+
+    # 【完善闭环】如果之前自动部署了 zram，还原时应当停止并禁用自启
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled zramswap >/dev/null 2>&1; then
+        echo -e "${gl_huang}检测到由脚本部署的 zram，正在停止并取消开机自启...${gl_bai}"
+        systemctl stop zramswap >/dev/null 2>&1
+        systemctl disable zramswap >/dev/null 2>&1
+    fi
+
+    echo -e "${gl_lv}已还原所有设置（包括禁用 zram）${gl_bai}"
 }
 
 verify_network_status() {
