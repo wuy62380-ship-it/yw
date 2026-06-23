@@ -188,18 +188,13 @@ _kernel_optimize_core() {
             GAME_EXTRA="net.ipv4.udp_rmem_min = 131072\nnet.ipv4.udp_wmem_min = 131072\nnet.core.optmem_max = 20480"
             ;;
         gateway)
-            # 【极客中转特化】专为 V2Ray/SS 中转加密直播设计
             SWAPPINESS=10; DIRTY_RATIO=20; DIRTY_BG_RATIO=10; OVERCOMMIT=1; VFS_PRESSURE=50
             MIN_FREE_KB=32768
-            # 8MB 极限防 Bufferbloat，保证跨国丢包不卡画面
             RMEM_MAX=8388608; WMEM_MAX=8388608 
             TCP_RMEM="4096 16384 8388608"; TCP_WMEM="4096 16384 8388608"
             SOMAXCONN=65535; BACKLOG=100000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"
-            SCHED_AUTOGROUP=0; THP="never"; NUMA=0
-            # 温和保活，绝对不杀 V2Ray 长连接隧道
-            FIN_TIMEOUT=30
-            KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5
-            UDP_RMEM_MIN=16384 # 拒绝拉大 UDP，省内存给 CPU 算加密
+            SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=30
+            KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5; UDP_RMEM_MIN=16384
             GATEWAY_EXTRA="# ── 中转网关专属：保 CPU 算加密，不抢软中断 ──\nnet.core.optmem_max = 20480"
             ;;
         balanced)
@@ -561,11 +556,10 @@ Kernel_optimize() {
         echo -e "4. 直播优化模式：       UDP极限拉爆+网卡软中断狂暴"
         echo -e "5. 游戏服优化模式：     8MB电竞级TCP防Bufferbloat"
         echo -e "6. 中转网关模式：       专精V2Ray/SS加密中转防卡顿 ${gl_huang}★${gl_bai}"
-        echo -e "7. BBRv3 内核安装      安装 XanMod BBRv3 内核"
-        echo -e "8. 还原默认设置：       将系统设置还原为默认配置。"
-        echo -e "9. 自动调优：           根据测试数据自动调优内核参数。${gl_huang}★${gl_bai}"
-        echo -e "10. 释放内存缓存：      强制清理系统 Cache (谨慎使用)"
-        echo -e "11. 验证当前网络状态：  查看内核参数是否生效 ${gl_huang}★${gl_bai}"
+        echo -e "7. 还原默认设置：       将系统设置还原为默认配置。"
+        echo -e "8. 自动调优：           根据测试数据自动调优内核参数。${gl_huang}★${gl_bai}"
+        echo -e "9. 释放内存缓存：      强制清理系统 Cache (谨慎使用)"
+        echo -e "10. 验证当前网络状态：  查看内核参数是否生效 ${gl_huang}★${gl_bai}"
         echo "--------------------"
         echo "0. 返回主菜单"
         echo "--------------------"
@@ -576,12 +570,11 @@ Kernel_optimize() {
             3) cd ~; clear; tiaoyou_moshi="网站优化模式"; _kernel_optimize_core "$tiaoyou_moshi" "web" ;;
             4) cd ~; clear; tiaoyou_moshi="直播优化模式"; _kernel_optimize_core "$tiaoyou_moshi" "stream" ;;
             5) cd ~; clear; tiaoyou_moshi="游戏服优化模式"; _kernel_optimize_core "$tiaoyou_moshi" "game" ;;
-            6) cd ~; clear; tiaoyou_moshi="中转网关模式"; _kernel_optimize_core "$tiaoyou_moshi" "gateway" ;; # 新增中转专属
-            7) cd ~; clear; bbrv3 ;;
-            8) cd ~; clear; restore_defaults ;;
-            9) echo -e "${gl_huang}即将拉取并执行远程网络优化脚本..."; read -e -p "按回车键继续，或按 Ctrl+C 取消: "; curl -sS ${gh_proxy}raw.githubusercontent.com/YW/sh/refs/heads/main/network-optimize.sh | bash ;;
-            10) echo -e "${gl_red}警告：强制释放内存缓存可能导致短暂 IO 抖动，生产环境请谨慎！${gl_bai}"; read -e -p "确定要执行 echo 3 > /proc/sys/vm/drop_caches 吗？: " drop_choice; if [[ "$drop_choice" =~ ^[Yy]$ ]]; then sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null && echo -e "${gl_lv}✅ 内存缓存已释放${gl_bai}"; else echo "已取消"; fi; read -rs -n 1 -p "按任意键继续..." ;;
-            11) verify_network_status; read -rs -n 1 -p "按任意键返回菜单..." ;;
+            6) cd ~; clear; tiaoyou_moshi="中转网关模式"; _kernel_optimize_core "$tiaoyou_moshi" "gateway" ;;
+            7) cd ~; clear; restore_defaults ;;
+            8) echo -e "${gl_huang}即将拉取并执行远程网络优化脚本..."; read -e -p "按回车键继续，或按 Ctrl+C 取消: "; curl -sS ${gh_proxy}raw.githubusercontent.com/YW/sh/refs/heads/main/network-optimize.sh | bash ;;
+            9) echo -e "${gl_red}警告：强制释放内存缓存可能导致短暂 IO 抖动，生产环境请谨慎！${gl_bai}"; read -e -p "确定要执行 echo 3 > /proc/sys/vm/drop_caches 吗？: " drop_choice; if [[ "$drop_choice" =~ ^[Yy]$ ]]; then sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null && echo -e "${gl_lv}✅ 内存缓存已释放${gl_bai}"; else echo "已取消"; fi; read -rs -n 1 -p "按任意键继续..." ;;
+            10) verify_network_status; read -rs -n 1 -p "按任意键返回菜单..." ;;
             0|"") break ;;
             *) echo -e "${gl_red}无效的选择${gl_bai}" ; read -rs -n 1 -p "按任意键继续..." ;;
         esac
@@ -589,7 +582,7 @@ Kernel_optimize() {
 }
 
 # ============================================================================
-# Main Menu Entry Point
+# Main Menu Entry Point (已将 BBRv3 提到首页选项 1)
 # ============================================================================
 
 main_menu() {
@@ -598,16 +591,18 @@ main_menu() {
         echo -e "${gl_huang}========================================${gl_bai}"
         echo -e "${gl_huang}       YW 系统管理与优化脚本            ${gl_bai}"
         echo -e "${gl_huang}========================================${gl_bai}"
-        echo -e "${gl_lv}1. 系统信息查询"
-        echo -e "${gl_huang}2. Linux 系统内核参数优化 (BBR/调优)"
-        echo -e "${gl_huang}3. 管理虚拟内存"
+        echo -e "${gl_lv}1. BBRv3 内核安装 (XanMod)"
+        echo -e "${gl_huang}2. 系统信息查询"
+        echo -e "${gl_huang}3. Linux 系统内核参数优化 (场景化调优)"
+        echo -e "${gl_huang}4. 管理虚拟内存"
         echo -e "${gl_hui}0. 退出程序"
         echo -e "${gl_huang}========================================${gl_bai}"
         read -e -p "请输入你的选择: " choice
         case $choice in
-            1) show_sys_info ;;
-            2) Kernel_optimize ;;
-            3) change_swap_size ;;
+            1) bbrv3 ;; # 首页直接调用 BBRv3 安装
+            2) show_sys_info ;;
+            3) Kernel_optimize ;;
+            4) change_swap_size ;;
             0) echo -e "${gl_lv}感谢使用，再见！${gl_bai}"; break ;;
             *) echo -e "${gl_red}无效的选择，请重新输入${gl_bai}" ; sleep 1 ;;
         esac
