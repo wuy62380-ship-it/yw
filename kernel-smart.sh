@@ -3,7 +3,7 @@
 # Linux 内核与网络调优模块 (YW全场景极限特化 + 中转网关专属)
 # ============================================================================
 
-# --- 颜色定义 ---
+# --- 邮色定义 ---
 : "${gl_bai:=\033[0m}"
 : "${gl_lv:=\033[32m}"
 : "${gl_huang:=\033[33m}"
@@ -48,7 +48,7 @@ check_disk_space() {
     local available_mb
     available_mb=$(df -m / | tail -1 | awk '{print $4}')
     if [ "$available_mb" -lt "$required_mb" ]; then
-        echo -e "${gl_red}错误: 磁盘空间不足，需要 ${required_mb}MB，当前可用: ${available_mb}MB${gl_bai}"
+        echo -e "${gl_red}错误: 磁盘空间不足，需要 ${required_mb}MB，当前可用: ${gl_bai}${available_mb}MB"
         return 1
     fi
     return 0
@@ -57,7 +57,7 @@ check_disk_space() {
 install() {
     if command -v apt >/dev/null 2>&1; then
         if ! apt-get install -y "$@" >/tmp/yw_apt.log 2>&1; then echo -e "${gl_red}APT 失败:${gl_bai}"; tail -n 3 /tmp/yw_apt.log; return 1; fi
-    elif command -v yum >/dev/null 2>/dev/null; then
+    elif command -v yum >/dev/null 2>&1; then
         if ! yum install -y "$@" >/tmp/yw_yum.log 2>/dev/null; then echo -e "${gl_red}YUM 失败:${gl_bai}"; tail -n 3 /tmp/yw_yum.log; return 1; fi
     fi
     return 0
@@ -76,7 +76,7 @@ bbr_on() {
             sed -i '/net.ipv4.tcp_congestion_control/d' "$CONF"
             echo "net.ipv4.tcp_congestion_control = bbr" >> "$CONF"
         fi
-        sysctl -p "$CONF" >/dev/null 2>/dev/null
+        sysctl -p "$CONF" >/dev/null 2>&1
     fi
     return 0
 }
@@ -123,7 +123,7 @@ change_swap_size() {
         if [ "$avail" -lt $((swap_size + 100)) ]; then echo -e "${gl_red}磁盘空间不足${gl_bai}"; read -rs -n 1 -p "按任意键返回..." && return 0; fi
         echo -e "${gl_lv}正在创建 Swap 文件 (${swap_size}MB)...${gl_bai}"; swapoff "$swap_file" 2>/dev/null
         dd if=/dev/zero of="${swap_file}" bs=1M count="${swap_size}" 2>/dev/null; chmod 600 "${swap_file}"
-        mkswap "${swap_file}" >/dev/null 2>/dev/null; swapon "${swap_file}" >/dev/null 2>&1
+        mkswap "${swap_file}" >/dev/null 2>&1; swapon "${swap_file}" >/dev/null 2>&1
         grep -q "/swapfile none" /etc/fstab 2>/dev/null || echo "/swapfile none swap sw 0 0" >> /etc/fstab
         echo -e "${gl_lv}✅ Swap 创建成功！当前大小: ${swap_size} MB${gl_bai}"
     fi
@@ -131,7 +131,7 @@ change_swap_size() {
 }
 
 # ============================================================================
-# Core Optimization Logic (全场景极限特化 + 中转网关专属)
+# Core Optimization Logic
 # ============================================================================
 
 _kernel_optimize_core() {
@@ -183,8 +183,10 @@ _kernel_optimize_core() {
             MIN_FREE_KB=131072; RMEM_MAX=8388608; WMEM_MAX=8388608 
             TCP_RMEM="4096 16384 8388608"; TCP_WMEM="4096 16384 8388608"
             SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"
-            SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=5
-            KEEPALIVE_TIME=60; KEEPALIVE_INTVL=10; KEEPALIVE_PROBES=3; UDP_RMEM_MIN=131072
+            SCHED_AUTOGROUP=0; THP="never"; NUMA=0
+            # 【默认给 5 秒是给游戏服短连接设计的，直播长连接需要放宽到 15 秒，防误杀隧道
+            FIN_TIMEOUT=15 
+            KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5; UDP_RMEM_MIN=131072
             GAME_EXTRA="net.ipv4.udp_rmem_min = 131072\nnet.ipv4.udp_wmem_min = 131072\nnet.core.optmem_max = 20480"
             ;;
         gateway)
@@ -193,7 +195,9 @@ _kernel_optimize_core() {
             RMEM_MAX=8388608; WMEM_MAX=8388608 
             TCP_RMEM="4096 16384 8388608"; TCP_WMEM="4096 16384 8388608"
             SOMAXCONN=65535; BACKLOG=100000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"
-            SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=30
+            SCHED_AUTOGROUP=0; THP="never"; NUMA=0
+            # 中转网关必须是长连接保活，绝对不能像游戏服那样 5 秒杀掉
+            FIN_TIMEOUT=30
             KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5; UDP_RMEM_MIN=16384
             GATEWAY_EXTRA="# ── 中转网关专属：保 CPU 算加密，不抢软中断 ──\nnet.core.optmem_max = 20480"
             ;;
@@ -218,9 +222,11 @@ _kernel_optimize_core() {
         MIN_FREE_KB=65536
     elif [ "$MEM_MB_VAL" -ge 1024 ]; then
         MIN_FREE_KB=32768
+        # 【小内存长连接特化】1：限制 TCP 内存池上限，防止内核吃光内存导致推流软件崩溃
         if [ "$scene" != "balanced" ] && [ "$scene" != "game" ] && [ "$scene" != "gateway" ]; then
             RMEM_MAX=16777216; WMEM_MAX=16777216; TCP_RMEM="4096 87380 16777216"; TCP_WMEM="4096 65536 16777216"
         fi
+        # 【小内存长连接特化】2：游戏和中转模式在小内存下，必须放宽死连接等待时间，防止长连接被内核误杀
         if [ "$scene" = "game" ] || [ "$scene" = "gateway" ]; then
             RMEM_MAX=16777216; WMEM_MAX=16777216; TCP_RMEM="4096 32768 16777216"; TCP_WMEM="4096 32768 16777216"
             GAME_EXTRA="net.ipv4.udp_rmem_min = 131072\nnet.ipv4.udp_wmem_min = 131072"
@@ -232,36 +238,33 @@ _kernel_optimize_core() {
         TCP_RMEM="4096 32768 4194304"; TCP_WMEM="4096 32768 4194304"
         HIGH_EXTRA=""; WEB_EXTRA=""; STREAM_EXTRA=""; GAME_EXTRA=""; BALANCED_EXTRA=""; GATEWAY_EXTRA=""
         
-        # ========================================================================
-        # 【永久生效修改点】调虎离山策略：zswap 内存压缩永久化写入 sysctl.conf
-        # ========================================================================
         if [ "$HAS_SWAP" -gt 0 ]; then
             SWAPPINESS=60 
             echo -e "${gl_huang}检测极小内存(${MEM_MB_VAL}MB)，启动调虎离山策略 (zswap内存压缩已永久开启)${gl_bai}"
+            if [ -f /sys/module/zswap/parameters/enabled ]; then echo Y > /sys/module/zswap/parameters/enabled; fi
             
-            # 尝试在内存中临时激活（让当前会话立即生效）
-            if [ -f /sys/module/zswap/parameters/enabled ]; then
-                echo Y > /sys/module/zswap/参数/enabled
-            fi
-            
-            # 写入 sysctl.conf 实现永久生效（重启依然有效）
+            # 永久写入 sysctl.conf
             if ! grep -q "^vm.zswap.enabled" /etc/sysctl.conf 2>/dev/null; then
                 echo "vm.zswap.enabled = 1" >> /etc/sysctl.conf
+                sysctl -p -w /etc/sysctl.conf >/dev/null 2>&1
+                echo -e "${gl_lv}✅ zswap 内存压缩已永久生效，重启后依然生效。${gl_bai}"
             fi
         else
-            echo -e "${gl_red}检测极小内存(${MEM_MB_VAL}无Swap！已强制降级防死机，强烈建议添加 Swap！${gl_bai}"
+            echo -e "${gl_red}检测极小内存(${MEM_MB_VAL}MB)无Swap！已强制降级防死机，强烈建议添加 Swap！${gl_bai}"
         fi
     fi
 
     local KVER=$(uname -r | grep -oP '^\d+\.\d+')
     CC="cubic"; QDISC="fq_codel"
-    if [ -n "$KVER" ] && { [ "$KVER" \> "4.9" ] || [ "$KVER" = "4.9" ]; }; then
+    if [ -n "$KVER" ] && { [ "$KVER" \> "4.9" ] || [ "$KVER" = "4.9" }; then
         modprobe tcp_bbr 2>/dev/null
         if sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q bbr; then CC="bbr"; QDISC="fq"; fi
     fi
 
+    # 【小内存直播/中转专属特化 2：严格限制 TCP 内存池上限防 OOM
     local TCP_MEM_MIN=$((MEM_MB_VAL * 256)); local TCP_MEM_DEF=$((MEM_MB_VAL * 512)); local TCP_MEM_MAX=$((MEM_MB_VAL * 1024))
-    [ "$TCP_MEM_MIN" -lt 8192 ] && TCP_MEM_MIN=8192; [ "$TCP_MEM_DEF" -lt 16384 ] && TCP_MEM_DEF=16384; [ "$TCP_MEM_MAX" -lt 32768 ] && TCP_MEM_MAX=32768
+    [ "$TCP_MEM_MIN" -lt 8192 ] && TCP_MEM_MIN=8192
+    [ "$TCP_MEM_DEF" -lt 16384 ] && TCP_MEM_DEF=16384; [ "$TCP_MEM_MAX" -lt 32768 ] && TCP_MEM_MAX=32768
 
     if [ "$scene" = "stream" ] && [ "$MEM_MB_VAL" -ge 1024 ]; then
         STREAM_EXTRA="${STREAM_EXTRA}\nnet.ipv4.udp_mem = $((MEM_MB_VAL * 128)) $((MEM_MB_VAL * 256)) $((MEM_MB_VAL * 512))"
@@ -336,7 +339,7 @@ vm.vfs_cache_pressure = $VFS_PRESSURE
 
 # ── CPU/内核调度 ──
 kernel.sched_autogroup_enabled = $SCHED_AUTOGROUP
- $( [ -f /proc/sys/kernel/numa_balancing ] && echo "kernel.numa_balancing = $NUMA" || echo "# numa_balancing 不支持" )
+ $( [ -f /proc/sys/kernel/numa_balancing ] && echo "kernel.numa_balancing = $NUMA" || echo "# numa_balancing 不支持"
 
 # ── 安全防护 ──
 net.ipv4.conf.all.rp_filter = 1
@@ -443,7 +446,7 @@ verify_network_status() {
     local mode="未知"
     case $rmem in
         8388608) 
-            if sysctl -n net.ipv4.tcp_keepalive_time 2>/dev/null | grep -q "300"; then mode="中转网关模式 (8MB 极致防卡顿+保隧道)"
+            if sysctl -n net.ipv4.tcp_keepalive_time 2>/dev/null | grep -q "300"; then mode="中转网关模式 (8MB 防止卡顿+保隧道)"
             else mode="电竞级游戏模式 (8MB 绝杀缓冲)"
             fi ;;
         16777216) mode="通用游戏/中等内存 (16MB)" ;;
@@ -504,8 +507,8 @@ show_sys_info() {
         local udp_count=$(ss -u state established 2>/dev/null | wc -l)
         local rx=$(awk 'NR>2 && $1 !~ /^lo:/ && $1 !~ /^sit/ {gsub(/:/,""); a+=$2} END{print a+0}' /proc/net/dev)
         local tx=$(awk 'NR>2 && $1 !~ /^lo:/ && $1 !~ /^sit/ {gsub(/:/,""); a+=$10} END{print a+0}' /proc/net/dev)
-        local rx_gb=$(awk "BEGIN{printf \"%.2f\", ${rx}/1024/1024/1024}")
-        local tx_gb=$(awk "BEGIN{printf \"%.2f\", ${tx}/1024/1024/1024}")
+        local rx_gb=$(awk "BEGIN{printf \"%.2f\", ${rx}/1024/1024/1024/1024}")
+        local tx_gb=$(awk "BEGIN{printf \"%.2f\", ${tx}/1024/1024/1024/1024}")
         local ipv4_addr=$(ip -4 addr 2>/dev/null | grep inet | grep -v "127.0.0.1" | awk '{print $2}' | head -1)
         local ipv6_addr=$(ip -6 addr 2>/dev/null | grep inet6 | grep -v "::1" | awk '{print $2}' | head -1)
 
@@ -575,7 +578,7 @@ Kernel_optimize() {
         echo -e "7. 还原默认设置：       将系统设置还原为默认配置。"
         echo -e "8. 自动调优：           根据测试数据自动调优内核参数。${gl_huang}★${gl_bai}"
         echo -e "9. 释放内存缓存：      强制清理系统 Cache (谨慎使用)"
-        echo -e "10. 验证当前网络状态：  查看内核参数是否生效 ${gl_huang}★${gl_bai}"
+        -e "10. 验证当前网络状态：  查看内核参数是否生效 ${gl_huang}★${gl_bai}"
         echo "--------------------"
         echo "0. 返回主菜单"
         echo "--------------------"
@@ -625,4 +628,4 @@ main_menu() {
     done
 }
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then main_menu; fi
+if [[ "${BASH_SOURCE[0]" == "${0}" ]]; then main_menu; fi
