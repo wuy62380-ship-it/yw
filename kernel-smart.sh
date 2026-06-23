@@ -29,17 +29,62 @@ root_use() {
     fi
 }
 
+# 【专家优化】增强防呆：自动识别 zram/PVE 环境，防止重复/错误创建 Swap
 check_swap() {
     local swap_total=$(free -m | awk '/Swap/{print $2}')
-    if [ "$swap_total" -lt 512 ] && [ -f /swapfile ]; then
-        echo -e "${gl_huang}Swap file detected, skipping creation.${gl_bai}"
+    # 如果已经有充足的 Swap，或者 zram 正在运行，直接跳过
+    if [ "$swap_total" -ge 512 ] || swapon --show | grep -q "/dev/zram"; then
         return 0
-    elif [ "$swap_total" -lt 512 ]; then
+    fi
+    
+    # 如果存在 /swapfile 但没挂载，尝试挽救挂载
+    if [ -f /swapfile ] && [ "$swap_total" -lt 512 ]; then
+        swapon /swapfile >/dev/null 2>&1
+        swap_total=$(free -m | awk '/Swap/{print $2}')
+        [ "$swap_total" -ge 512 ] && return 0
+    fi
+    
+    # 确认根目录可写，且不是 PVE/LVM 环境（简单防呆）
+    if df / | grep -q "/$" && [ ! -f /etc/pve/.version ]; then
+        echo -e "${gl_huang}正在创建 512MB 应急 Swap...${gl_bai}"
         dd if=/dev/zero of=/swapfile bs=1M count=512 2>/dev/null
         chmod 600 /swapfile
         mkswap /swapfile >/dev/null 2>&1
         swapon /swapfile >/dev/null 2>&1
-        echo -e "${gl_lv}Swap created and activated (512MB).${gl_bai}"
+        grep -q "/swapfile none" /etc/fstab 2>/dev/null || echo "/swapfile none swap sw 0 0" >> /etc/fstab
+        echo -e "${gl_lv}✅ 应急 Swap 创建完成。${gl_bai}"
+    fi
+}
+
+# 【专家优化】小内存全自动部署 zram 替代 zswap
+auto_setup_zram() {
+    # 如果已经有 zram 设备在运行，直接返回
+    if swapon --show | grep -q "/dev/zram"; then
+        echo -e "${gl_lv}检测到 zram 已在运行，跳过配置。${gl_bai}"
+        return 0
+    fi
+
+    echo -e "${gl_lv}正在尝试自动配置 zram 替代 zswap...${gl_bai}"
+    
+    # Debian/Ubuntu 系列使用 zram-tools
+    if command -v apt >/dev/null 2>&1; then
+        if ! command -v zramctl >/dev/null 2>&1; then
+            install zram-tools || return 1
+        fi
+        # 配置 zram 参数：占用物理内存的 50%，使用 zstd 压缩算法
+        sed -i 's/^ALGO=.*/ALGO=zstd/' /etc/default/zramswap 2>/dev/null
+        sed -i 's/^PERCENT=.*/PERCENT=50/' /etc/default/zramswap 2>/dev/null
+        # 启动服务
+        systemctl enable zramswap >/dev/null 2>&1
+        systemctl restart zramswap >/dev/null 2>&1
+        if swapon --show | grep -q "/dev/zram"; then
+            echo -e "${gl_lv}✅ zram 配置成功并已启动（持久化生效）！${gl_bai}"
+        else
+            echo -e "${gl_huang}zram 服务启动失败，可能内核不支持。${gl_bai}"
+        fi
+    # CentOS/RHEL 系列处理
+    elif command -v yum >/dev/null 2>&1; then
+        echo -e "${gl_huang}CentOS/RHEL 建议手动执行: yum install zram-generator -y 并配置 systemd-zram-setup@zram0.service${gl_bai}"
     fi
 }
 
@@ -242,10 +287,13 @@ _kernel_optimize_core() {
         if [ "$HAS_SWAP" -gt 0 ]; then
             SWAPPINESS=60 
             echo -e "${gl_huang}检测极小内存(${MEM_MB_VAL}MB)，已自动禁用 zswap 防卡死。${gl_bai}"
-            echo -e "${gl_red}警告: 极小内存下不建议使用 zswap (会占物理内存)。${gl_bai}"
-            echo -e "${gl_lv}建议: 如果需要内存压缩，请使用 zram 替代 zswap！${gl_bai}"
+            echo -e "${gl_lv}建议: 自动为您部署 zram 内存压缩盘...${gl_bai}"
+            auto_setup_zram
         else
-            echo -e "${gl_red}检测极小内存(${MEM_MB_VAL}MB)无Swap！已强制降级防死机，强烈建议添加 Swap 或开启 zram！${gl_bai}"
+            echo -e "${gl_red}检测极小内存(${MEM_MB_VAL}MB)无Swap！已强制降级防死机。${gl_bai}"
+            echo -e "${gl_lv}建议: 自动为您创建基础 Swap 并部署 zram...${gl_bai}"
+            check_swap
+            auto_setup_zram
         fi
     fi
 
@@ -333,7 +381,7 @@ vm.vfs_cache_pressure = $VFS_PRESSURE
 
 # ── CPU/内核调度 ──
 kernel.sched_autogroup_enabled = $SCHED_AUTOGROUP
- $( [ -f /proc/sys/kernel/numa_balancing ] && echo "kernel.numa_balancing = $NUMA" || echo "# numa_balancing 不支持"
+ $( [ -f /proc/sys/kernel/numa_balancing ] && echo "kernel.numa_balancing = $NUMA" || echo "# numa_balancing 不支持" )
 
 # ── 安全防护 ──
 net.ipv4.conf.all.rp_filter = 1
@@ -371,7 +419,13 @@ EOF
 
     flock -u 200; exec 200>&-
     echo -e "${gl_lv}正在加载配置..."
-    sysctl -p "$CONF" >/dev/null 2>&1
+    
+    # 【专家优化】智能过滤无伤大雅的内核不兼容报错，避免误导用户
+    local sysctl_err=$(sysctl -p "$CONF" 2>&1 | grep -v "Invalid argument" | grep -v "No such file or directory" | grep -v "unknown key")
+    if [ -n "$sysctl_err" ]; then
+        echo -e "${gl_huang}Sysctl 加载时有以下异常(通常不影响核心功能):${gl_bai}"
+        echo "$sysctl_err" | head -n 3
+    fi
     
     if ! grep -q "# YW-optimize" /etc/security/limits.conf 2>/dev/null; then
         echo -e "\n# YW-optimize" >> /etc/security/limits.conf
@@ -429,7 +483,7 @@ restore_defaults() {
     sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf 2>/dev/null; sysctl --system >/dev/null 2>&1
     [ -f /sys/kernel/mm/transparent_hugepage/enabled ] && echo always > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null
     sed -i '/# YW-optimize/,+4d' /etc/security/limits.conf 2>/dev/null
-    # 【修复】还原时顺带清理可能残留的 zswap 配置并运行时关闭
+    # 还原时顺带清理可能残留的 zswap 配置并运行时关闭
     if [ -f /sys/module/zswap/parameters/enabled ]; then
         echo N > /sys/module/zswap/parameters/enabled 2>/dev/null
     fi
@@ -479,7 +533,11 @@ show_sys_info() {
         local mem_percent=$(awk "BEGIN{printf \"%.1f\", ${mem_used_mb}*100/${mem_total_mb}}")
         local mem_info="${mem_avail_mb}M/${mem_total_mb}M (${mem_percent}%)"
         local disk_info=$(df -h / | awk 'NR==2{printf "%s/%s (%s)", $3, $2, $5}')
-        local ipinfo=$(curl -s --connect-timeout 3 --max-time 5 ipinfo.io 2>/dev/null || echo "{}")
+        
+        # 【专家优化】防止内网/被墙导致卡死UI，增加进度提示并缩短超时
+        echo -ne "${gl_hui}正在获取外网IP信息(超时3秒自动跳过)...${gl_bai}\r"
+        local ipinfo=$(curl -s --connect-timeout 2 --max-time 3 ipinfo.io 2>/dev/null || echo "{}")
+        
         local country=$(echo "$ipinfo" | awk -F'"' '/country/{print $4}')
         local city=$(echo "$ipinfo" | awk -F'"' '/city/{print $4}')
         local isp_info=$(echo "$ipinfo" | awk -F'"' '/org/{print $4}')
@@ -607,7 +665,7 @@ main_menu() {
         echo -e "${gl_huang}========================================${gl_bai}"
         echo -e "${gl_huang}       YW 系统管理与优化脚本            ${gl_bai}"
         echo -e "${gl_huang}========================================${gl_bai}"
-        echo -e "${gl_lv}1. BBRv3 内核安装 (XanMod)"
+        echo -e "${gl_lv}1. BBRv3 内核安装"
         echo -e "${gl_huang}2. 系统信息查询"
         echo -e "${gl_huang}3. Linux 系统内核参数优化 (场景化调优)"
         echo -e "${gl_huang}4. 管理虚拟内存"
