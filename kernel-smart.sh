@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# Linux 内核与网络调优模块 (YW全场景极限特化 + 中转网关专属版)
+# Linux 内核与网络调优模块 (YW全场景极限特化 + 中转网关专属)
 # ============================================================================
 
 # --- 颜色定义 ---
@@ -38,7 +38,7 @@ check_swap() {
         dd if=/dev/zero of=/swapfile bs=1M count=512 2>/dev/null
         chmod 600 /swapfile
         mkswap /swapfile >/dev/null 2>&1
-        swapon /swapfile >/dev/null 2>&1
+        swapon /swapfile >/dev/null 2>/dev/null
         echo -e "${gl_lv}Swap created and activated (512MB).${gl_bai}"
     fi
 }
@@ -57,7 +57,7 @@ check_disk_space() {
 install() {
     if command -v apt >/dev/null 2>&1; then
         if ! apt-get install -y "$@" >/tmp/yw_apt.log 2>&1; then echo -e "${gl_red}APT 失败:${gl_bai}"; tail -n 3 /tmp/yw_apt.log; return 1; fi
-    elif command -v yum >/dev/null 2>&1; then
+    elif command -v yum >/dev/null 2>/dev/null; then
         if ! yum install -y "$@" >/tmp/yw_yum.log 2>/dev/null; then echo -e "${gl_red}YUM 失败:${gl_bai}"; tail -n 3 /tmp/yw_yum.log; return 1; fi
     fi
     return 0
@@ -76,7 +76,7 @@ bbr_on() {
             sed -i '/net.ipv4.tcp_congestion_control/d' "$CONF"
             echo "net.ipv4.tcp_congestion_control = bbr" >> "$CONF"
         fi
-        sysctl -p "$CONF" >/dev/null 2>&1
+        sysctl -p "$CONF" >/dev/null 2>/dev/null
     fi
     return 0
 }
@@ -123,7 +123,7 @@ change_swap_size() {
         if [ "$avail" -lt $((swap_size + 100)) ]; then echo -e "${gl_red}磁盘空间不足${gl_bai}"; read -rs -n 1 -p "按任意键返回..." && return 0; fi
         echo -e "${gl_lv}正在创建 Swap 文件 (${swap_size}MB)...${gl_bai}"; swapoff "$swap_file" 2>/dev/null
         dd if=/dev/zero of="${swap_file}" bs=1M count="${swap_size}" 2>/dev/null; chmod 600 "${swap_file}"
-        mkswap "${swap_file}" >/dev/null 2>&1; swapon "${swap_file}" >/dev/null 2>&1
+        mkswap "${swap_file}" >/dev/null 2>/dev/null; swapon "${swap_file}" >/dev/null 2>&1
         grep -q "/swapfile none" /etc/fstab 2>/dev/null || echo "/swapfile none swap sw 0 0" >> /etc/fstab
         echo -e "${gl_lv}✅ Swap 创建成功！当前大小: ${swap_size} MB${gl_bai}"
     fi
@@ -231,12 +231,25 @@ _kernel_optimize_core() {
         RMEM_MAX=4194304; WMEM_MAX=4194304; SOMAXCONN=1024; BACKLOG=1000
         TCP_RMEM="4096 32768 4194304"; TCP_WMEM="4096 32768 4194304"
         HIGH_EXTRA=""; WEB_EXTRA=""; STREAM_EXTRA=""; GAME_EXTRA=""; BALANCED_EXTRA=""; GATEWAY_EXTRA=""
+        
+        # ========================================================================
+        # 【永久生效修改点】调虎离山策略：zswap 内存压缩永久化写入 sysctl.conf
+        # ========================================================================
         if [ "$HAS_SWAP" -gt 0 ]; then
             SWAPPINESS=60 
-            echo -e "${gl_huang}检测极小内存(${MEM_MB_VAL}MB)，启动调虎离山策略${gl_bai}"
-            [ -f /sys/module/zswap/parameters/enabled ] && echo Y > /sys/module/zswap/parameters/enabled 2>/dev/null
+            echo -e "${gl_huang}检测极小内存(${MEM_MB_VAL}MB)，启动调虎离山策略 (zswap内存压缩已永久开启)${gl_bai}"
+            
+            # 尝试在内存中临时激活（让当前会话立即生效）
+            if [ -f /sys/module/zswap/parameters/enabled ]; then
+                echo Y > /sys/module/zswap/参数/enabled
+            fi
+            
+            # 写入 sysctl.conf 实现永久生效（重启依然有效）
+            if ! grep -q "^vm.zswap.enabled" /etc/sysctl.conf 2>/dev/null; then
+                echo "vm.zswap.enabled = 1" >> /etc/sysctl.conf
+            fi
         else
-            echo -e "${gl_red}检测极小内存(${MEM_MB_VAL}MB)无Swap！已强制降级防死机${gl_bai}"
+            echo -e "${gl_red}检测极小内存(${MEM_MB_VAL}无Swap！已强制降级防死机，强烈建议添加 Swap！${gl_bai}"
         fi
     fi
 
@@ -418,7 +431,10 @@ restore_defaults() {
     echo -e "${gl_lv}还原中...${gl_bai}"; rm -f /etc/sysctl.d/99-yw-optimize.conf /etc/sysctl.d/99-network-optimize.conf
     sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf 2>/dev/null; sysctl --system >/dev/null 2>&1
     [ -f /sys/kernel/mm/transparent_hugepage/enabled ] && echo always > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null
-    sed -i '/# YW-optimize/,+4d' /etc/security/limits.conf 2>/dev/null; echo -e "${gl_lv}已还原${gl_bai}"
+    sed -i '/# YW-optimize/,+4d' /etc/security/limits.conf 2>/dev/null
+    # 【修复】还原时顺带清理可能残留的 zswap 配置
+    sed -i '/vm.zswap.enabled/d' /etc/sysctl.conf 2>/dev/null
+    echo -e "${gl_lv}已还原${gl_bai}"
 }
 
 verify_network_status() {
@@ -468,7 +484,7 @@ show_sys_info() {
         local city=$(echo "$ipinfo" | awk -F'"' '/city/{print $4}')
         local isp_info=$(echo "$ipinfo" | awk -F'"' '/org/{print $4}')
         local load=$(uptime | awk '{print $(NF-2), $(NF-1), $NF}')
-        local dns_addresses=$(awk '/^nameserver/{printf "%s ", $2} END {print ""}' /etc/resolv.conf)
+        local dns_addresses=$(awk '/^nameserver/{printf "%s ", $2 } END {print ""}' /etc/resolv.conf)
         local cpu_arch=$(uname -m)
         local hostname_val=$(uname -n)
         local kernel_version=$(uname -r)
@@ -582,7 +598,7 @@ Kernel_optimize() {
 }
 
 # ============================================================================
-# Main Menu Entry Point (已将 BBRv3 提到首页选项 1)
+# Main Menu Entry Point
 # ============================================================================
 
 main_menu() {
@@ -599,7 +615,7 @@ main_menu() {
         echo -e "${gl_huang}========================================${gl_bai}"
         read -e -p "请输入你的选择: " choice
         case $choice in
-            1) bbrv3 ;; # 首页直接调用 BBRv3 安装
+            1) bbrv3 ;;
             2) show_sys_info ;;
             3) Kernel_optimize ;;
             4) change_swap_size ;;
