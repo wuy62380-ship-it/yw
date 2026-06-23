@@ -29,11 +29,11 @@ root_use() {
     fi
 }
 
-# 【专家优化】增强防呆：自动识别 zram/PVE 环境，防止重复/错误创建 Swap
+# 【兼容性优化】使用 /proc/swaps 替代 swapon --show，兼容 CentOS 6 等老系统
 check_swap() {
     local swap_total=$(free -m | awk '/Swap/{print $2}')
     # 如果已经有充足的 Swap，或者 zram 正在运行，直接跳过
-    if [ "$swap_total" -ge 512 ] || swapon --show | grep -q "/dev/zram"; then
+    if [ "$swap_total" -ge 512 ] || grep -q "/dev/zram" /proc/swaps 2>/dev/null; then
         return 0
     fi
     
@@ -56,10 +56,10 @@ check_swap() {
     fi
 }
 
-# 【专家优化】小内存全自动部署 zram 替代 zswap
+# 【兼容性优化】小内存全自动部署 zram 替代 zswap
 auto_setup_zram() {
     # 如果已经有 zram 设备在运行，直接返回
-    if swapon --show | grep -q "/dev/zram"; then
+    if grep -q "/dev/zram" /proc/swaps 2>/dev/null; then
         echo -e "${gl_lv}检测到 zram 已在运行，跳过配置。${gl_bai}"
         return 0
     fi
@@ -77,7 +77,7 @@ auto_setup_zram() {
         # 启动服务
         systemctl enable zramswap >/dev/null 2>&1
         systemctl restart zramswap >/dev/null 2>&1
-        if swapon --show | grep -q "/dev/zram"; then
+        if grep -q "/dev/zram" /proc/swaps 2>/dev/null; then
             echo -e "${gl_lv}✅ zram 配置成功并已启动（持久化生效）！${gl_bai}"
         else
             echo -e "${gl_huang}zram 服务启动失败，可能内核不支持。${gl_bai}"
@@ -158,7 +158,13 @@ change_swap_size() {
     local swap_size=""
     case "$swap_choice" in
         1) swap_size=1024 ;; 2) swap_size=2048 ;; 3) swap_size=4096 ;; 4) swap_size=6144 ;;
-        5) read -e -p "请输入自定义大小 (MB, 最小512): " swap_size; [[ -z "$swap_size" || "$swap_size" -lt 512 ]] && echo -e "${gl_red}错误: 最小512MB${gl_bai}" && read -rs -n 1 -p "按任意键返回..." && return 0 ;;
+        5) 
+            read -e -p "请输入自定义大小 (MB, 最小512): " swap_size
+            # 【防呆优化】严格校验输入必须为纯数字，防止字母导致脚本报错退出
+            if [[ -z "$swap_size" || ! "$swap_size" =~ ^[0-9]+$ || "$swap_size" -lt 512 ]]; then
+                echo -e "${gl_red}错误: 必须为纯数字且最小512MB${gl_bai}"; read -rs -n 1 -p "按任意键返回..." && return 0
+            fi
+            ;;
         6) if [ "$current_swap" -gt 0 ]; then swapoff "$swap_file" 2>/dev/null; rm -f "$swap_file"; sed -i '/swapfile.*swap/d' /etc/fstab; echo -e "${gl_lv}Swap 已移除${gl_bai}"; else echo -e "${gl_huang}当前没有 Swap 文件${gl_bai}"; fi; read -rs -n 1 -p "按任意键返回..." && return 0 ;;
         0|"") return 0 ;;
         *) echo -e "${gl_red}无效选择${gl_bai}"; read -rs -n 1 -p "按任意键返回..." && return 0 ;;
@@ -203,7 +209,8 @@ _kernel_optimize_core() {
             SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"
             SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=10
             KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5
-            HIGH_EXTRA="vm.dirty_ratio = 40\nvm.dirty_background_ratio = 10"
+            # 【转义符修复】必须使用 $'...' 让 \n 生效为真正的回车换行
+            HIGH_EXTRA=$'vm.dirty_ratio = 40\nvm.dirty_background_ratio = 10'
             ;;
         web)
             SWAPPINESS=10; DIRTY_RATIO=20; DIRTY_BG_RATIO=10; OVERCOMMIT=1; VFS_PRESSURE=50
@@ -212,7 +219,7 @@ _kernel_optimize_core() {
             SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"
             SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=15
             KEEPALIVE_TIME=120; KEEPALIVE_INTVL=15; KEEPALIVE_PROBES=3 
-            WEB_EXTRA="net.ipv4.tcp_max_tw_buckets = 524288\nnet.ipv4.tcp_max_syn_backlog = 16384"
+            WEB_EXTRA=$'net.ipv4.tcp_max_tw_buckets = 524288\nnet.ipv4.tcp_max_syn_backlog = 16384'
             ;;
         stream)
             SWAPPINESS=10; DIRTY_RATIO=15; DIRTY_BG_RATIO=5; OVERCOMMIT=1; VFS_PRESSURE=50
@@ -221,7 +228,7 @@ _kernel_optimize_core() {
             SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"
             SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=10
             KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5; UDP_RMEM_MIN=131072
-            STREAM_EXTRA="net.ipv4.udp_rmem_min = 131072\nnet.ipv4.udp_wmem_min = 131072\nnet.ipv4.udp_rmem_max = 16777216\nnet.ipv4.udp_wmem_max = 16777216\nnet.core.netdev_budget = 1200\nnet.core.netdev_max_backlog = 500000"
+            STREAM_EXTRA=$'net.ipv4.udp_rmem_min = 131072\nnet.ipv4.udp_wmem_min = 131072\nnet.ipv4.udp_rmem_max = 16777216\nnet.ipv4.udp_wmem_max = 16777216\nnet.core.netdev_budget = 1200\nnet.core.netdev_max_backlog = 500000'
             ;;
         game)
             SWAPPINESS=10; DIRTY_RATIO=10; DIRTY_BG_RATIO=5; OVERCOMMIT=1; VFS_PRESSURE=50
@@ -231,7 +238,7 @@ _kernel_optimize_core() {
             SCHED_AUTOGROUP=0; THP="never"; NUMA=0
             FIN_TIMEOUT=15 
             KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5; UDP_RMEM_MIN=131072
-            GAME_EXTRA="net.ipv4.udp_rmem_min = 131072\nnet.ipv4.udp_wmem_min = 131072\nnet.core.optmem_max = 20480"
+            GAME_EXTRA=$'net.ipv4.udp_rmem_min = 131072\nnet.ipv4.udp_wmem_min = 131072\nnet.core.optmem_max = 20480'
             ;;
         gateway)
             SWAPPINESS=10; DIRTY_RATIO=20; DIRTY_BG_RATIO=10; OVERCOMMIT=1; VFS_PRESSURE=50
@@ -242,7 +249,7 @@ _kernel_optimize_core() {
             SCHED_AUTOGROUP=0; THP="never"; NUMA=0
             FIN_TIMEOUT=30
             KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5; UDP_RMEM_MIN=16384
-            GATEWAY_EXTRA="# ── 中转网关专属：保 CPU 算加密，不抢软中断 ──\nnet.core.optmem_max = 20480"
+            GATEWAY_EXTRA=$'# ── 中转网关专属：保 CPU 算加密，不抢软中断 ──\nnet.core.optmem_max = 20480'
             ;;
         balanced)
             SWAPPINESS=30; DIRTY_RATIO=20; DIRTY_BG_RATIO=10; OVERCOMMIT=0; VFS_PRESSURE=75
@@ -270,8 +277,8 @@ _kernel_optimize_core() {
         fi
         if [ "$scene" = "game" ] || [ "$scene" = "gateway" ]; then
             RMEM_MAX=16777216; WMEM_MAX=16777216; TCP_RMEM="4096 32768 16777216"; TCP_WMEM="4096 32768 16777216"
-            GAME_EXTRA="net.ipv4.udp_rmem_min = 131072\nnet.ipv4.udp_wmem_min = 131072"
-            GATEWAY_EXTRA="# ── 中转网关低内存自适应 ──"
+            GAME_EXTRA=$'net.ipv4.udp_rmem_min = 131072\nnet.ipv4.udp_wmem_min = 131072'
+            GATEWAY_EXTRA=$'# ── 中转网关低内存自适应 ──'
         fi
     else
         MIN_FREE_KB=16384; OVERCOMMIT=0; SWAPPINESS=10
@@ -299,7 +306,8 @@ _kernel_optimize_core() {
 
     local KVER=$(uname -r | grep -oP '^\d+\.\d+')
     CC="cubic"; QDISC="fq_codel"
-    if [ -n "$KVER" ] && { [ "$KVER" \> "4.9" ] || [ "$KVER" = "4.9" ]; then
+    # 【语法断裂修复】大括号后必须加分号 ; 才能接 then
+    if [ -n "$KVER" ] && { [ "$KVER" \> "4.9" ] || [ "$KVER" = "4.9" ]; }; then
         modprobe tcp_bbr 2>/dev/null
         if sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q bbr; then CC="bbr"; QDISC="fq"; fi
     fi
@@ -308,8 +316,9 @@ _kernel_optimize_core() {
     [ "$TCP_MEM_MIN" -lt 8192 ] && TCP_MEM_MIN=8192
     [ "$TCP_MEM_DEF" -lt 16384 ] && TCP_MEM_DEF=16384; [ "$TCP_MEM_MAX" -lt 32768 ] && TCP_MEM_MAX=32768
 
+    # 【转义符修复】动态拼接字符串中的 \n 也需要用 $'' 解释
     if [ "$scene" = "stream" ] && [ "$MEM_MB_VAL" -ge 1024 ]; then
-        STREAM_EXTRA="${STREAM_EXTRA}\nnet.ipv4.udp_mem = $((MEM_MB_VAL * 128)) $((MEM_MB_VAL * 256)) $((MEM_MB_VAL * 512))"
+        STREAM_EXTRA="${STREAM_EXTRA}"$'\nnet.ipv4.udp_mem = '"$((MEM_MB_VAL * 128)) $((MEM_MB_VAL * 256)) $((MEM_MB_VAL * 512))"
     fi
 
     local TW_BUCKETS=$((SOMAXCONN * 4)); local MAX_ORPHANS=$((SOMAXCONN * 2))
@@ -665,7 +674,7 @@ main_menu() {
         echo -e "${gl_huang}========================================${gl_bai}"
         echo -e "${gl_huang}       YW 系统管理与优化脚本            ${gl_bai}"
         echo -e "${gl_huang}========================================${gl_bai}"
-        echo -e "${gl_lv}1. BBRv3 内核安装"
+        echo -e "${gl_lv}1. BBRv3 内核安装 (XanMod)"
         echo -e "${gl_huang}2. 系统信息查询"
         echo -e "${gl_huang}3. Linux 系统内核参数优化 (场景化调优)"
         echo -e "${gl_huang}4. 管理虚拟内存"
