@@ -38,7 +38,7 @@ check_swap() {
         dd if=/dev/zero of=/swapfile bs=1M count=512 2>/dev/null
         chmod 600 /swapfile
         mkswap /swapfile >/dev/null 2>&1
-        swapon /swapfile >/dev/null 2>/dev/null
+        swapon /swapfile >/dev/null 2>&1
         echo -e "${gl_lv}Swap created and activated (512MB).${gl_bai}"
     fi
 }
@@ -184,7 +184,6 @@ _kernel_optimize_core() {
             TCP_RMEM="4096 16384 8388608"; TCP_WMEM="4096 16384 8388608"
             SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"
             SCHED_AUTOGROUP=0; THP="never"; NUMA=0
-            # 【默认给 5 秒是给游戏服短连接设计的，直播长连接需要放宽到 15 秒，防误杀隧道
             FIN_TIMEOUT=15 
             KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5; UDP_RMEM_MIN=131072
             GAME_EXTRA="net.ipv4.udp_rmem_min = 131072\nnet.ipv4.udp_wmem_min = 131072\nnet.core.optmem_max = 20480"
@@ -196,7 +195,6 @@ _kernel_optimize_core() {
             TCP_RMEM="4096 16384 8388608"; TCP_WMEM="4096 16384 8388608"
             SOMAXCONN=65535; BACKLOG=100000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"
             SCHED_AUTOGROUP=0; THP="never"; NUMA=0
-            # 中转网关必须是长连接保活，绝对不能像游戏服那样 5 秒杀掉
             FIN_TIMEOUT=30
             KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5; UDP_RMEM_MIN=16384
             GATEWAY_EXTRA="# ── 中转网关专属：保 CPU 算加密，不抢软中断 ──\nnet.core.optmem_max = 20480"
@@ -222,11 +220,9 @@ _kernel_optimize_core() {
         MIN_FREE_KB=65536
     elif [ "$MEM_MB_VAL" -ge 1024 ]; then
         MIN_FREE_KB=32768
-        # 【小内存长连接特化】1：限制 TCP 内存池上限，防止内核吃光内存导致推流软件崩溃
         if [ "$scene" != "balanced" ] && [ "$scene" != "game" ] && [ "$scene" != "gateway" ]; then
             RMEM_MAX=16777216; WMEM_MAX=16777216; TCP_RMEM="4096 87380 16777216"; TCP_WMEM="4096 65536 16777216"
         fi
-        # 【小内存长连接特化】2：游戏和中转模式在小内存下，必须放宽死连接等待时间，防止长连接被内核误杀
         if [ "$scene" = "game" ] || [ "$scene" = "gateway" ]; then
             RMEM_MAX=16777216; WMEM_MAX=16777216; TCP_RMEM="4096 32768 16777216"; TCP_WMEM="4096 32768 16777216"
             GAME_EXTRA="net.ipv4.udp_rmem_min = 131072\nnet.ipv4.udp_wmem_min = 131072"
@@ -238,30 +234,28 @@ _kernel_optimize_core() {
         TCP_RMEM="4096 32768 4194304"; TCP_WMEM="4096 32768 4194304"
         HIGH_EXTRA=""; WEB_EXTRA=""; STREAM_EXTRA=""; GAME_EXTRA=""; BALANCED_EXTRA=""; GATEWAY_EXTRA=""
         
+        # 【小内存保命策略】绝对禁止开启 zswap，防止内存悖论导致 OOM
+        if [ -f /sys/module/zswap/parameters/enabled ]; then
+            echo N > /sys/module/zswap/parameters/enabled 2>/dev/null
+        fi
+
         if [ "$HAS_SWAP" -gt 0 ]; then
             SWAPPINESS=60 
-            echo -e "${gl_huang}检测极小内存(${MEM_MB_VAL}MB)，启动调虎离山策略 (zswap内存压缩已永久开启)${gl_bai}"
-            if [ -f /sys/module/zswap/parameters/enabled ]; then echo Y > /sys/module/zswap/parameters/enabled; fi
-            
-            # 永久写入 sysctl.conf
-            if ! grep -q "^vm.zswap.enabled" /etc/sysctl.conf 2>/dev/null; then
-                echo "vm.zswap.enabled = 1" >> /etc/sysctl.conf
-                sysctl -p -w /etc/sysctl.conf >/dev/null 2>&1
-                echo -e "${gl_lv}✅ zswap 内存压缩已永久生效，重启后依然生效。${gl_bai}"
-            fi
+            echo -e "${gl_huang}检测极小内存(${MEM_MB_VAL}MB)，已自动禁用 zswap 防卡死。${gl_bai}"
+            echo -e "${gl_red}警告: 极小内存下不建议使用 zswap (会占物理内存)。${gl_bai}"
+            echo -e "${gl_lv}建议: 如果需要内存压缩，请使用 zram 替代 zswap！${gl_bai}"
         else
-            echo -e "${gl_red}检测极小内存(${MEM_MB_VAL}MB)无Swap！已强制降级防死机，强烈建议添加 Swap！${gl_bai}"
+            echo -e "${gl_red}检测极小内存(${MEM_MB_VAL}MB)无Swap！已强制降级防死机，强烈建议添加 Swap 或开启 zram！${gl_bai}"
         fi
     fi
 
     local KVER=$(uname -r | grep -oP '^\d+\.\d+')
     CC="cubic"; QDISC="fq_codel"
-    if [ -n "$KVER" ] && { [ "$KVER" \> "4.9" ] || [ "$KVER" = "4.9" }; then
+    if [ -n "$KVER" ] && { [ "$KVER" \> "4.9" ] || [ "$KVER" = "4.9" ]; then
         modprobe tcp_bbr 2>/dev/null
         if sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q bbr; then CC="bbr"; QDISC="fq"; fi
     fi
 
-    # 【小内存直播/中转专属特化 2：严格限制 TCP 内存池上限防 OOM
     local TCP_MEM_MIN=$((MEM_MB_VAL * 256)); local TCP_MEM_DEF=$((MEM_MB_VAL * 512)); local TCP_MEM_MAX=$((MEM_MB_VAL * 1024))
     [ "$TCP_MEM_MIN" -lt 8192 ] && TCP_MEM_MIN=8192
     [ "$TCP_MEM_DEF" -lt 16384 ] && TCP_MEM_DEF=16384; [ "$TCP_MEM_MAX" -lt 32768 ] && TCP_MEM_MAX=32768
@@ -435,7 +429,10 @@ restore_defaults() {
     sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf 2>/dev/null; sysctl --system >/dev/null 2>&1
     [ -f /sys/kernel/mm/transparent_hugepage/enabled ] && echo always > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null
     sed -i '/# YW-optimize/,+4d' /etc/security/limits.conf 2>/dev/null
-    # 【修复】还原时顺带清理可能残留的 zswap 配置
+    # 【修复】还原时顺带清理可能残留的 zswap 配置并运行时关闭
+    if [ -f /sys/module/zswap/parameters/enabled ]; then
+        echo N > /sys/module/zswap/parameters/enabled 2>/dev/null
+    fi
     sed -i '/vm.zswap.enabled/d' /etc/sysctl.conf 2>/dev/null
     echo -e "${gl_lv}已还原${gl_bai}"
 }
@@ -578,7 +575,7 @@ Kernel_optimize() {
         echo -e "7. 还原默认设置：       将系统设置还原为默认配置。"
         echo -e "8. 自动调优：           根据测试数据自动调优内核参数。${gl_huang}★${gl_bai}"
         echo -e "9. 释放内存缓存：      强制清理系统 Cache (谨慎使用)"
-        -e "10. 验证当前网络状态：  查看内核参数是否生效 ${gl_huang}★${gl_bai}"
+        echo -e "10. 验证当前网络状态：  查看内核参数是否生效 ${gl_huang}★${gl_bai}"
         echo "--------------------"
         echo "0. 返回主菜单"
         echo "--------------------"
@@ -628,4 +625,4 @@ main_menu() {
     done
 }
 
-if [[ "${BASH_SOURCE[0]" == "${0}" ]]; then main_menu; fi
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then main_menu; fi
