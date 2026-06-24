@@ -753,27 +753,21 @@ _get_node_meta() {
     jq -r --arg p "$port" '.[$p][$field] // empty' "$META_FILE"
 }
 
-# 【修复】区分"受管防火墙(ufw/firewalld)"与"底层内核"
-_has_managed_firewall() {
-    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then return 0
-    elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then return 0
-    fi
-    return 1
-}
-
-# 【修复】完善底层 iptables 逻辑，如果规则已存在也视为成功
+# 【修复】智能降级放行逻辑，解决无 ufw 时裸 iptables 兼容问题
 open_port() {
     local port=$1 proto="${2:-tcp}" opened=0
+    
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
         ufw allow ${port}/${proto} >/dev/null 2>&1 && opened=1
     elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
         firewall-cmd --permanent --add-port=${port}/${proto} >/dev/null 2>&1
         firewall-cmd --reload >/dev/null 2>&1 && opened=1
     elif command -v iptables >/dev/null 2>&1; then
-        if ! iptables -C INPUT -p ${proto} --dport ${port} -j ACCEPT 2>/dev/null; then
-            iptables -I INPUT -p ${proto} --dport ${port} -j ACCEPT >/dev/null 2>&1 && opened=1
-        else
-            opened=1 
+        # 如果规则已存在，算作成功；如果插入成功，算作成功。全部静默防干扰。
+        if iptables -C INPUT -p ${proto} --dport ${port} -j ACCEPT >/dev/null 2>&1; then
+            opened=1
+        elif iptables -I INPUT -p ${proto} --dport ${port} -j ACCEPT >/dev/null 2>&1; then
+            opened=1
         fi
     fi
 
@@ -838,19 +832,11 @@ sb_manage_menu() {
                     echo -e "${Y}选择协议:${R}"
                     echo -e "${G}1.${R} TCP"; echo -e "${G}2.${R} UDP"; echo -e "${G}3.${R} TCP + UDP"
                     read -e -p "选择 (回车默认TCP): " m_proto
-                    local proto_str="TCP"
-                    case "$m_proto" in 2) proto_str="UDP" ;; 3) proto_str="TCP + UDP" ;; esac
-                    
-                    # 【修复】只有 ufw/firewalld 才走自动放行分发，否则直接合并提示
-                    if ! _has_managed_firewall; then
-                        echo -e "${Y}  ⚠ 未检测到受管防火墙，请手动确认云安全组已放行 ${proto_str} ${m_port}${R}"
-                    else
-                        case "$m_proto" in
-                            2) open_port "$m_port" "udp" ;;
-                            3) open_port "$m_port" "tcp"; open_port "$m_port" "udp" ;;
-                            *)  open_port "$m_port" "tcp" ;;
-                        esac
-                    fi
+                    case "$m_proto" in
+                        2) open_port "$m_port" "udp" ;;
+                        3) open_port "$m_port" "tcp"; open_port "$m_port" "udp" ;;
+                        *)  open_port "$m_port" "tcp" ;;
+                    esac
                 fi
                 read -rs -n 1 -p "按任意键继续..." ;;
             0|"") break ;;
