@@ -665,24 +665,19 @@ select_sni() {
     case $c in
         1) echo "www.microsoft.com" ;;
         2)
-            echo -e "${Y}[并发 TLS 握手测速中，约需2秒]...${R}" >&2
+            echo -e "${Y}[TLS 握手测速中，约需2秒]...${R}" >&2
             local d=("azure.microsoft.com" "bing.com" "www.icloud.com" "statici.icloud.com" "www.microsoft.com" "xp.apple.com" "vs.aws.amazon.com" "www.xbox.com" "snap.licdn.com" "www.oracle.com" "www.xilinx.com" "ts2.tc.mm.bing.net" "images.nvidia.com")
             local f="/tmp/sb_sni_test.$$"
             > "$f"
             for i in "${d[@]}"; do
-                (
-                    # 【修复】微错开并发，防止瞬间打满TCP队列被云安全策略丢包导致重传虚高
-                    sleep 0.0$((RANDOM % 9)) 
-                    t1=$(date +%s%3N)
-                    if timeout 1 openssl s_client -connect "$i:443" -servername "$i" </dev/null &>/dev/null; then
-                        t2=$(date +%s%3N)
-                        echo "$((t2 - t1)) $i" >> "$f"
-                    else
-                        echo "9999 $i" >> "$f"
-                    fi
-                ) &
+                t1=$(date +%s%3N)
+                if timeout 1 openssl s_client -connect "$i:443" -servername "$i" </dev/null &>/dev/null; then
+                    t2=$(date +%s%3N)
+                    echo "$((t2 - t1)) $i" >> "$f"
+                else
+                    echo "9999 $i" >> "$f"
+                fi
             done
-            wait
             local b_d="www.microsoft.com"
             local b_t=9999
             while read -r line; do
