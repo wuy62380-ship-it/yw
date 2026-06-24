@@ -718,9 +718,15 @@ sb_init_conf() {
     fi
 }
 
-META_FILE="/etc/sing-box/nodes_meta.json"
+# 【关键修复】改为隐藏文件且不带 .json 后缀，防止被 sing-box 当作配置文件解析报错
+META_FILE="/etc/sing-box/.nodes_meta"
+OLD_META_FILE="/etc/sing-box/nodes_meta.json"
 
 _init_meta_file() {
+    # 自动清理以前遗留的会被 sing-box 误读的毒瘤文件
+    if [ -f "$OLD_META_FILE" ]; then
+        rm -f "$OLD_META_FILE"
+    fi
     if [ ! -f "$META_FILE" ] || ! jq -e . "$META_FILE" >/dev/null 2>&1; then
         mkdir -p /etc/sing-box
         echo '{}' > "$META_FILE"
@@ -777,18 +783,15 @@ open_port() {
 }
 
 sb_manage_menu() {
-    # 【新增】配置文件急诊修复：如果主配置为空/损坏，立即覆写为安全空壳，防止 Sing-Box 疯狂重启死循环
     local conf="/etc/sing-box/config.json"
     if [ ! -f "$conf" ] || [ ! -s "$conf" ] || ! jq -e . "$conf" >/dev/null 2>&1; then
         mkdir -p /etc/sing-box
         echo '{"log":{"level":"error"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct"}}' > "$conf"
-        # 如果是因为配置损坏导致的死循环，必须先停止服务，否则会卡死系统
         systemctl stop sing-box >/dev/null 2>&1
     fi
 
     while true; do
         clear
-        # 【优化】智能状态分级：未安装 -> 待配置(无节点) -> 已停止 -> 运行中
         local sb_status="${RED}未安装${R}"
         if command -v sing-box >/dev/null 2>&1; then
             if [ -f "/etc/sing-box/config.json" ] && jq -e '.inbounds | length > 0' "/etc/sing-box/config.json" >/dev/null 2>&1; then
