@@ -1052,4 +1052,43 @@ sb_del_node() {
         local type port node_name
         type=$(echo "$in" | jq -r '.type')
         port=$(echo "$in" | jq -r '.listen_port')
-        node_name=$(e
+        node_name=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].name // "未命名"')
+        echo -e "${C}[${idx}]${R} ${Y}${node_name}${R} | 协议: ${type} | 端口: ${port}"
+        idx=$((idx + 1))
+    done
+    echo -e "${RED}========================================${R}"
+    read -e -p "请输入要删除的节点端口号 (回车取消): " del_port
+    if [[ -z "$del_port" || ! "$del_port" =~ ^[0-9]+$ ]]; then
+        echo -e "${Y}已取消${R}"
+    else
+        local target_idx=$(jq -r --arg p "$del_port" '.inbounds | to_entries[] | select(.value.listen_port == ($p|tonumber)) | .key' "$conf")
+        if [ -z "$target_idx" ]; then
+            echo -e "${RED}未找到端口为 ${del_port} 的节点${R}"
+        else
+            cp "$conf" "${conf}.bak.$(date +%s)"
+            local is_hy2=$(jq -r --argjson idx "$target_idx" '.inbounds[$idx].type' "$conf")
+            jq --argjson idx "$target_idx" 'del(.inbounds[$idx])' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
+            
+            if [ "$is_hy2" = "hysteria2" ]; then
+                rm -f "/etc/sing-box/hy2_${del_port}.crt" "/etc/sing-box/hy2_${del_port}.key"
+            fi
+            
+            _del_node_meta "$del_port"
+            
+            if jq -e '.inbounds | length > 0' "$conf" >/dev/null 2>&1; then
+                systemctl restart sing-box
+                sleep 2
+                if systemctl is-active --quiet sing-box 2>/dev/null; then
+                    echo -e "${G}✅ 节点已删除，服务已重启运行${R}"
+                else
+                    echo -e "${Y}⚠ 节点已删除，但服务重启失败，日志如下：${R}"
+                    journalctl -u sing-box -n 10 --no-pager
+                fi
+            else
+                systemctl stop sing-box >/dev/null 2>&1
+                echo -e "${Y}已删除最后一个节点，服务已停止。${R}"
+            fi
+        fi
+    fi
+    read -rs -n 1 -p "按任意键返回..."
+}
