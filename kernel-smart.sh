@@ -29,22 +29,16 @@ root_use() {
     fi
 }
 
-# 【兼容性优化】使用 /proc/swaps 替代 swapon --show，兼容 CentOS 6 等老系统
 check_swap() {
     local swap_total=$(free -m | awk '/Swap/{print $2}')
-    # 如果已经有充足的 Swap，或者 zram 正在运行，直接跳过
     if [ "$swap_total" -ge 512 ] || grep -q "/dev/zram" /proc/swaps 2>/dev/null; then
         return 0
     fi
-    
-    # 如果存在 /swapfile 但没挂载，尝试挽救挂载
     if [ -f /swapfile ] && [ "$swap_total" -lt 512 ]; then
         swapon /swapfile >/dev/null 2>&1
         swap_total=$(free -m | awk '/Swap/{print $2}')
         [ "$swap_total" -ge 512 ] && return 0
     fi
-    
-    # 确认根目录可写，且不是 PVE/LVM 环境（简单防呆）
     if df / | grep -q "/$" && [ ! -f /etc/pve/.version ]; then
         echo -e "${gl_huang}正在创建 512MB 应急 Swap...${gl_bai}"
         dd if=/dev/zero of=/swapfile bs=1M count=512 2>/dev/null
@@ -56,25 +50,18 @@ check_swap() {
     fi
 }
 
-# 【兼容性优化】小内存全自动部署 zram 替代 zswap
 auto_setup_zram() {
-    # 如果已经有 zram 设备在运行，直接返回
     if grep -q "/dev/zram" /proc/swaps 2>/dev/null; then
         echo -e "${gl_lv}检测到 zram 已在运行，跳过配置。${gl_bai}"
         return 0
     fi
-
     echo -e "${gl_lv}正在尝试自动配置 zram 替代 zswap...${gl_bai}"
-    
-    # Debian/Ubuntu 系列使用 zram-tools
     if command -v apt >/dev/null 2>&1; then
         if ! command -v zramctl >/dev/null 2>&1; then
             install zram-tools || return 1
         fi
-        # 配置 zram 参数：占用物理内存的 50%，使用 zstd 压缩算法
         sed -i 's/^ALGO=.*/ALGO=zstd/' /etc/default/zramswap 2>/dev/null
         sed -i 's/^PERCENT=.*/PERCENT=50/' /etc/default/zramswap 2>/dev/null
-        # 启动服务并设为开机自启（永久生效）
         systemctl enable zramswap >/dev/null 2>&1
         systemctl restart zramswap >/dev/null 2>&1
         if grep -q "/dev/zram" /proc/swaps 2>/dev/null; then
@@ -82,7 +69,6 @@ auto_setup_zram() {
         else
             echo -e "${gl_huang}zram 服务启动失败，可能内核不支持。${gl_bai}"
         fi
-    # CentOS/RHEL 系列处理
     elif command -v yum >/dev/null 2>&1; then
         echo -e "${gl_huang}CentOS/RHEL 建议手动执行: yum install zram-generator -y 并配置 systemd-zram-setup@zram0.service${gl_bai}"
     fi
@@ -160,7 +146,6 @@ change_swap_size() {
         1) swap_size=1024 ;; 2) swap_size=2048 ;; 3) swap_size=4096 ;; 4) swap_size=6144 ;;
         5) 
             read -e -p "请输入自定义大小 (MB, 最小512): " swap_size
-            # 【防呆优化】严格校验输入必须为纯数字，防止字母导致脚本报错退出
             if [[ -z "$swap_size" || ! "$swap_size" =~ ^[0-9]+$ || "$swap_size" -lt 512 ]]; then
                 echo -e "${gl_red}错误: 必须为纯数字且最小512MB${gl_bai}"; read -rs -n 1 -p "按任意键返回..." && return 0
             fi
@@ -284,12 +269,9 @@ _kernel_optimize_core() {
         RMEM_MAX=4194304; WMEM_MAX=4194304; SOMAXCONN=1024; BACKLOG=1000
         TCP_RMEM="4096 32768 4194304"; TCP_WMEM="4096 32768 4194304"
         HIGH_EXTRA=""; WEB_EXTRA=""; STREAM_EXTRA=""; GAME_EXTRA=""; BALANCED_EXTRA=""; GATEWAY_EXTRA=""
-        
-        # 【小内存保命策略】绝对禁止开启 zswap，防止内存悖论导致 OOM
         if [ -f /sys/module/zswap/parameters/enabled ]; then
             echo N > /sys/module/zswap/parameters/enabled 2>/dev/null
         fi
-
         if [ "$HAS_SWAP" -gt 0 ]; then
             SWAPPINESS=60 
             echo -e "${gl_huang}检测极小内存(${MEM_MB_VAL}MB)，已自动禁用 zswap 防卡死。${gl_bai}"
@@ -305,7 +287,6 @@ _kernel_optimize_core() {
 
     local KVER=$(uname -r | grep -oP '^\d+\.\d+')
     CC="cubic"; QDISC="fq_codel"
-    # 【语法断裂修复】大括号后必须加分号 ; 才能接 then
     if [ -n "$KVER" ] && { [ "$KVER" \> "4.9" ] || [ "$KVER" = "4.9" ]; }; then
         modprobe tcp_bbr 2>/dev/null
         if sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q bbr; then CC="bbr"; QDISC="fq"; fi
@@ -315,7 +296,6 @@ _kernel_optimize_core() {
     [ "$TCP_MEM_MIN" -lt 8192 ] && TCP_MEM_MIN=8192
     [ "$TCP_MEM_DEF" -lt 16384 ] && TCP_MEM_DEF=16384; [ "$TCP_MEM_MAX" -lt 32768 ] && TCP_MEM_MAX=32768
 
-    # 【转义符修复】动态拼接字符串中的 \n 也需要用 $'' 解释
     if [ "$scene" = "stream" ] && [ "$MEM_MB_VAL" -ge 1024 ]; then
         STREAM_EXTRA="${STREAM_EXTRA}"$'\nnet.ipv4.udp_mem = '"$((MEM_MB_VAL * 128)) $((MEM_MB_VAL * 256)) $((MEM_MB_VAL * 512))"
     fi
@@ -428,7 +408,6 @@ EOF
     flock -u 200; exec 200>&-
     echo -e "${gl_lv}正在加载配置..."
     
-    # 【专家优化】智能过滤无伤大雅的内核不兼容报错，避免误导用户
     local sysctl_err=$(sysctl -p "$CONF" 2>&1 | grep -v "Invalid argument" | grep -v "No such file or directory" | grep -v "unknown key")
     if [ -n "$sysctl_err" ]; then
         echo -e "${gl_huang}Sysctl 加载时有以下异常(通常不影响核心功能):${gl_bai}"
@@ -491,20 +470,15 @@ restore_defaults() {
     sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf 2>/dev/null; sysctl --system >/dev/null 2>&1
     [ -f /sys/kernel/mm/transparent_hugepage/enabled ] && echo always > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null
     sed -i '/# YW-optimize/,+4d' /etc/security/limits.conf 2>/dev/null
-    
-    # 还原时顺带清理可能残留的 zswap 配置并运行时关闭
     if [ -f /sys/module/zswap/parameters/enabled ]; then
         echo N > /sys/module/zswap/parameters/enabled 2>/dev/null
     fi
     sed -i '/vm.zswap.enabled/d' /etc/sysctl.conf 2>/dev/null
-
-    # 【完善闭环】如果之前自动部署了 zram，还原时应当停止并禁用自启
     if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled zramswap >/dev/null 2>&1; then
         echo -e "${gl_huang}检测到由脚本部署的 zram，正在停止并取消开机自启...${gl_bai}"
         systemctl stop zramswap >/dev/null 2>&1
         systemctl disable zramswap >/dev/null 2>&1
     fi
-
     echo -e "${gl_lv}已还原所有设置（包括禁用 zram）${gl_bai}"
 }
 
@@ -534,7 +508,7 @@ verify_network_status() {
 }
 
 # ============================================================================
-# System Info Function (完整华丽版)
+# System Info Function
 # ============================================================================
 
 show_sys_info() {
@@ -550,11 +524,8 @@ show_sys_info() {
         local mem_percent=$(awk "BEGIN{printf \"%.1f\", ${mem_used_mb}*100/${mem_total_mb}}")
         local mem_info="${mem_avail_mb}M/${mem_total_mb}M (${mem_percent}%)"
         local disk_info=$(df -h / | awk 'NR==2{printf "%s/%s (%s)", $3, $2, $5}')
-        
-        # 【专家优化】防止内网/被墙导致卡死UI，增加进度提示并缩短超时
         echo -ne "${gl_hui}正在获取外网IP信息(超时3秒自动跳过)...${gl_bai}\r"
         local ipinfo=$(curl -s --connect-timeout 2 --max-time 3 ipinfo.io 2>/dev/null || echo "{}")
-        
         local country=$(echo "$ipinfo" | awk -F'"' '/country/{print $4}')
         local city=$(echo "$ipinfo" | awk -F'"' '/city/{print $4}')
         local isp_info=$(echo "$ipinfo" | awk -F'"' '/org/{print $4}')
@@ -583,7 +554,6 @@ show_sys_info() {
         local tx_gb=$(awk "BEGIN{printf \"%.2f\", ${tx}/1024/1024/1024/1024}")
         local ipv4_addr=$(ip -4 addr 2>/dev/null | grep inet | grep -v "127.0.0.1" | awk '{print $2}' | head -1)
         local ipv6_addr=$(ip -6 addr 2>/dev/null | grep inet6 | grep -v "::1" | awk '{print $2}' | head -1)
-
         clear
         echo -e "${gl_kjlan}系统信息查询${gl_bai}"
         echo -e "${gl_kjlan}=============="
@@ -1091,6 +1061,92 @@ sb_del_node() {
 }
 
 # ============================================================================
+# 模块 6：脚本痕迹与配置安全清理工具 (带智能防呆拦截)
+# ============================================================================
+
+clean_all_traces() {
+    echo -e "${gl_huang}========================================${gl_bai}"
+    echo -e "${gl_huang}     脚本痕迹与配置安全清理工具         ${gl_bai}"
+    echo -e "${gl_huang}========================================${gl_bai}"
+
+    # --- 模块 1：清理 Sing-Box ---
+    echo -e "\n${gl_lv}[1/4] 检查 Sing-Box 配置...${gl_bai}"
+    if [ -d "/etc/sing-box" ]; then
+        echo -e "${gl_huang}检测到 /etc/sing-box 目录。${gl_bai}"
+        read -e -p "是否停止服务并清空所有节点配置/证书？: " c_sb
+        if [[ "$c_sb" =~ ^[Yy]$ ]]; then
+            systemctl stop sing-box 2>/dev/null
+            systemctl disable sing-box 2>/dev/null
+            rm -f /etc/sing-box/config.json /etc/sing-box/nodes_meta.json /etc/sing-box/hy2_*.crt /etc/sing-box/hy2_*.key
+            rm -f /etc/sing-box/config.json.bak.*
+            echo -e "${gl_lv}✅ Sing-Box 配置已清空，服务已停止。${gl_bai}"
+        fi
+    else
+        echo -e "未检测到 Sing-Box 配置，跳过。"
+    fi
+
+    # --- 模块 2：清理内核参数与文件描述符 ---
+    echo -e "\n${gl_lv}[2/4] 清理内核调优参数...${gl_bai}"
+    if [ -f "/etc/sysctl.d/99-yw-optimize.conf" ] || [ -f "/etc/sysctl.d/99-network-optimize.conf" ]; then
+        read -e -p "是否还原内核网络参数到系统默认？: " c_sys
+        if [[ "$c_sys" =~ ^[Yy]$ ]]; then
+            rm -f /etc/sysctl.d/99-yw-optimize.conf /etc/sysctl.d/99-network-optimize.conf
+            sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf 2>/dev/null
+            sed -i '/vm.zswap.enabled/d' /etc/sysctl.conf 2>/dev/null
+            sysctl --system >/dev/null 2>&1
+            
+            sed -i '/# YW-optimize/,+4d' /etc/security/limits.conf 2>/dev/null
+            echo -e "${gl_lv}✅ 内核参数及文件描述符限制已还原。${gl_bai}"
+            echo -e "${gl_red}⚠ 警告：还原的 ulimit 对已启动的进程无效，请尽快重启 Nginx/数据库 等服务！${gl_bai}"
+        fi
+    else
+        echo -e "未检测到内核调优文件，跳过。"
+    fi
+
+    # --- 模块 3：清理 ZRAM ---
+    echo -e "\n${gl_lv}[3/4] 检查 ZRAM 状态...${gl_bai}"
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled zramswap >/dev/null 2>&1; then
+        read -e -p "检测到 ZRAM 正在运行，是否停止并禁用？: " c_zram
+        if [[ "$c_zram" =~ ^[Yy]$ ]]; then
+            systemctl stop zramswap 2>/dev/null
+            systemctl disable zramswap 2>/dev/null
+            echo -e "${gl_lv}✅ ZRAM 已停止。${gl_bai}"
+        fi
+    else
+        echo -e "ZRAM 未运行，跳过。"
+    fi
+
+    # --- 模块 4：清理 Swap 文件 (高危拦截) ---
+    echo -e "\n${gl_lv}[4/4] 检查 Swap 文件...${gl_bai}"
+    if [ -f "/swapfile" ] && grep -q "/swapfile" /etc/fstab; then
+        MEM_MB=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo)
+        echo -e "${gl_red}⚠ 高危操作预警 ⚠${gl_bai}"
+        echo -e "检测到 /swapfile，且当前物理内存仅为: ${gl_huang}${MEM_MB} MB${gl_bai}"
+        
+        if [ "$MEM_MB" -lt 2000 ]; then
+            echo -e "${gl_red}❌ 拒绝执行！内存小于 2GB，强行删除 Swap 会导致 OOM 失联死机！已自动跳过。${gl_bai}"
+        else
+            read -e -p "内存大于 2GB，确认要关闭并删除 /swapfile 吗？: " c_swap
+            if [[ "$c_swap" =~ ^[Yy]$ ]]; then
+                swapoff /swapfile 2>/dev/null
+                rm -f /swapfile
+                sed -i '/swapfile.*swap/d' /etc/fstab
+                echo -e "${gl_lv}✅ Swap 文件已删除。${gl_bai}"
+            fi
+        fi
+    else
+        echo -e "未检测到脚本创建的 Swap 文件，跳过。"
+    fi
+
+    # --- 收尾：清理临时与备份文件 ---
+    rm -f /tmp/yw_apt.log /tmp/yw_yum.log /tmp/sb_sni_test.* /tmp/sb_cfg.json /tmp/sb_meta.json /tmp/99-yw-optimize.lock
+    echo -e "\n${gl_lv}========================================${gl_bai}"
+    echo -e "${gl_lv} 清理流程执行完毕！${gl_bai}"
+    echo -e "${gl_lv}========================================${gl_bai}"
+    read -rs -n 1 -p "按任意键返回主菜单..."
+}
+
+# ============================================================================
 # Main Menu Entry Point
 # ============================================================================
 
@@ -1105,6 +1161,7 @@ main_menu() {
         echo -e "${gl_huang}3. Linux 系统内核参数优化 (场景化调优)"
         echo -e "${gl_huang}4. 管理虚拟内存"
         echo -e "${gl_huang}5. Sing-Box 落地节点管理"
+        echo -e "${gl_red}6. 一键清理脚本痕迹与配置 (安全防呆) ${gl_bai}"
         echo -e "${gl_hui}0. 退出程序"
         echo -e "${gl_huang}========================================${gl_bai}"
         read -e -p "请输入你的选择: " choice
@@ -1114,6 +1171,7 @@ main_menu() {
             3) Kernel_optimize ;;
             4) change_swap_size ;;
             5) sb_manage_menu ;;
+            6) clean_all_traces ;;
             0) echo -e "${gl_lv}感谢使用，再见！${gl_bai}"; break ;;
             *) echo -e "${gl_red}无效的选择，请重新输入${gl_bai}" ; sleep 1 ;;
         esac
