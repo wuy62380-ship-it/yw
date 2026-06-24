@@ -671,6 +671,8 @@ select_sni() {
             > "$f"
             for i in "${d[@]}"; do
                 (
+                    # 【修复】微错开并发，防止瞬间打满TCP队列被云安全策略丢包导致重传虚高
+                    sleep 0.0$((RANDOM % 9)) 
                     t1=$(date +%s%3N)
                     if timeout 1 openssl s_client -connect "$i:443" -servername "$i" </dev/null &>/dev/null; then
                         t2=$(date +%s%3N)
