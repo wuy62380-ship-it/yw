@@ -753,7 +753,6 @@ _get_node_meta() {
     jq -r --arg p "$port" '.[$p][$field] // empty' "$META_FILE"
 }
 
-# 【修复】智能降级放行逻辑，解决无 ufw 时裸 iptables 兼容问题
 open_port() {
     local port=$1 proto="${2:-tcp}" opened=0
     
@@ -763,7 +762,6 @@ open_port() {
         firewall-cmd --permanent --add-port=${port}/${proto} >/dev/null 2>&1
         firewall-cmd --reload >/dev/null 2>&1 && opened=1
     elif command -v iptables >/dev/null 2>&1; then
-        # 如果规则已存在，算作成功；如果插入成功，算作成功。全部静默防干扰。
         if iptables -C INPUT -p ${proto} --dport ${port} -j ACCEPT >/dev/null 2>&1; then
             opened=1
         elif iptables -I INPUT -p ${proto} --dport ${port} -j ACCEPT >/dev/null 2>&1; then
@@ -781,11 +779,20 @@ open_port() {
 sb_manage_menu() {
     while true; do
         clear
+        # 【优化】智能状态分级：未安装 -> 待配置(无节点) -> 已停止 -> 运行中
         local sb_status="${RED}未安装${R}"
         if command -v sing-box >/dev/null 2>&1; then
-            if systemctl is-active --quiet sing-box 2>/dev/null; then sb_status="${G}运行中 ✅${R}"
-            else sb_status="${Y}已停止${R}"; fi
+            if [ -f "/etc/sing-box/config.json" ] && jq -e '.inbounds | length > 0' "/etc/sing-box/config.json" >/dev/null 2>&1; then
+                if systemctl is-active --quiet sing-box 2>/dev/null; then 
+                    sb_status="${G}运行中 ✅${R}"
+                else 
+                    sb_status="${Y}已停止${R}" 
+                fi
+            else
+                sb_status="${Y}待配置 (无节点)${R}"
+            fi
         fi
+
         echo -e "${G}========================================${R}"
         echo -e "${G}       Sing-Box 落地节点管理          ${R}"
         echo -e "${G}========================================${R}"
