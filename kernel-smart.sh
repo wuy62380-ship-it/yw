@@ -753,14 +753,15 @@ _get_node_meta() {
     jq -r --arg p "$port" '.[$p][$field] // empty' "$META_FILE"
 }
 
-_has_active_firewall() {
+# 【修复】区分"受管防火墙(ufw/firewalld)"与"底层内核"
+_has_managed_firewall() {
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then return 0
     elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then return 0
-    elif command -v iptables >/dev/null 2>&1; then return 0
     fi
     return 1
 }
 
+# 【修复】完善底层 iptables 逻辑，如果规则已存在也视为成功
 open_port() {
     local port=$1 proto="${2:-tcp}" opened=0
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
@@ -770,13 +771,16 @@ open_port() {
         firewall-cmd --reload >/dev/null 2>&1 && opened=1
     elif command -v iptables >/dev/null 2>&1; then
         if ! iptables -C INPUT -p ${proto} --dport ${port} -j ACCEPT 2>/dev/null; then
-            iptables -I INPUT -p ${proto} --dport ${port} -j ACCEPT; opened=1
+            iptables -I INPUT -p ${proto} --dport ${port} -j ACCEPT >/dev/null 2>&1 && opened=1
+        else
+            opened=1 
         fi
     fi
+
     if [ "$opened" -eq 1 ]; then
         echo -e "${G}  ✅ 已放行 ${proto^^} ${port}${R}"
     else
-        echo -e "${Y}  ⚠ 未检测到活跃防火墙，请手动确认云安全组已放行 ${proto^^} ${port}${R}"
+        echo -e "${Y}  ⚠ 无法自动放行 ${proto^^} ${port}，请手动检查云安全组${R}"
     fi
 }
 
@@ -836,8 +840,10 @@ sb_manage_menu() {
                     read -e -p "选择 (回车默认TCP): " m_proto
                     local proto_str="TCP"
                     case "$m_proto" in 2) proto_str="UDP" ;; 3) proto_str="TCP + UDP" ;; esac
-                    if ! _has_active_firewall; then
-                        echo -e "${Y}  ⚠ 未检测到活跃防火墙，请手动确认云安全组已放行 ${proto_str} ${m_port}${R}"
+                    
+                    # 【修复】只有 ufw/firewalld 才走自动放行分发，否则直接合并提示
+                    if ! _has_managed_firewall; then
+                        echo -e "${Y}  ⚠ 未检测到受管防火墙，请手动确认云安全组已放行 ${proto_str} ${m_port}${R}"
                     else
                         case "$m_proto" in
                             2) open_port "$m_port" "udp" ;;
@@ -1069,7 +1075,6 @@ clean_all_traces() {
     echo -e "${gl_huang}     脚本痕迹与配置安全清理工具         ${gl_bai}"
     echo -e "${gl_huang}========================================${gl_bai}"
 
-    # --- 模块 1：清理 Sing-Box ---
     echo -e "\n${gl_lv}[1/4] 检查 Sing-Box 配置...${gl_bai}"
     if [ -d "/etc/sing-box" ]; then
         echo -e "${gl_huang}检测到 /etc/sing-box 目录。${gl_bai}"
@@ -1085,7 +1090,6 @@ clean_all_traces() {
         echo -e "未检测到 Sing-Box 配置，跳过。"
     fi
 
-    # --- 模块 2：清理内核参数与文件描述符 ---
     echo -e "\n${gl_lv}[2/4] 清理内核调优参数...${gl_bai}"
     if [ -f "/etc/sysctl.d/99-yw-optimize.conf" ] || [ -f "/etc/sysctl.d/99-network-optimize.conf" ]; then
         read -e -p "是否还原内核网络参数到系统默认？: " c_sys
@@ -1094,7 +1098,6 @@ clean_all_traces() {
             sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf 2>/dev/null
             sed -i '/vm.zswap.enabled/d' /etc/sysctl.conf 2>/dev/null
             sysctl --system >/dev/null 2>&1
-            
             sed -i '/# YW-optimize/,+4d' /etc/security/limits.conf 2>/dev/null
             echo -e "${gl_lv}✅ 内核参数及文件描述符限制已还原。${gl_bai}"
             echo -e "${gl_red}⚠ 警告：还原的 ulimit 对已启动的进程无效，请尽快重启 Nginx/数据库 等服务！${gl_bai}"
@@ -1103,7 +1106,6 @@ clean_all_traces() {
         echo -e "未检测到内核调优文件，跳过。"
     fi
 
-    # --- 模块 3：清理 ZRAM ---
     echo -e "\n${gl_lv}[3/4] 检查 ZRAM 状态...${gl_bai}"
     if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled zramswap >/dev/null 2>&1; then
         read -e -p "检测到 ZRAM 正在运行，是否停止并禁用？: " c_zram
@@ -1116,13 +1118,11 @@ clean_all_traces() {
         echo -e "ZRAM 未运行，跳过。"
     fi
 
-    # --- 模块 4：清理 Swap 文件 (高危拦截) ---
     echo -e "\n${gl_lv}[4/4] 检查 Swap 文件...${gl_bai}"
     if [ -f "/swapfile" ] && grep -q "/swapfile" /etc/fstab; then
         MEM_MB=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo)
         echo -e "${gl_red}⚠ 高危操作预警 ⚠${gl_bai}"
         echo -e "检测到 /swapfile，且当前物理内存仅为: ${gl_huang}${MEM_MB} MB${gl_bai}"
-        
         if [ "$MEM_MB" -lt 2000 ]; then
             echo -e "${gl_red}❌ 拒绝执行！内存小于 2GB，强行删除 Swap 会导致 OOM 失联死机！已自动跳过。${gl_bai}"
         else
@@ -1138,7 +1138,6 @@ clean_all_traces() {
         echo -e "未检测到脚本创建的 Swap 文件，跳过。"
     fi
 
-    # --- 收尾：清理临时与备份文件 ---
     rm -f /tmp/yw_apt.log /tmp/yw_yum.log /tmp/sb_sni_test.* /tmp/sb_cfg.json /tmp/sb_meta.json /tmp/99-yw-optimize.lock
     echo -e "\n${gl_lv}========================================${gl_bai}"
     echo -e "${gl_lv} 清理流程执行完毕！${gl_bai}"
