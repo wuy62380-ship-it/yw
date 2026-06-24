@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 
+# 修复1: 增强管道执行时的 \r 处理
 if [ -f "$0" ]; then
     sed -i 's/\r$//' "$0" 2>/dev/null
+else
+    # 管道执行时无法修改自身，设置 locale 避免 UTF-8 解析问题
+    export LC_ALL=C.UTF-8 2>/dev/null || export LC_ALL=C
 fi
 
 R="\033[0m"
@@ -285,17 +289,17 @@ sb_add_hy2() {
     read -rs -n 1 -p "按任意键继续..."
 }
 
-sb_view_nodes() {
-    sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
+# 修复2: 抽取节点显示逻辑，避免 sb_del_node 中重复按键问题
+_show_nodes_list() {
     local conf="/etc/sing-box/config.json"
-    if [ ! -f "$conf" ]; then echo -e "${H}未找到配置文件${R}"; return; fi
-    
-    echo -e "${C}--- 当前落地节点列表 ---${R}"
     local my_ip
     my_ip=$(get_my_ip)
     local inbounds
     inbounds=$(jq -c '.inbounds[]' "$conf" 2>/dev/null)
-    if [ -z "$inbounds" ]; then echo -e "${H}暂无节点${R}"; return; fi
+    if [ -z "$inbounds" ]; then 
+        echo -e "${H}暂无节点${R}" 
+        return 1
+    fi
     
     echo "$inbounds" | while IFS= read -r in; do
         local type port
@@ -304,7 +308,6 @@ sb_view_nodes() {
         
         if [ "$type" = "vless" ]; then
             echo -e "${G}[VLESS Reality]${R} 端口: ${B}${port}${R}"
-            echo -e "${H}提示: 链接在添加时已展示，如需再次获取，请删除后重新添加。${R}"
         elif [ "$type" = "hysteria2" ]; then
             local pass sni link
             pass=$(echo "$in" | jq -r '.users[0].password')
@@ -315,13 +318,26 @@ sb_view_nodes() {
         fi
         echo -e "${H}----------------------------------------${R}"
     done
+    return 0
+}
+
+sb_view_nodes() {
+    sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
+    local conf="/etc/sing-box/config.json"
+    if [ ! -f "$conf" ]; then echo -e "${H}未找到配置文件${R}"; return; fi
+    
+    echo -e "${C}--- 当前落地节点列表 ---${R}"
+    _show_nodes_list
     read -rs -n 1 -p "按任意键继续..."
 }
 
 sb_del_node() {
     sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
     local conf="/etc/sing-box/config.json"
-    sb_view_nodes
+    
+    echo -e "${C}--- 删除落地节点 ---${R}"
+    _show_nodes_list
+    
     echo -e "${C}请输入要删除的节点监听端口: ${R}"
     read -e -p "端口: " port
     if [[ ! "$port" =~ ^[0-9]+$ ]]; then echo -e "${RED}端口错误${R}"; return; fi
@@ -490,7 +506,7 @@ install_xanmod() {
     fi
     
     echo -e "${G}✅ 安装完成！建议立即重启服务器以加载新内核。${R}"
-    read -e -p "是否现在重启？
+    read -e -p "是否现在重启? (y/n): " reboot_choice
     if [ "$reboot_choice" = "y" ]; then reboot; fi
 }
 
@@ -587,7 +603,8 @@ while true; do
     clear
     MYIP=$(get_my_ip)
     echo -e "${G}========================================${R}"
-    echo -e "${G}   极致中转 & 落地管理面板 (T0)    ${R}"
+    # 修复3: 将 & 替换为 与，避免特殊字符解析问题
+    echo -e "${G}   极致中转与落地管理面板 (T0)    ${R}"
     echo -e "${G}========================================${R}"
     echo -e "本机 IPv4: ${C}${MYIP}${R}"
     echo -e "${G}========================================${R}"
