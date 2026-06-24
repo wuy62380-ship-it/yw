@@ -655,21 +655,29 @@ get_my_ip() {
     echo "${ip:-未知IP}"
 }
 
+# ============================================================================
+# 【修改】优选域名 — 替换为 openssl s_client TLS 握手测速
+# ============================================================================
 select_sni() {
     echo -e "${Y}--- 伪装域名 (SNI) 设置 ---${R}"
     echo -e "${G}1. 使用默认伪装域名${R}"
-    echo -e "${G}2. 自动优选最佳域名 (并发测速)${R}"
+    echo -e "${G}2. 自动优选最佳域名 (并发TLS握手测速)${R}"
     echo -e "${G}3. 手动输入域名${R}"
     read -e -p "请选择 (1默认 / 2优选 / 3手动): " c
     case $c in
         1) echo "www.microsoft.com" ;;
         2)
-            echo -e "${Y}[并发测速中，约需3秒]...${R}" >&2
-            local d=("aws.com" "bing.com" "snap.licdn.com" "devblogs.microsoft.com" "cdn.bizibly.com" "www.apple.com" "ts1.tc.mm.bing.net" "fpinit.itunes.apple.com" "go.microsoft.com" "catalog.gamepass.com" "gray-config-prod.api.arc-cdn.net" "apps.mzstatic.com" "tag.demandbase.com" "r.bing.com" "tag-logger.demandbase.com" "cdn-dynmedia-1.microsoft.com" "services.digitaleast.mobi" "gray.video-player.arcpublishing.com" "azure.microsoft.com" "beacon.gtv-pub.com" "amd.com" "www.joom.com" "www.stengg.com" "www.wedgehr.com" "www.cerebrium.ai" "www.nazhumi.cem" "cloudflare-ech.com")
+            echo -e "${Y}[并发 TLS 握手测速中，约需2秒]...${R}" >&2
+            local d=("azure.microsoft.com" "bing.com" "www.icloud.com" "statici.icloud.com" "www.microsoft.com" "xp.apple.com" "vs.aws.amazon.com" "www.xbox.com" "snap.licdn.com" "www.oracle.com" "www.xilinx.com" "ts2.tc.mm.bing.net" "images.nvidia.com")
             local f="/tmp/sb_sni_test.$$"
             > "$f"
             for i in "${d[@]}"; do
-                ( n=$(curl -o /dev/null -s -w '%{time_connect}' --max-time 2 -4 "https://$i" 2>/dev/null | awk '{printf "%d",$1*1000}'); [ -n "$n" ] && echo "$n $i" >> "$f" ) &
+                (
+                    t1=$(date +%s%3N)
+                    timeout 1 openssl s_client -connect "$i:443" -servername "$i" </dev/null &>/dev/null
+                    t2=$(date +%s%3N)
+                    echo "$((t2 - t1)) $i" >> "$f"
+                ) &
             done
             wait
             local b_d="www.microsoft.com"
@@ -872,7 +880,7 @@ sb_add_hy2() {
 }
 
 # ============================================================================
-# 【修复】查看节点列表 — VLESS 也输出完整链接，读取 _node_name
+# 查看节点列表 — VLESS 也输出完整链接，读取 _node_name
 # ============================================================================
 _show_nodes_list() {
     local conf="/etc/sing-box/config.json"
@@ -953,7 +961,7 @@ sb_del_node() {
 }
 
 # ============================================================================
-# 【修复】Sing-Box 管理菜单 — 新增第7项手动开放端口
+# Sing-Box 管理菜单 — 含手动开放端口
 # ============================================================================
 sb_manage_menu() {
     while true; do
@@ -1008,7 +1016,6 @@ sb_manage_menu() {
                 esac
                 read -rs -n 1 -p "按任意键继续..." ;;
             7)
-                # ── 手动开放端口 ──
                 echo -e "${C}--- 手动开放端口 ---${R}"
                 read -e -p "请输入要放行的端口号: " m_port
                 if [[ ! "$m_port" =~ ^[0-9]+$ ]] || [ "$m_port" -lt 1 ] || [ "$m_port" -gt 65535 ]; then
