@@ -147,7 +147,7 @@ view_rules() {
     for rule in "${rules[@]}"; do
         port=$(echo "$rule" | awk '{for(i=1;i<=NF;i++) if($i=="--dport") print $(i+1)}')
         dest=$(echo "$rule" | awk '{for(i=1;i<=NF;i++) if($i=="--to-destination") print $(i+1)}')
-        echo -e "${G}[$idx]${R} ${C}客户端连接${R} -> ${B}${my_ip}:${port}${R} ${C}实际转发至${R} -> ${B}${dest}${R}"
+        echo -e "${G}[$idx]${R} ${C}客户端连接${R} -> ${B}${my_ip}:${port}${R} ${C}实际转发至${R} -> ${B}$dest${R}"
         ((idx++))
     done
     echo -e "${H}----------------------------------------${R}"
@@ -348,9 +348,9 @@ sb_manage_menu() {
             fi
         fi
         echo -e "${G}========================================${R}"
-        echo -e "${G}       落地机节点管理模块             "
+        echo -e "${G}       落地机节点管理模块             ${R}"
         echo -e "${G}========================================${R}"
-        echo -e "核心状态: ${sb_status}"
+        echo -e "核心状态: ${sb_status}${R}"
         echo -e "${G}========================================${R}"
         echo -e "${C}1.${R} 安装/更新 Sing-Box 核心"
         echo -e "${G}2.${R} 添加 VLESS Reality 节点 (含优选SNI)"
@@ -394,13 +394,13 @@ sb_manage_menu() {
 }
 
 # ============================================================================
-# 模块 3：本地纯净内核调优 (抛弃网络拉取，彻底绝杀报错)
+# 模块 3：本地纯净内核调优
 # ============================================================================
 local_kernel_tune() {
     while true; do
         clear
         echo -e "${G}========================================${R}"
-        echo -e "${G}       本地纯净内核调优模块           "
+        echo -e "${G}       本地纯净内核调优模块           ${R}"
         echo -e "${G}========================================${R}"
         echo -e "${G}1.${R} 安装 XanMod BBRv3 内核"
         echo -e "${G}2.${R} 应用极致中转/落地调优参数"
@@ -459,7 +459,6 @@ install_xanmod() {
     apt-get update -qq
     local pkg_name=""
     
-    # 自动检测 CPU 等级匹配最佳内核包
     for prefix in linux-xanmod linux-xanmod-lts; do
         local l=3
         while [ "$l" -ge 1 ]; do
@@ -481,7 +480,6 @@ install_xanmod() {
     echo -e "${C}检测到最佳内核包: ${B}${pkg_name}${R}"
     apt-get install -y "$pkg_name"
     
-    # 强制开启 BBR
     local CONF="/etc/sysctl.d/99-yw-optimize.conf"
     if [ -f "$CONF" ]; then
         if ! grep -q "tcp_congestion_control = bbr" "$CONF" 2>/dev/null; then
@@ -500,7 +498,6 @@ apply_tune() {
     echo -e "${Y}正在写入极致调优参数...${R}"
     local CONF="/etc/sysctl.d/99-yw-optimize.conf"
     
-    # 极致精简但绝对无错的 Heredoc 写入方式
     cat > "$CONF" << 'EOF'
 # T0 极致代理调优参数 (本地纯净版)
 net.core.default_qdisc = fq
@@ -551,10 +548,8 @@ fs.file-max = 1048576
 fs.nr_open = 1048576
 EOF
 
-    # 加载并忽略无害的兼容性报错
     sysctl -p "$CONF" 2>&1 | grep -v "Invalid argument" | grep -v "No such file"
     
-    # 解除文件描述符限制
     if ! grep -q "# YW-optimize" /etc/security/limits.conf 2>/dev/null; then
         echo -e "\n# YW-optimize" >> /etc/security/limits.conf
         echo -e "* soft nofile 1048576\n* hard nofile 1048576" >> /etc/security/limits.conf
@@ -592,7 +587,7 @@ while true; do
     clear
     MYIP=$(get_my_ip)
     echo -e "${G}========================================${R}"
-    echo -e "${G}   极致中转 & 落地管理面板 (T0)    "
+    echo -e "${G}   极致中转 & 落地管理面板 (T0)    ${R}"
     echo -e "${G}========================================${R}"
     echo -e "本机 IPv4: ${C}${MYIP}${R}"
     echo -e "${G}========================================${R}"
