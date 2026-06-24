@@ -269,11 +269,9 @@ _kernel_optimize_core() {
         RMEM_MAX=4194304; WMEM_MAX=4194304; SOMAXCONN=1024; BACKLOG=1000
         TCP_RMEM="4096 32768 4194304"; TCP_WMEM="4096 32768 4194304"
         HIGH_EXTRA=""; WEB_EXTRA=""; STREAM_EXTRA=""; GAME_EXTRA=""; BALANCED_EXTRA=""; GATEWAY_EXTRA=""
-        
         if [ -f /sys/module/zswap/parameters/enabled ]; then
             echo N > /sys/module/zswap/parameters/enabled 2>/dev/null
         fi
-
         if [ "$HAS_SWAP" -gt 0 ]; then
             SWAPPINESS=60 
             echo -e "${gl_huang}检测极小内存(${MEM_MB_VAL}MB)，已自动禁用 zswap 防卡死。${gl_bai}"
@@ -712,29 +710,25 @@ sb_init_conf() {
 }
 
 # ============================================================================
-# 【新增】防火墙端口放行 — 自动识别 ufw / firewalld / iptables
+# 防火墙端口放行 — 自动识别 ufw / firewalld / iptables
 # ============================================================================
 open_port() {
     local port=$1
     local proto="${2:-tcp}"
     local opened=0
 
-    # ufw
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
         ufw allow ${port}/${proto} >/dev/null 2>&1 && opened=1
     fi
 
-    # firewalld
     if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
         firewall-cmd --permanent --add-port=${port}/${proto} >/dev/null 2>&1
         firewall-cmd --reload >/dev/null 2>&1 && opened=1
     fi
 
-    # iptables 兜底（仅在前两者均未命中时尝试）
     if [ "$opened" -eq 0 ] && command -v iptables >/dev/null 2>&1; then
         if ! iptables -C INPUT -p ${proto} --dport ${port} -j ACCEPT 2>/dev/null; then
             iptables -I INPUT -p ${proto} --dport ${port} -j ACCEPT
-            # 尝试持久化
             if command -v iptables-save >/dev/null 2>&1; then
                 iptables-save > /etc/iptables.rules 2>/dev/null
             fi
@@ -743,12 +737,15 @@ open_port() {
     fi
 
     if [ "$opened" -eq 1 ]; then
-        echo -e "${G}✅ 已放行 ${proto^^} ${port} 端口${R}"
+        echo -e "${G}  ✅ 已放行 ${proto^^} ${port}${R}"
     else
-        echo -e "${Y}⚠ 未检测到活跃的防火墙，请手动确认云安全组已放行 ${proto^^} ${port}${R}"
+        echo -e "${Y}  ⚠ 未检测到活跃防火墙，请手动确认云安全组已放行 ${proto^^} ${port}${R}"
     fi
 }
 
+# ============================================================================
+# 添加 VLESS Reality — 写入 _node_name / _pub_key 到配置
+# ============================================================================
 sb_add_reality() {
     sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
     echo -e "${C}--- 添加 VLESS Reality 落地节点 ---${R}"
@@ -775,30 +772,31 @@ sb_add_reality() {
         return
     fi
 
+    # ── 节点命名：回车跳过保持默认 ──
+    local default_name="Reality-${port}"
+    echo -e "${Y}节点名称 (链接末尾 # 后的备注)${R}"
+    read -e -p "输入自定义名称 (回车跳过，默认: ${default_name}): " node_name
+    [ -z "$node_name" ] && node_name="$default_name"
+
     sb_init_conf
     local conf="/etc/sing-box/config.json"
     
+    # ── 写入配置时保存 _node_name 和 _pub_key，供查看时重建链接 ──
     jq --argjson p "$port" --arg u "$uuid" --arg pk "$priv_key" --arg s "$sni" \
-       '.inbounds += [{"type":"vless","tag":"vless-in-$p","listen":"::","listen_port":$p,"users":[{"uuid":$u,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$s,"reality":{"enabled":true,"handshake":{"server":$s,"server_port":443},"private_key":$pk}}}]' \
+          --arg n "$node_name" --arg pub "$pub_key" \
+       '.inbounds += [{"type":"vless","tag":"vless-in-$p","listen":"::","listen_port":$p,"users":[{"uuid":$u,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$s,"reality":{"enabled":true,"handshake":{"server":$s,"server_port":443},"private_key":$pk}},"_node_name":$n,"_pub_key":$pub}]' \
        "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
 
     if sing-box check -c "$conf" >/dev/null 2>&1; then
+        # ── 自动放行端口 ──
+        echo -e "${Y}正在检查防火墙并放行端口...${R}"
+        open_port "$port" "tcp"
+
         systemctl enable sing-box >/dev/null 2>&1
         systemctl restart sing-box
         sleep 1
         local my_ip
         my_ip=$(get_my_ip)
-
-        # ── 【新增】节点命名：回车跳过保持默认 ──
-        local default_name="Reality-${port}"
-        echo -e "${Y}节点名称 (链接末尾 # 后的备注)${R}"
-        read -e -p "输入自定义名称 (回车跳过，默认: ${default_name}): " node_name
-        [ -z "$node_name" ] && node_name="$default_name"
-
-        # ── 【新增】自动放行端口 ──
-        echo -e "${Y}正在检查防火墙并放行端口...${R}"
-        open_port "$port" "tcp"
-
         local link="vless://${uuid}@${my_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&type=tcp#${node_name}"
         echo -e "${G}✅ VLESS Reality 添加成功并已启动！${R}"
         echo -e "${Y}客户端链接:${R}"
@@ -811,6 +809,9 @@ sb_add_reality() {
     read -rs -n 1 -p "按任意键继续..."
 }
 
+# ============================================================================
+# 添加 Hysteria2 — 写入 _node_name 到配置
+# ============================================================================
 sb_add_hy2() {
     sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
     echo -e "${C}--- 添加 Hysteria2 落地节点 ---${R}"
@@ -835,29 +836,29 @@ sb_add_hy2() {
         chmod 644 "$crt" "$key" 2>/dev/null
     fi
 
+    # ── 节点命名：回车跳过保持默认 ──
+    local default_name="Hy2-${port}"
+    echo -e "${Y}节点名称 (链接末尾 # 后的备注)${R}"
+    read -e -p "输入自定义名称 (回车跳过，默认: ${default_name}): " node_name
+    [ -z "$node_name" ] && node_name="$default_name"
+
     sb_init_conf
     local conf="/etc/sing-box/config.json"
-    jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" \
-       '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificate_path":"/etc/sing-box/hy2.crt","key_path":"/etc/sing-box/hy2.key"}}]' \
+    # ── 写入配置时保存 _node_name，供查看时重建链接 ──
+    jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" --arg n "$node_name" \
+       '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificate_path":"/etc/sing-box/hy2.crt","key_path":"/etc/sing-box/hy2.key"},"_node_name":$n}]' \
        "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
        
     if sing-box check -c "$conf" >/dev/null 2>&1; then
+        # ── 自动放行 UDP 端口 ──
+        echo -e "${Y}正在检查防火墙并放行端口...${R}"
+        open_port "$port" "udp"
+
         systemctl enable sing-box >/dev/null 2>&1
         systemctl restart sing-box
         sleep 1
         local my_ip
         my_ip=$(get_my_ip)
-
-        # ── 【新增】节点命名：回车跳过保持默认 ──
-        local default_name="Hy2-${port}"
-        echo -e "${Y}节点名称 (链接末尾 # 后的备注)${R}"
-        read -e -p "输入自定义名称 (回车跳过，默认: ${default_name}): " node_name
-        [ -z "$node_name" ] && node_name="$default_name"
-
-        # ── 【新增】自动放行 UDP 端口 ──
-        echo -e "${Y}正在检查防火墙并放行端口...${R}"
-        open_port "$port" "udp"
-
         local link="hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}#${node_name}"
         echo -e "${G}✅ Hysteria2 添加成功并已启动！${R}"
         echo -e "${Y}客户端链接:${R}"
@@ -870,6 +871,9 @@ sb_add_hy2() {
     read -rs -n 1 -p "按任意键继续..."
 }
 
+# ============================================================================
+# 【修复】查看节点列表 — VLESS 也输出完整链接，读取 _node_name
+# ============================================================================
 _show_nodes_list() {
     local conf="/etc/sing-box/config.json"
     local my_ip
@@ -882,19 +886,35 @@ _show_nodes_list() {
     fi
     
     echo "$inbounds" | while IFS= read -r in; do
-        local type port
+        local type port node_name
         type=$(echo "$in" | jq -r '.type')
         port=$(echo "$in" | jq -r '.listen_port')
+        # 从配置中读取保存的节点名称，旧配置无此字段则用默认值
+        node_name=$(echo "$in" | jq -r '._node_name // empty')
         
         if [ "$type" = "vless" ]; then
-            echo -e "${G}[VLESS Reality]${R} 端口: ${B}${port}${R}"
+            local uuid sni pub_key link
+            uuid=$(echo "$in" | jq -r '.users[0].uuid')
+            sni=$(echo "$in" | jq -r '.tls.server_name')
+            pub_key=$(echo "$in" | jq -r '._pub_key // empty')
+            [ -z "$node_name" ] && node_name="Reality-${port}"
+            if [ -n "$pub_key" ]; then
+                link="vless://${uuid}@${my_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&type=tcp#${node_name}"
+            else
+                link="(公钥缺失，无法重建完整链接，请删除后重新添加)"
+            fi
+            echo -e "${G}[VLESS Reality]${R} 端口: ${B}${port}${R} 名称: ${B}${node_name}${R}"
+            echo -e "${Y}链接: ${B}${link}${R}"
         elif [ "$type" = "hysteria2" ]; then
             local pass sni link
             pass=$(echo "$in" | jq -r '.users[0].password')
             sni=$(echo "$in" | jq -r '.tls.server_name')
-            link="hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}#Hy2-${port}"
-            echo -e "${G}[Hysteria2]${R} 端口: ${B}${port}${R}"
+            [ -z "$node_name" ] && node_name="Hy2-${port}"
+            link="hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}#${node_name}"
+            echo -e "${G}[Hysteria2]${R} 端口: ${B}${port}${R} 名称: ${B}${node_name}${R}"
             echo -e "${Y}链接: ${B}${link}${R}"
+        else
+            echo -e "${H}[${type}] 端口: ${port} (非标准协议，不生成链接)${R}"
         fi
         echo -e "${H}----------------------------------------${R}"
     done
@@ -932,6 +952,9 @@ sb_del_node() {
     read -rs -n 1 -p "按任意键继续..."
 }
 
+# ============================================================================
+# 【修复】Sing-Box 管理菜单 — 新增第7项手动开放端口
+# ============================================================================
 sb_manage_menu() {
     while true; do
         clear
@@ -954,6 +977,7 @@ sb_manage_menu() {
         echo -e "${H}4.${R} 查看节点与链接"
         echo -e "${RED}5.${R} 删除节点 (按端口)"
         echo -e "${H}6.${R} 重启/停止/查看日志"
+        echo -e "${Y}7.${R} 手动开放端口 (防火墙放行)"
         echo -e "${G}========================================${R}"
         echo -e "${H}0.${R} 返回主菜单"
         echo -e "${G}========================================${R}"
@@ -982,6 +1006,25 @@ sb_manage_menu() {
                     2) systemctl stop sing-box && echo -e "${Y}已停止${R}" ;;
                     3) journalctl -u sing-box -n 30 --no-pager ;;
                 esac
+                read -rs -n 1 -p "按任意键继续..." ;;
+            7)
+                # ── 手动开放端口 ──
+                echo -e "${C}--- 手动开放端口 ---${R}"
+                read -e -p "请输入要放行的端口号: " m_port
+                if [[ ! "$m_port" =~ ^[0-9]+$ ]] || [ "$m_port" -lt 1 ] || [ "$m_port" -gt 65535 ]; then
+                    echo -e "${RED}端口无效，需为 1-65535 的数字${R}"
+                else
+                    echo -e "${Y}选择协议:${R}"
+                    echo -e "${G}1.${R} TCP"
+                    echo -e "${G}2.${R} UDP"
+                    echo -e "${G}3.${R} TCP + UDP"
+                    read -e -p "选择 (回车默认TCP): " m_proto
+                    case "$m_proto" in
+                        2) open_port "$m_port" "udp" ;;
+                        3) open_port "$m_port" "tcp"; open_port "$m_port" "udp" ;;
+                        *)  open_port "$m_port" "tcp" ;;
+                    esac
+                fi
                 read -rs -n 1 -p "按任意键继续..." ;;
             0|"") break ;;
             *) echo -e "${RED}输入无效${R}"; sleep 1 ;;
