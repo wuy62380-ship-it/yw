@@ -673,7 +673,7 @@ Kernel_optimize() {
 }
 
 # ============================================================================
-# 模块 5：极致中转与落地管理面板 (独立附加模块)
+# 模块 5：落地机节点管理面板 (精简版 - 纯落地)
 # ============================================================================
 
 # 颜色变量映射 (复用原脚本颜色体系，补充原脚本缺失的青色和亮白)
@@ -719,109 +719,6 @@ select_sni() {
         3) read -e -p "输入域名: " s; echo "${s:-www.microsoft.com}" ;;
         *) echo "www.microsoft.com" ;;
     esac
-}
-
-add_rule() {
-    echo -e "${C}--- 添加内核态转发规则 (TCP) ---${R}"
-    while true; do
-        echo -e "${C}请输入落地机的真实 IP: ${R}"
-        read -e -p "IP: " BACKEND_IP
-        if [[ "$BACKEND_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then break; fi
-        echo -e "${RED}IP 格式错误，请重新输入！${R}"
-    done
-    while true; do
-        echo -e "${C}请输入落地机的监听端口: ${R}"
-        read -e -p "端口: " BACKEND_PORT
-        if [[ "$BACKEND_PORT" =~ ^[0-9]+$ ]]; then break; fi
-        echo -e "${RED}端口格式错误，请重新输入！${R}"
-    done
-    while true; do
-        echo -e "${C}请输入中转机对外暴露的端口: ${R}"
-        read -e -p "端口: " FRONTEND_PORT
-        if [[ "$FRONTEND_PORT" =~ ^[0-9]+$ ]]; then break; fi
-        echo -e "${RED}端口格式错误，请重新输入！${R}"
-    done
-
-    if iptables -t nat -C PREROUTING -p tcp --dport "$FRONTEND_PORT" -j DNAT --to-destination "$BACKEND_IP:$BACKEND_PORT" 2>/dev/null; then
-        echo -e "${Y}检测到端口 $FRONTEND_PORT 的转发规则已存在！${R}"
-        return
-    fi
-
-    iptables -t nat -A PREROUTING -p tcp --dport "$FRONTEND_PORT" -j DNAT --to-destination "$BACKEND_IP:$BACKEND_PORT"
-    if ! iptables -t nat -C POSTROUTING -d "$BACKEND_IP" -j MASQUERADE 2>/dev/null; then
-        iptables -t nat -A POSTROUTING -d "$BACKEND_IP" -j MASQUERADE
-    fi
-    save_rules
-    echo -e "${G}✅ 转发规则添加成功：${C}$(get_my_ip):${FRONTEND_PORT} -> ${BACKEND_IP}:${BACKEND_PORT}${R}"
-}
-
-del_rule() {
-    echo -e "${C}--- 删除内核态转发规则 ---${R}"
-    rules=()
-    while IFS= read -r line; do
-        if [[ -n "$line" ]]; then rules+=("$line"); fi
-    done < <(iptables-save -t nat | awk '/PREROUTING/ && /DNAT/')
-
-    if [ ${#rules[@]} -eq 0 ]; then echo -e "${H}当前没有任何转发规则。${R}"; return; fi
-
-    echo -e "${Y}当前存在的转发规则：${R}"
-    idx=1
-    declare -A port_map
-    declare -A dest_map
-    for rule in "${rules[@]}"; do
-        port=$(echo "$rule" | awk '{for(i=1;i<=NF;i++) if($i=="--dport") print $(i+1)}')
-        dest=$(echo "$rule" | awk '{for(i=1;i<=NF;i++) if($i=="--to-destination") print $(i+1)}')
-        port_map[$idx]="$port"
-        dest_map[$idx]="$dest"
-        echo -e "${G}[$idx]${R} 监听端口: ${B}$port${R}  ->  落地目标: ${B}$dest${R}"
-        ((idx++))
-    done
-
-    echo -e "${C}请输入要删除的规则序号 (回车取消): ${R}"
-    read -e -p "序号: " sel
-    if [[ -z "$sel" ]] || ! [[ "$sel" =~ ^[0-9]+$ ]] || [ -z "${port_map[$sel]:-}" ]; then
-        echo -e "${H}已取消删除。${R}"
-        return
-    fi
-    del_port="${port_map[$sel]}"
-    del_dest="${dest_map[$sel]}"
-    iptables -t nat -D PREROUTING -p tcp --dport "$del_port" -j DNAT --to-destination "$del_dest" 2>/dev/null
-    if ! iptables-save -t nat | grep "PREROUTING" | grep -q "$del_dest"; then
-        iptables -t nat -D POSTROUTING -d "${del_dest%%:*}" -j MASQUERADE 2>/dev/null
-    fi
-    save_rules
-    echo -e "${G}✅ 已成功删除端口 ${del_port} 的转发规则！${R}"
-}
-
-view_rules() {
-    echo -e "${C}--- 当前中转转发规则清单 ---${R}"
-    rules=()
-    while IFS= read -r line; do
-        if [[ -n "$line" ]]; then rules+=("$line"); fi
-    done < <(iptables-save -t nat | awk '/PREROUTING/ && /DNAT/')
-    if [ ${#rules[@]} -eq 0 ]; then echo -e "${H}当前没有任何转发规则，是一片净土。${R}"; return; fi
-    local my_ip
-    my_ip=$(get_my_ip)
-    local idx=1
-    for rule in "${rules[@]}"; do
-        port=$(echo "$rule" | awk '{for(i=1;i<=NF;i++) if($i=="--dport") print $(i+1)}')
-        dest=$(echo "$rule" | awk '{for(i=1;i<=NF;i++) if($i=="--to-destination") print $(i+1)}')
-        echo -e "${G}[$idx]${R} ${C}客户端连接${R} -> ${B}${my_ip}:${port}${R} ${C}实际转发至${R} -> ${B}$dest${R}"
-        ((idx++))
-    done
-    echo -e "${H}----------------------------------------${R}"
-    echo -e "${H}提示：复制落地机链接，将 IP 改为 ${my_ip}，端口改为上方对应的监听端口${R}"
-}
-
-save_rules() {
-    if command -v netfilter-persistent >/dev/null 2>&1; then
-        netfilter-persistent save > /dev/null 2>&1
-    elif [ -f /etc/redhat-release ] && command -v iptables-service >/dev/null 2>&1; then
-        service iptables save > /dev/null 2>&1
-    else
-        mkdir -p /etc/iptables
-        iptables-save > /etc/iptables/rules.v4 2>/dev/null
-    fi
 }
 
 sb_check() {
@@ -1015,7 +912,7 @@ sb_manage_menu() {
             fi
         fi
         echo -e "${G}========================================${R}"
-        echo -e "${G}       落地机节点管理模块             ${R}"
+        echo -e "${G}       Sing-Box 落地节点管理          ${R}"
         echo -e "${G}========================================${R}"
         echo -e "核心状态: ${sb_status}${R}"
         echo -e "${G}========================================${R}"
@@ -1026,7 +923,7 @@ sb_manage_menu() {
         echo -e "${RED}5.${R} 删除节点 (按端口)"
         echo -e "${H}6.${R} 重启/停止/查看日志"
         echo -e "${G}========================================${R}"
-        echo -e "${H}0.${R} 返回中转管理主菜单"
+        echo -e "${H}0.${R} 返回主菜单"
         echo -e "${G}========================================${R}"
         
         read -e -p "请输入选择: " c
@@ -1069,33 +966,23 @@ ensure_forward() {
     fi
 }
 
-trans_landing_menu() {
+landing_manage_menu() {
     ensure_forward
     while true; do
         clear
         MYIP=$(get_my_ip)
         echo -e "${G}========================================${R}"
-        echo -e "${G}   极致中转与落地管理面板 (T0)    ${R}"
+        echo -e "${G}       落地机节点管理面板             ${R}"
         echo -e "${G}========================================${R}"
         echo -e "本机 IPv4: ${C}${MYIP}${R}"
         echo -e "${G}========================================${R}"
-        echo -e "${Y}[ 中转机功能 ]${R}"
-        echo -e "${G}1.${R} 添加内核态转发规则 (TCP 零损耗)"
-        echo -e "${RED}2.${R} 删除内核态转发规则"
-        echo -e "${H}3.${R} 查看当前转发规则"
-        echo -e "${G}========================================${R}"
-        echo -e "${Y}[ 落地机功能 ]${R}"
-        echo -e "${C}4.${R} 进入 Sing-Box 节点管理模块"
-        echo -e "${G}========================================${R}"
+        echo -e "${G}1.${R} 进入 Sing-Box 节点管理"
         echo -e "${H}0.${R} 返回主菜单"
         echo -e "${G}========================================${R}"
         
         read -e -p "请输入选择: " c
         case $c in
-            1) add_rule; read -rs -n 1 -p "按任意键继续..." ;;
-            2) del_rule; read -rs -n 1 -p "按任意键继续..." ;;
-            3) view_rules; read -rs -n 1 -p "按任意键继续..." ;;
-            4) sb_manage_menu ;;
+            1) sb_manage_menu ;;
             0|"") break ;;
             *) echo -e "${RED}输入无效${R}"; sleep 1 ;;
         esac
@@ -1116,7 +1003,7 @@ main_menu() {
         echo -e "${gl_huang}2. 系统信息查询"
         echo -e "${gl_huang}3. Linux 系统内核参数优化 (场景化调优)"
         echo -e "${gl_huang}4. 管理虚拟内存"
-        echo -e "${gl_huang}5. 极致中转与落地管理面板"
+        echo -e "${gl_huang}5. 落地机节点管理面板"
         echo -e "${gl_hui}0. 退出程序"
         echo -e "${gl_huang}========================================${gl_bai}"
         read -e -p "请输入你的选择: " choice
@@ -1125,12 +1012,11 @@ main_menu() {
             2) show_sys_info ;;
             3) Kernel_optimize ;;
             4) change_swap_size ;;
-            5) trans_landing_menu ;;
+            5) landing_manage_menu ;;
             0) echo -e "${gl_lv}感谢使用，再见！${gl_bai}"; break ;;
             *) echo -e "${gl_red}无效的选择，请重新输入${gl_bai}" ; sleep 1 ;;
         esac
     done
 }
 
-# 修复原代码末尾多出的 } 导致的语法错误
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then main_menu; fi
