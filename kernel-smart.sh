@@ -1104,18 +1104,20 @@ main_menu() {
         echo -e "${gl_lv}        YW 系统优化与管理面板           ${gl_bai}"
         echo -e "${gl_lv}========================================${gl_bai}"
         echo -e "${gl_kjlan}1.${gl_bai} 系统信息查询"
-        echo -e "${gl_kjlan}2.${gl_bai} Linux系统内核参数优化"
-        echo -e "${gl_kjlan}3.${gl_bai} 安装 BBRv3 内核 (XanMod)"
+        echo -e "${gl_kjlan}2.${gl_bai} 安装 BBRv3 内核"
+        echo -e "${gl_kjlan}3.${gl_bai} Linux系统内核参数优化"
         echo -e "${gl_kjlan}4.${gl_bai} Sing-Box 落地节点管理"
+        echo -e "${gl_kjlan}5.${gl_bai} 管理虚拟内存"
         echo -e "${gl_kjlan}========================================${gl_bai}"
         echo -e "${gl_huang}0.${gl_bai} 退出脚本"
         echo -e "${gl_lv}========================================${gl_bai}"
         read -e -p "请输入选择: " main_choice
         case $main_choice in
             1) show_sys_info ;;
-            2) Kernel_optimize ;;
-            3) bbrv3 ;;
+            2) bbrv3 ;;
+            3) Kernel_optimize ;;
             4) sb_manage_menu ;;
+            5) change_swap_size ;;
             0|"") clear; exit 0 ;;
             *) echo -e "${gl_red}无效选择${gl_bai}"; sleep 1 ;;
         esac
