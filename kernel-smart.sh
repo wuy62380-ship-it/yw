@@ -644,19 +644,24 @@ Kernel_optimize() {
 }
 
 # ============================================================================
-# 模块 5：落地机节点管理面板 (精简版 - 纯落地)
+# 模块 5：落地机节点管理面板
 # ============================================================================
 
 R="${gl_bai}"; G="${gl_lv}"; Y="${gl_huang}"; H="${gl_hui}"; RED="${gl_red}"; C="\033[36m"; B="\033[97m"
 
+# ============================================================================
+# 【修复】获取外网IP — 加 -f 参数，HTTP 错误码时触发 fallback
+# ============================================================================
 get_my_ip() {
     local ip
-    ip=$(curl -4 -s --connect-timeout 3 https://ifconfig.me 2>/dev/null || curl -4 -s --connect-timeout 3 https://checkip.amazonaws.com 2>/dev/null || curl -4 -s --connect-timeout 3 https://api.ipify.org 2>/dev/null)
+    ip=$(curl -4 -s -f --connect-timeout 3 https://ifconfig.me 2>/dev/null || \
+         curl -4 -s -f --connect-timeout 3 https://checkip.amazonaws.com 2>/dev/null || \
+         curl -4 -s -f --connect-timeout 3 https://api.ipify.org 2>/dev/null)
     echo "${ip:-未知IP}"
 }
 
 # ============================================================================
-# 优选域名 — openssl s_client TLS 握手测速 (修复0ms假快问题)
+# 优选域名 — openssl s_client TLS 握手测速
 # ============================================================================
 select_sni() {
     echo -e "${Y}--- 伪装域名 (SNI) 设置 ---${R}"
@@ -674,7 +679,6 @@ select_sni() {
             for i in "${d[@]}"; do
                 (
                     t1=$(date +%s%3N)
-                    # 只有 openssl 成功建立连接才记录真实耗时，失败则惩罚 9999ms
                     if timeout 1 openssl s_client -connect "$i:443" -servername "$i" </dev/null &>/dev/null; then
                         t2=$(date +%s%3N)
                         echo "$((t2 - t1)) $i" >> "$f"
@@ -722,7 +726,7 @@ sb_init_conf() {
 }
 
 # ============================================================================
-# 节点元数据管理 (独立于 config.json，防止 sing-box 严格校验报错)
+# 节点元数据管理 (独立文件，与 sing-box 配置隔离)
 # ============================================================================
 META_FILE="/etc/sing-box/nodes_meta.json"
 
@@ -764,7 +768,7 @@ _get_node_meta() {
 }
 
 # ============================================================================
-# 防火墙端口放行 — 自动识别 ufw / firewalld / iptables
+# 【修复】防火墙端口放行 — 改用 elif 互斥，防止重复执行
 # ============================================================================
 open_port() {
     local port=$1
@@ -773,19 +777,14 @@ open_port() {
 
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
         ufw allow ${port}/${proto} >/dev/null 2>&1 && opened=1
-    fi
 
-    if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+    elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
         firewall-cmd --permanent --add-port=${port}/${proto} >/dev/null 2>&1
         firewall-cmd --reload >/dev/null 2>&1 && opened=1
-    fi
 
-    if [ "$opened" -eq 0 ] && command -v iptables >/dev/null 2>&1; then
+    elif command -v iptables >/dev/null 2>&1; then
         if ! iptables -C INPUT -p ${proto} --dport ${port} -j ACCEPT 2>/dev/null; then
             iptables -I INPUT -p ${proto} --dport ${port} -j ACCEPT
-            if command -v iptables-save >/dev/null 2>&1; then
-                iptables-save > /etc/iptables.rules 2>/dev/null
-            fi
             opened=1
         fi
     fi
@@ -798,7 +797,7 @@ open_port() {
 }
 
 # ============================================================================
-# 添加 VLESS Reality — 写入纯净 config.json + 元数据分离
+# 【修复】添加 VLESS Reality — jq 写入前先备份配置
 # ============================================================================
 sb_add_reality() {
     sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
@@ -826,7 +825,6 @@ sb_add_reality() {
         return
     fi
 
-    # ── 节点命名：回车跳过保持默认 ──
     local default_name="Reality-${port}"
     echo -e "${Y}节点名称 (链接末尾 # 后的备注)${R}"
     read -e -p "输入自定义名称 (回车跳过，默认: ${default_name}): " node_name
@@ -835,17 +833,16 @@ sb_add_reality() {
     sb_init_conf
     local conf="/etc/sing-box/config.json"
     
-    # ── 写入纯净配置，不包含任何自定义字段 ──
+    # ── 【新增】写入前备份，防止 jq 覆盖后 check 失败导致配置丢失 ──
+    cp "$conf" "${conf}.bak.$(date +%s)"
+
     jq --argjson p "$port" --arg u "$uuid" --arg pk "$priv_key" --arg s "$sni" \
        '.inbounds += [{"type":"vless","tag":"vless-in-$p","listen":"::","listen_port":$p,"users":[{"uuid":$u,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$s,"reality":{"enabled":true,"handshake":{"server":$s,"server_port":443},"private_key":$pk}}}]' \
        "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
 
     if sing-box check -c "$conf" >/dev/null 2>&1; then
-        # ── 自动放行端口 ──
         echo -e "${Y}正在检查防火墙并放行端口...${R}"
         open_port "$port" "tcp"
-
-        # ── 元数据写入独立文件 ──
         _save_node_meta "$port" "$node_name" "vless" "$pub_key"
 
         systemctl enable sing-box >/dev/null 2>&1
@@ -859,17 +856,27 @@ sb_add_reality() {
         echo -e "${B}${link}${R}"
         echo -e "${H}如果是中转，请将链接中的 IP:端口 改为中转机的 IP:端口${R}"
     else
-        echo -e "${RED}配置校验失败！${R}"
-        sing-box check -c "$conf"
+        echo -e "${RED}配置校验失败！已自动回滚到备份配置。${R}"
+        # ── 【新增】校验失败时从最新备份恢复 ──
+        local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
+        if [ -n "$latest_bak" ]; then
+            mv "$latest_bak" "$conf"
+            echo -e "${Y}已从备份恢复原配置。${R}"
+        fi
+        sing-box check -c "$conf" 2>&1 | head -5
     fi
     read -rs -n 1 -p "按任意键继续..."
 }
 
 # ============================================================================
-# 添加 Hysteria2 — 写入纯净 config.json + 元数据分离
+# 【修复】添加 Hysteria2 — 私钥权限 600 + 证书按端口隔离 + 写入前备份
 # ============================================================================
 sb_add_hy2() {
     sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
+    if ! command -v openssl >/dev/null 2>&1; then
+        echo -e "${RED}请先安装 openssl！${R}"
+        read -rs -n 1 -p "按任意键返回..."; return
+    fi
     echo -e "${C}--- 添加 Hysteria2 落地节点 ---${R}"
     echo -e "${C}请输入监听 UDP 端口: ${R}"
     read -e -p "端口: " port
@@ -883,16 +890,18 @@ sb_add_hy2() {
     sni=$(select_sni)
 
     echo -e "${Y}正在生成密码和自签证书...${R}"
-    local pass crt key
+    local pass
     pass=$(openssl rand -base64 16)
-    crt="/etc/sing-box/hy2.crt"
-    key="/etc/sing-box/hy2.key"
+    # ── 【修复】证书按端口隔离，避免多节点复用同一证书 CN 不匹配 ──
+    local crt="/etc/sing-box/hy2_${port}.crt"
+    local key="/etc/sing-box/hy2_${port}.key"
     if [ ! -f "$crt" ] || [ ! -f "$key" ]; then
         openssl req -x509 -nodes -newkey rsa:2048 -keyout "$key" -out "$crt" -subj "/CN=$sni" -days 3650 2>/dev/null
-        chmod 644 "$crt" "$key" 2>/dev/null
     fi
+    # ── 【修复】私钥权限必须 600，证书 644 即可 ──
+    chmod 600 "$key" 2>/dev/null
+    chmod 644 "$crt" 2>/dev/null
 
-    # ── 节点命名：回车跳过保持默认 ──
     local default_name="Hy2-${port}"
     echo -e "${Y}节点名称 (链接末尾 # 后的备注)${R}"
     read -e -p "输入自定义名称 (回车跳过，默认: ${default_name}): " node_name
@@ -900,17 +909,18 @@ sb_add_hy2() {
 
     sb_init_conf
     local conf="/etc/sing-box/config.json"
-    # ── 写入纯净配置 ──
+    
+    # ── 写入前备份 ──
+    cp "$conf" "${conf}.bak.$(date +%s)"
+
     jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" \
-       '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificate_path":"/etc/sing-box/hy2.crt","key_path":"/etc/sing-box/hy2.key"}}]' \
+       --arg crt "$crt" --arg key "$key" \
+       '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificate_path":$crt,"key_path":$key}}]' \
        "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
        
     if sing-box check -c "$conf" >/dev/null 2>&1; then
-        # ── 自动放行 UDP 端口 ──
         echo -e "${Y}正在检查防火墙并放行端口...${R}"
         open_port "$port" "udp"
-
-        # ── 元数据写入独立文件 ──
         _save_node_meta "$port" "$node_name" "hysteria2"
 
         systemctl enable sing-box >/dev/null 2>&1
@@ -924,14 +934,21 @@ sb_add_hy2() {
         echo -e "${B}${link}${R}"
         echo -e "${H}注意: Hysteria2 是 UDP 协议，请确保云安全组也已放行 UDP ${port}${R}"
     else
-        echo -e "${RED}配置校验失败！${R}"
-        sing-box check -c "$conf"
+        echo -e "${RED}配置校验失败！已自动回滚到备份配置。${R}"
+        local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
+        if [ -n "$latest_bak" ]; then
+            mv "$latest_bak" "$conf"
+            echo -e "${Y}已从备份恢复原配置。${R}"
+        fi
+        # 清理可能残留的证书文件
+        rm -f "$crt" "$key"
+        sing-box check -c "$conf" 2>&1 | head -5
     fi
     read -rs -n 1 -p "按任意键继续..."
 }
 
 # ============================================================================
-# 查看节点列表 — 从独立 meta 文件读取名字和公钥
+# 【优化】查看节点列表 — 一次性读取 meta 文件，避免循环内反复磁盘 IO
 # ============================================================================
 _show_nodes_list() {
     local conf="/etc/sing-box/config.json"
@@ -944,18 +961,21 @@ _show_nodes_list() {
         return 1
     fi
     
+    # ── 【优化】一次性读入 meta，避免循环内每次都 cat 文件启动 jq ──
+    local meta_json
+    meta_json=$(cat "$META_FILE" 2>/dev/null || echo '{}')
+
     echo "$inbounds" | while IFS= read -r in; do
         local type port node_name
         type=$(echo "$in" | jq -r '.type')
         port=$(echo "$in" | jq -r '.listen_port')
-        # 从独立 meta 文件读取节点名称
-        node_name=$(_get_node_meta "$port" "name")
+        node_name=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].name // empty')
         
         if [ "$type" = "vless" ]; then
             local uuid sni pub_key link
             uuid=$(echo "$in" | jq -r '.users[0].uuid')
             sni=$(echo "$in" | jq -r '.tls.server_name')
-            pub_key=$(_get_node_meta "$port" "pub_key")
+            pub_key=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].pub_key // empty')
             [ -z "$node_name" ] && node_name="Reality-${port}"
             if [ -n "$pub_key" ]; then
                 link="vless://${uuid}@${my_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&type=tcp#${node_name}"
@@ -1005,8 +1025,17 @@ sb_del_node() {
     count=$(jq --argjson p "$port" '[.inbounds[] | select(.listen_port == $p)] | length' "$conf")
     if [ "$count" -eq 0 ]; then echo -e "${H}未找到端口 ${port} 的节点${R}"; return; fi
     
+    # ── 删除前备份 ──
+    cp "$conf" "${conf}.bak.$(date +%s)"
+
+    # ── 【新增】如果是 Hy2 节点，清理对应的独立证书文件 ──
+    local node_type
+    node_type=$(jq -r --argjson p "$port" '.inbounds[] | select(.listen_port == $p) | .type' "$conf")
+    if [ "$node_type" = "hysteria2" ]; then
+        rm -f "/etc/sing-box/hy2_${port}.crt" "/etc/sing-box/hy2_${port}.key"
+    fi
+
     jq --argjson p "$port" 'del(.inbounds[] | select(.listen_port == $p))' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
-    # 同步清理独立 meta 文件中的记录
     _del_node_meta "$port"
     systemctl restart sing-box
     echo -e "${G}✅ 已删除端口 ${port} 的节点并重启服务${R}"
@@ -1014,7 +1043,7 @@ sb_del_node() {
 }
 
 # ============================================================================
-# Sing-Box 管理菜单 — 含手动开放端口
+# Sing-Box 管理菜单
 # ============================================================================
 sb_manage_menu() {
     while true; do
@@ -1071,7 +1100,8 @@ sb_manage_menu() {
             7)
                 echo -e "${C}--- 手动开放端口 ---${R}"
                 read -e -p "请输入要放行的端口号: " m_port
-                if [[ ! "$m_port" =~ ^[0-9]+$ ]] || [ "$m_port" -lt 1 ] || [ "$m_port" -gt 65535 ]; then
+                # ── 【修复】限制输入长度，防止超大数字导致算术比较溢出报错 ──
+                if [[ ! "$m_port" =~ ^[0-9]{1,5}$ ]] || (( ${m_port#0} < 1 || ${m_port#0} > 65535 )); then
                     echo -e "${RED}端口无效，需为 1-65535 的数字${R}"
                 else
                     echo -e "${Y}选择协议:${R}"
