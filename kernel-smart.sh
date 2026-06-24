@@ -769,33 +769,24 @@ _get_node_meta() {
 }
 
 # ============================================================================
-# 【修复】防火墙端口放行 — 改用 elif 互斥，防止重复执行
+# ============================================================================
+# 【新增】防火墙状态探测 (供菜单批量放行时避免重复提示)
+# ============================================================================
+_has_active_firewall() {
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
+        return 0
+    elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+        return 0
+    elif command -v iptables >/dev/null 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
+# ============================================================================
+# 防火墙端口放行 — 改用 elif 互斥，防止重复执行
 # ============================================================================
 open_port() {
-    local port=$1
-    local proto="${2:-tcp}"
-    local opened=0
-
-    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
-        ufw allow ${port}/${proto} >/dev/null 2>&1 && opened=1
-
-    elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
-        firewall-cmd --permanent --add-port=${port}/${proto} >/dev/null 2>&1
-        firewall-cmd --reload >/dev/null 2>&1 && opened=1
-
-    elif command -v iptables >/dev/null 2>&1; then
-        if ! iptables -C INPUT -p ${proto} --dport ${port} -j ACCEPT 2>/dev/null; then
-            iptables -I INPUT -p ${proto} --dport ${port} -j ACCEPT
-            opened=1
-        fi
-    fi
-
-    if [ "$opened" -eq 1 ]; then
-        echo -e "${G}  ✅ 已放行 ${proto^^} ${port}${R}"
-    else
-        echo -e "${Y}  ⚠ 未检测到活跃防火墙，请手动确认云安全组已放行 ${proto^^} ${port}${R}"
-    fi
-}
 
 # ============================================================================
 # 【修复】添加 VLESS Reality — jq 写入前先备份配置
@@ -1099,9 +1090,9 @@ sb_manage_menu() {
                 esac
                 read -rs -n 1 -p "按任意键继续..." ;;
             7)
+            7)
                 echo -e "${C}--- 手动开放端口 ---${R}"
                 read -e -p "请输入要放行的端口号: " m_port
-                # ── 【修复】限制输入长度，防止超大数字导致算术比较溢出报错 ──
                 if [[ ! "$m_port" =~ ^[0-9]{1,5}$ ]] || (( ${m_port#0} < 1 || ${m_port#0} > 65535 )); then
                     echo -e "${RED}端口无效，需为 1-65535 的数字${R}"
                 else
@@ -1110,11 +1101,22 @@ sb_manage_menu() {
                     echo -e "${G}2.${R} UDP"
                     echo -e "${G}3.${R} TCP + UDP"
                     read -e -p "选择 (回车默认TCP): " m_proto
+                    # ── 确定要显示的协议字符串 ──
+                    local proto_str="TCP"
                     case "$m_proto" in
-                        2) open_port "$m_port" "udp" ;;
-                        3) open_port "$m_port" "tcp"; open_port "$m_port" "udp" ;;
-                        *)  open_port "$m_port" "tcp" ;;
+                        2) proto_str="UDP" ;;
+                        3) proto_str="TCP + UDP" ;;
                     esac
+                    # ── 【修复】无防火墙时合并为单行提示，有防火墙才进入实际放行 ──
+                    if ! _has_active_firewall; then
+                        echo -e "${Y}  ⚠ 未检测到活跃防火墙，请手动确认云安全组已放行 ${proto_str} ${m_port}${R}"
+                    else
+                        case "$m_proto" in
+                            2) open_port "$m_port" "udp" ;;
+                            3) open_port "$m_port" "tcp"; open_port "$m_port" "udp" ;;
+                            *)  open_port "$m_port" "tcp" ;;
+                        esac
+                    fi
                 fi
                 read -rs -n 1 -p "按任意键继续..." ;;
             0|"") break ;;
