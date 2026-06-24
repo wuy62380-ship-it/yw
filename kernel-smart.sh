@@ -895,7 +895,17 @@ sb_add_reality() {
         _save_node_meta "$port" "$node_name" "vless" "$pub_key"
         systemctl enable sing-box >/dev/null 2>&1
         systemctl restart sing-box
-        sleep 1
+        sleep 2
+        if ! systemctl is-active --quiet sing-box 2>/dev/null; then
+            echo -e "${RED}❌ 服务启动失败！错误日志如下：${R}"
+            journalctl -u sing-box -n 15 --no-pager 2>/dev/null
+            echo -e "${Y}正在回滚配置...${R}"
+            local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
+            if [ -n "$latest_bak" ]; then mv "$latest_bak" "$conf"; echo -e "${Y}已从备份恢复原配置。${R}"; fi
+            _del_node_meta "$port"
+            read -rs -n 1 -p "按任意键返回..."
+            return
+        fi
         local my_ip; my_ip=$(get_my_ip)
         local link="vless://${uuid}@${my_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&type=tcp#${node_name}"
         echo -e "${G}✅ VLESS Reality 添加成功并已启动！${R}"
@@ -945,7 +955,18 @@ sb_add_hy2() {
         _save_node_meta "$port" "$node_name" "hysteria2"
         systemctl enable sing-box >/dev/null 2>&1
         systemctl restart sing-box
-        sleep 1
+        sleep 2
+        if ! systemctl is-active --quiet sing-box 2>/dev/null; then
+            echo -e "${RED}❌ 服务启动失败！错误日志如下：${R}"
+            journalctl -u sing-box -n 15 --no-pager 2>/dev/null
+            echo -e "${Y}正在回滚配置...${R}"
+            local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
+            if [ -n "$latest_bak" ]; then mv "$latest_bak" "$conf"; echo -e "${Y}已从备份恢复原配置。${R}"; fi
+            rm -f "$crt" "$key"
+            _del_node_meta "$port"
+            read -rs -n 1 -p "按任意键返回..."
+            return
+        fi
         local my_ip; my_ip=$(get_my_ip)
         local link="hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}#${node_name}"
         echo -e "${G}✅ Hysteria2 添加成功并已启动！${R}"
@@ -1031,152 +1052,4 @@ sb_del_node() {
         local type port node_name
         type=$(echo "$in" | jq -r '.type')
         port=$(echo "$in" | jq -r '.listen_port')
-        node_name=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].name // "未命名"')
-        echo -e "${C}[${idx}]${R} ${Y}${node_name}${R} — ${type} : ${port}"
-        idx=$((idx + 1))
-    done
-
-    echo -e "${RED}========================================${R}"
-    read -e -p "请输入要删除的节点端口 (输入 0 取消): " del_port
-    if [ -z "$del_port" ] || [ "$del_port" = "0" ]; then echo -e "${Y}已取消${R}"; read -rs -n 1 -p "按任意键返回..."; return; fi
-
-    if ! jq -e --argjson p "$del_port" '.inbounds | any(.listen_port == $p)' "$conf" >/dev/null 2>&1; then
-        echo -e "${RED}未找到端口 ${del_port} 的节点${R}"; read -rs -n 1 -p "按任意键返回..."; return
-    fi
-
-    echo -e "${RED}⚠ 确定要删除端口 ${del_port} 的节点吗？${R}"
-    read -e -p "> " confirm
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then echo -e "${Y}已取消${R}"; read -rs -n 1 -p "按任意键返回..."; return; fi
-
-    cp "$conf" "${conf}.bak.$(date +%s)"
-    jq --argjson p "$del_port" 'del(.inbounds[] | select(.listen_port == $p))' \
-       "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
-
-    if sing-box check -c "$conf" >/dev/null 2>&1; then
-        rm -f "/etc/sing-box/hy2_${del_port}.crt" "/etc/sing-box/hy2_${del_port}.key"
-        _del_node_meta "$del_port"
-        if jq -e '.inbounds | length > 0' "$conf" >/dev/null 2>&1; then
-            systemctl restart sing-box; echo -e "${G}✅ 节点已删除，服务已重启${R}"
-        else
-            systemctl stop sing-box; echo -e "${G}✅ 最后一个节点已删除，服务已停止${R}"
-        fi
-    else
-        echo -e "${RED}配置校验失败！已自动回滚到备份配置。${R}"
-        local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
-        if [ -n "$latest_bak" ]; then mv "$latest_bak" "$conf"; echo -e "${Y}已从备份恢复原配置。${R}"; fi
-    fi
-    read -rs -n 1 -p "按任意键返回..."
-}
-
-# ============================================================================
-# 模块 6：脚本痕迹与配置安全清理工具 (带智能防呆拦截)
-# ============================================================================
-
-clean_all_traces() {
-    echo -e "${gl_huang}========================================${gl_bai}"
-    echo -e "${gl_huang}     脚本痕迹与配置安全清理工具         ${gl_bai}"
-    echo -e "${gl_huang}========================================${gl_bai}"
-
-    echo -e "\n${gl_lv}[1/4] 检查 Sing-Box 配置...${gl_bai}"
-    if [ -d "/etc/sing-box" ]; then
-        echo -e "${gl_huang}检测到 /etc/sing-box 目录。${gl_bai}"
-        read -e -p "是否停止服务并清空所有节点配置/证书？: " c_sb
-        if [[ "$c_sb" =~ ^[Yy]$ ]]; then
-            systemctl stop sing-box 2>/dev/null
-            systemctl disable sing-box 2>/dev/null
-            rm -f /etc/sing-box/config.json /etc/sing-box/nodes_meta.json /etc/sing-box/hy2_*.crt /etc/sing-box/hy2_*.key
-            rm -f /etc/sing-box/config.json.bak.*
-            echo -e "${gl_lv}✅ Sing-Box 配置已清空，服务已停止。${gl_bai}"
-        fi
-    else
-        echo -e "未检测到 Sing-Box 配置，跳过。"
-    fi
-
-    echo -e "\n${gl_lv}[2/4] 清理内核调优参数...${gl_bai}"
-    if [ -f "/etc/sysctl.d/99-yw-optimize.conf" ] || [ -f "/etc/sysctl.d/99-network-optimize.conf" ]; then
-        read -e -p "是否还原内核网络参数到系统默认？: " c_sys
-        if [[ "$c_sys" =~ ^[Yy]$ ]]; then
-            rm -f /etc/sysctl.d/99-yw-optimize.conf /etc/sysctl.d/99-network-optimize.conf
-            sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf 2>/dev/null
-            sed -i '/vm.zswap.enabled/d' /etc/sysctl.conf 2>/dev/null
-            sysctl --system >/dev/null 2>&1
-            sed -i '/# YW-optimize/,+4d' /etc/security/limits.conf 2>/dev/null
-            echo -e "${gl_lv}✅ 内核参数及文件描述符限制已还原。${gl_bai}"
-            echo -e "${gl_red}⚠ 警告：还原的 ulimit 对已启动的进程无效，请尽快重启 Nginx/数据库 等服务！${gl_bai}"
-        fi
-    else
-        echo -e "未检测到内核调优文件，跳过。"
-    fi
-
-    echo -e "\n${gl_lv}[3/4] 检查 ZRAM 状态...${gl_bai}"
-    if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled zramswap >/dev/null 2>&1; then
-        read -e -p "检测到 ZRAM 正在运行，是否停止并禁用？: " c_zram
-        if [[ "$c_zram" =~ ^[Yy]$ ]]; then
-            systemctl stop zramswap 2>/dev/null
-            systemctl disable zramswap 2>/dev/null
-            echo -e "${gl_lv}✅ ZRAM 已停止。${gl_bai}"
-        fi
-    else
-        echo -e "ZRAM 未运行，跳过。"
-    fi
-
-    echo -e "\n${gl_lv}[4/4] 检查 Swap 文件...${gl_bai}"
-    if [ -f "/swapfile" ] && grep -q "/swapfile" /etc/fstab; then
-        MEM_MB=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo)
-        echo -e "${gl_red}⚠ 高危操作预警 ⚠${gl_bai}"
-        echo -e "检测到 /swapfile，且当前物理内存仅为: ${gl_huang}${MEM_MB} MB${gl_bai}"
-        if [ "$MEM_MB" -lt 2000 ]; then
-            echo -e "${gl_red}❌ 拒绝执行！内存小于 2GB，强行删除 Swap 会导致 OOM 失联死机！已自动跳过。${gl_bai}"
-        else
-            read -e -p "内存大于 2GB，确认要关闭并删除 /swapfile 吗？: " c_swap
-            if [[ "$c_swap" =~ ^[Yy]$ ]]; then
-                swapoff /swapfile 2>/dev/null
-                rm -f /swapfile
-                sed -i '/swapfile.*swap/d' /etc/fstab
-                echo -e "${gl_lv}✅ Swap 文件已删除。${gl_bai}"
-            fi
-        fi
-    else
-        echo -e "未检测到脚本创建的 Swap 文件，跳过。"
-    fi
-
-    rm -f /tmp/yw_apt.log /tmp/yw_yum.log /tmp/sb_sni_test.* /tmp/sb_cfg.json /tmp/sb_meta.json /tmp/99-yw-optimize.lock
-    echo -e "\n${gl_lv}========================================${gl_bai}"
-    echo -e "${gl_lv} 清理流程执行完毕！${gl_bai}"
-    echo -e "${gl_lv}========================================${gl_bai}"
-    read -rs -n 1 -p "按任意键返回主菜单..."
-}
-
-# ============================================================================
-# Main Menu Entry Point
-# ============================================================================
-
-main_menu() {
-    while true; do
-        clear
-        echo -e "${gl_huang}========================================${gl_bai}"
-        echo -e "${gl_huang}       YW 系统管理与优化脚本            ${gl_bai}"
-        echo -e "${gl_huang}========================================${gl_bai}"
-        echo -e "${gl_lv}1. BBRv3 内核安装"
-        echo -e "${gl_huang}2. 系统信息查询"
-        echo -e "${gl_huang}3. Linux 系统内核参数优化 (场景化调优)"
-        echo -e "${gl_huang}4. 管理虚拟内存"
-        echo -e "${gl_huang}5. Sing-Box 落地节点管理"
-        echo -e "${gl_red}6. 一键清理脚本痕迹与配置 (安全防呆) ${gl_bai}"
-        echo -e "${gl_hui}0. 退出程序"
-        echo -e "${gl_huang}========================================${gl_bai}"
-        read -e -p "请输入你的选择: " choice
-        case $choice in
-            1) bbrv3 ;;
-            2) show_sys_info ;;
-            3) Kernel_optimize ;;
-            4) change_swap_size ;;
-            5) sb_manage_menu ;;
-            6) clean_all_traces ;;
-            0) echo -e "${gl_lv}感谢使用，再见！${gl_bai}"; break ;;
-            *) echo -e "${gl_red}无效的选择，请重新输入${gl_bai}" ; sleep 1 ;;
-        esac
-    done
-}
-
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then main_menu; fi
+        node_name=$(e
