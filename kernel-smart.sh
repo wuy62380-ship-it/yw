@@ -777,6 +777,15 @@ open_port() {
 }
 
 sb_manage_menu() {
+    # 【新增】配置文件急诊修复：如果主配置为空/损坏，立即覆写为安全空壳，防止 Sing-Box 疯狂重启死循环
+    local conf="/etc/sing-box/config.json"
+    if [ ! -f "$conf" ] || [ ! -s "$conf" ] || ! jq -e . "$conf" >/dev/null 2>&1; then
+        mkdir -p /etc/sing-box
+        echo '{"log":{"level":"error"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct"}}' > "$conf"
+        # 如果是因为配置损坏导致的死循环，必须先停止服务，否则会卡死系统
+        systemctl stop sing-box >/dev/null 2>&1
+    fi
+
     while true; do
         clear
         # 【优化】智能状态分级：未安装 -> 待配置(无节点) -> 已停止 -> 运行中
@@ -827,7 +836,7 @@ sb_manage_menu() {
                 case $act in
                     1) systemctl restart sing-box && echo -e "${G}已重启${R}" ;;
                     2) systemctl stop sing-box && echo -e "${Y}已停止${R}" ;;
-                    3) journalctl -u sing-box -n 30 --no-pager ;;
+                    3) systemctl stop sing-box >/dev/null 2>&1; journalctl -u sing-box -n 30 --no-pager ;;
                 esac
                 read -rs -n 1 -p "按任意键继续..." ;;
             7)
