@@ -656,7 +656,7 @@ get_my_ip() {
 }
 
 # ============================================================================
-# 【修改】优选域名 — 替换为 openssl s_client TLS 握手测速
+# 优选域名 — openssl s_client TLS 握手测速 (修复0ms假快问题)
 # ============================================================================
 select_sni() {
     echo -e "${Y}--- 伪装域名 (SNI) 设置 ---${R}"
@@ -674,9 +674,13 @@ select_sni() {
             for i in "${d[@]}"; do
                 (
                     t1=$(date +%s%3N)
-                    timeout 1 openssl s_client -connect "$i:443" -servername "$i" </dev/null &>/dev/null
-                    t2=$(date +%s%3N)
-                    echo "$((t2 - t1)) $i" >> "$f"
+                    # 只有 openssl 成功建立连接才记录真实耗时，失败则惩罚 9999ms
+                    if timeout 1 openssl s_client -connect "$i:443" -servername "$i" </dev/null &>/dev/null; then
+                        t2=$(date +%s%3N)
+                        echo "$((t2 - t1)) $i" >> "$f"
+                    else
+                        echo "9999 $i" >> "$f"
+                    fi
                 ) &
             done
             wait
@@ -718,6 +722,48 @@ sb_init_conf() {
 }
 
 # ============================================================================
+# 节点元数据管理 (独立于 config.json，防止 sing-box 严格校验报错)
+# ============================================================================
+META_FILE="/etc/sing-box/nodes_meta.json"
+
+_init_meta_file() {
+    if [ ! -f "$META_FILE" ] || ! jq -e . "$META_FILE" >/dev/null 2>&1; then
+        mkdir -p /etc/sing-box
+        echo '{}' > "$META_FILE"
+    fi
+}
+
+_save_node_meta() {
+    local port="$1"
+    local name="$2"
+    local type="$3"
+    local pub_key="${4:-}"
+    _init_meta_file
+    if [ -n "$pub_key" ]; then
+        jq --arg p "$port" --arg n "$name" --arg t "$type" --arg pk "$pub_key" \
+           '.[$p] = {"name": $n, "type": $t, "pub_key": $pk}' \
+           "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"
+    else
+        jq --arg p "$port" --arg n "$name" --arg t "$type" \
+           '.[$p] = {"name": $n, "type": $t}' \
+           "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"
+    fi
+}
+
+_del_node_meta() {
+    local port="$1"
+    [ ! -f "$META_FILE" ] && return
+    jq --arg p "$port" 'del(.[$p])' "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"
+}
+
+_get_node_meta() {
+    local port="$1"
+    local field="$2"
+    [ ! -f "$META_FILE" ] && return
+    jq -r --arg p "$port" '.[$p][$field] // empty' "$META_FILE"
+}
+
+# ============================================================================
 # 防火墙端口放行 — 自动识别 ufw / firewalld / iptables
 # ============================================================================
 open_port() {
@@ -752,7 +798,7 @@ open_port() {
 }
 
 # ============================================================================
-# 添加 VLESS Reality — 写入 _node_name / _pub_key 到配置
+# 添加 VLESS Reality — 写入纯净 config.json + 元数据分离
 # ============================================================================
 sb_add_reality() {
     sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
@@ -789,16 +835,18 @@ sb_add_reality() {
     sb_init_conf
     local conf="/etc/sing-box/config.json"
     
-    # ── 写入配置时保存 _node_name 和 _pub_key，供查看时重建链接 ──
+    # ── 写入纯净配置，不包含任何自定义字段 ──
     jq --argjson p "$port" --arg u "$uuid" --arg pk "$priv_key" --arg s "$sni" \
-          --arg n "$node_name" --arg pub "$pub_key" \
-       '.inbounds += [{"type":"vless","tag":"vless-in-$p","listen":"::","listen_port":$p,"users":[{"uuid":$u,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$s,"reality":{"enabled":true,"handshake":{"server":$s,"server_port":443},"private_key":$pk}},"_node_name":$n,"_pub_key":$pub}]' \
+       '.inbounds += [{"type":"vless","tag":"vless-in-$p","listen":"::","listen_port":$p,"users":[{"uuid":$u,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$s,"reality":{"enabled":true,"handshake":{"server":$s,"server_port":443},"private_key":$pk}}}]' \
        "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
 
     if sing-box check -c "$conf" >/dev/null 2>&1; then
         # ── 自动放行端口 ──
         echo -e "${Y}正在检查防火墙并放行端口...${R}"
         open_port "$port" "tcp"
+
+        # ── 元数据写入独立文件 ──
+        _save_node_meta "$port" "$node_name" "vless" "$pub_key"
 
         systemctl enable sing-box >/dev/null 2>&1
         systemctl restart sing-box
@@ -818,7 +866,7 @@ sb_add_reality() {
 }
 
 # ============================================================================
-# 添加 Hysteria2 — 写入 _node_name 到配置
+# 添加 Hysteria2 — 写入纯净 config.json + 元数据分离
 # ============================================================================
 sb_add_hy2() {
     sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
@@ -852,15 +900,18 @@ sb_add_hy2() {
 
     sb_init_conf
     local conf="/etc/sing-box/config.json"
-    # ── 写入配置时保存 _node_name，供查看时重建链接 ──
-    jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" --arg n "$node_name" \
-       '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificate_path":"/etc/sing-box/hy2.crt","key_path":"/etc/sing-box/hy2.key"},"_node_name":$n}]' \
+    # ── 写入纯净配置 ──
+    jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" \
+       '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificate_path":"/etc/sing-box/hy2.crt","key_path":"/etc/sing-box/hy2.key"}}]' \
        "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
        
     if sing-box check -c "$conf" >/dev/null 2>&1; then
         # ── 自动放行 UDP 端口 ──
         echo -e "${Y}正在检查防火墙并放行端口...${R}"
         open_port "$port" "udp"
+
+        # ── 元数据写入独立文件 ──
+        _save_node_meta "$port" "$node_name" "hysteria2"
 
         systemctl enable sing-box >/dev/null 2>&1
         systemctl restart sing-box
@@ -880,7 +931,7 @@ sb_add_hy2() {
 }
 
 # ============================================================================
-# 查看节点列表 — VLESS 也输出完整链接，读取 _node_name
+# 查看节点列表 — 从独立 meta 文件读取名字和公钥
 # ============================================================================
 _show_nodes_list() {
     local conf="/etc/sing-box/config.json"
@@ -897,14 +948,14 @@ _show_nodes_list() {
         local type port node_name
         type=$(echo "$in" | jq -r '.type')
         port=$(echo "$in" | jq -r '.listen_port')
-        # 从配置中读取保存的节点名称，旧配置无此字段则用默认值
-        node_name=$(echo "$in" | jq -r '._node_name // empty')
+        # 从独立 meta 文件读取节点名称
+        node_name=$(_get_node_meta "$port" "name")
         
         if [ "$type" = "vless" ]; then
             local uuid sni pub_key link
             uuid=$(echo "$in" | jq -r '.users[0].uuid')
             sni=$(echo "$in" | jq -r '.tls.server_name')
-            pub_key=$(echo "$in" | jq -r '._pub_key // empty')
+            pub_key=$(_get_node_meta "$port" "pub_key")
             [ -z "$node_name" ] && node_name="Reality-${port}"
             if [ -n "$pub_key" ]; then
                 link="vless://${uuid}@${my_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&type=tcp#${node_name}"
@@ -955,6 +1006,8 @@ sb_del_node() {
     if [ "$count" -eq 0 ]; then echo -e "${H}未找到端口 ${port} 的节点${R}"; return; fi
     
     jq --argjson p "$port" 'del(.inbounds[] | select(.listen_port == $p))' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
+    # 同步清理独立 meta 文件中的记录
+    _del_node_meta "$port"
     systemctl restart sing-box
     echo -e "${G}✅ 已删除端口 ${port} 的节点并重启服务${R}"
     read -rs -n 1 -p "按任意键继续..."
