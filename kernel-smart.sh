@@ -1092,3 +1092,32 @@ sb_del_node() {
     fi
     read -rs -n 1 -p "按任意键返回..."
 }
+
+# ============================================================================
+# 主入口
+# ============================================================================
+
+main_menu() {
+    while true; do
+        clear
+        echo -e "${gl_lv}========================================${gl_bai}"
+        echo -e "${gl_lv}        YW 系统优化与管理面板           ${gl_bai}"
+        echo -e "${gl_lv}========================================${gl_bai}"
+        echo -e "${gl_kjlan}1.${gl_bai} 系统信息查询"
+        echo -e "${gl_kjlan}2.${gl_bai} Linux系统内核参数优化"
+        echo -e "${gl_kjlan}3.${gl_bai} Sing-Box 落地节点管理"
+        echo -e "${gl_kjlan}========================================${gl_bai}"
+        echo -e "${gl_huang}0.${gl_bai} 退出脚本"
+        echo -e "${gl_lv}========================================${gl_bai}"
+        read -e -p "请输入选择: " main_choice
+        case $main_choice in
+            1) show_sys_info ;;
+            2) Kernel_optimize ;;
+            3) sb_manage_menu ;;
+            0|"") clear; exit 0 ;;
+            *) echo -e "${gl_red}无效选择${gl_bai}"; sleep 1 ;;
+        esac
+    done
+}
+
+main_menu
