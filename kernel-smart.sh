@@ -21,6 +21,40 @@ get_my_ip() {
 }
 
 # ============================================================================
+# 模块 0：优选域名模块
+# ============================================================================
+select_sni() {
+    echo -e "${Y}--- 伪装域名 (SNI) 设置 ---${R}"
+    echo -e "${G}1. 使用默认伪装域名${R}"
+    echo -e "${G}2. 自动优选最佳域名 (并发测速)${R}"
+    echo -e "${G}3. 手动输入域名${R}"
+    read -e -p "请选择 (1默认 / 2优选 / 3手动): " c
+    case $c in
+        1) echo "www.microsoft.com" ;;
+        2)
+            echo -e "${Y}[并发测速中，约需3秒]...${R}" >&2
+            local d=("aws.com" "bing.com" "snap.licdn.com" "devblogs.microsoft.com" "cdn.bizibly.com" "www.apple.com" "ts1.tc.mm.bing.net" "fpinit.itunes.apple.com" "go.microsoft.com" "catalog.gamepass.com" "gray-config-prod.api.arc-cdn.net" "apps.mzstatic.com" "tag.demandbase.com" "r.bing.com" "tag-logger.demandbase.com" "cdn-dynmedia-1.microsoft.com" "services.digitaleast.mobi" "gray.video-player.arcpublishing.com" "azure.microsoft.com" "beacon.gtv-pub.com" "amd.com" "www.joom.com" "www.stengg.com" "www.wedgehr.com" "www.cerebrium.ai" "www.nazhumi.cem" "cloudflare-ech.com")
+            local f="/tmp/sb_sni_test.$$"; > "$f"
+            for i in "${d[@]}"; do
+                ( n=$(curl -o /dev/null -s -w '%{time_connect}' --max-time 2 -4 "https://$i" 2>/dev/null | awk '{printf "%d",$1*1000}'); [ -n "$n" ] && echo "$n $i" >> "$f" ) &
+            done
+            wait
+            local b_d="www.microsoft.com" b_t=9999
+            while read -r line; do
+                local t=${line%% *}
+                local dom=${line#* }
+                [ "$t" -lt "$b_t" ] 2>/dev/null && b_t=$t b_d=$dom
+            done < "$f"
+            rm -f "$f"
+            echo -e "${G}选用: $b_d (${b_t}ms)${R}" >&2
+            echo "$b_d"
+            ;;
+        3) read -e -p "输入域名: " s; echo "${s:-www.microsoft.com}" ;;
+        *) echo "www.microsoft.com" ;;
+    esac
+}
+
+# ============================================================================
 # 模块 1：iptables 内核态转发管理
 # ============================================================================
 add_rule() {
@@ -100,7 +134,7 @@ view_rules() {
     for rule in "${rules[@]}"; do
         port=$(echo "$rule" | awk '{for(i=1;i<=NF;i++) if($i=="--dport") print $(i+1)}')
         dest=$(echo "$rule" | awk '{for(i=1;i<=NF;i++) if($i=="--to-destination") print $(i+1)}')
-        echo -e "${G}[$idx]${R} ${C}客户端连接${R} -> ${B}${my_ip}:${port}${R} ${C}实际转发至${R} -> ${B}${dest${R}"
+        echo -e "${G}[$idx]${R} ${C}客户端连接${R} -> ${B}${my_ip}:${port}${R} ${C}实际转发至${R} -> ${B}${dest}${R}"
         ((idx++))
     done
     echo -e "${H}----------------------------------------${R}"
@@ -141,9 +175,7 @@ sb_add_reality() {
     read -e -p "端口: " port
     [[ ! "$port" =~ ^[0-9]+$ ]] && echo -e "${RED}端口错误${R}" && { read -rs -n 1 -p "按任意键返回..."; return; }
 
-    echo -e "${C}请输入伪装域名 SNI (回车默认 www.microsoft.com): ${R}"
-    read -e -p "SNI: " sni
-    [ -z "$sni" ] && sni="www.microsoft.com"
+    local sni; sni=$(select_sni)
 
     echo -e "${Y}正在生成 UUID 和密钥对...${R}"
     local uuid priv_key pub_key keys
@@ -181,9 +213,7 @@ sb_add_hy2() {
     read -e -p "端口: " port
     [[ ! "$port" =~ ^[0-9]+$ ]] && echo -e "${RED}端口错误${R}" && { read -rs -n 1 -p "按任意键返回..."; return; }
 
-    echo -e "${C}请输入伪装域名 SNI (回车默认 www.microsoft.com): ${R}"
-    read -e -p "SNI: " sni
-    [ -z "$sni" ] && sni="www.microsoft.com"
+    local sni; sni=$(select_sni)
 
     echo -e "${Y}正在生成密码和自签证书...${R}"
     local pass crt key
@@ -229,14 +259,8 @@ sb_view_nodes() {
         local type port tag link
         type=$(echo "$in" | jq -r '.type')
         port=$(echo "$in" | jq -r '.listen_port')
-        tag=$(echo "$in" | jq -r '.tag')
         
         if [ "$type" = "vless" ]; then
-            local uuid sni pub_key
-            uuid=$(echo "$in" | jq -r '.users[0].uuid')
-            sni=$(echo "$in" | jq -r '.tls.server_name')
-            pub_key=$(echo "$in" | jq -r '.tls.reality.public_key // empty')
-            # Reality落地节点需要用私钥反向推公钥或者查看脚本输出，这里提示
             echo -e "${G}[VLESS Reality]${R} 端口: ${B}${port}${R}"
             echo -e "${H}提示: 链接在添加时已展示，如需再次获取，请删除后重新添加。${R}"
         elif [ "$type" = "hysteria2" ]; then
@@ -284,8 +308,8 @@ sb_manage_menu() {
         echo -e "核心状态: ${sb_status}"
         echo -e "${G}========================================${R}"
         echo -e "${C}1.${R} 安装/更新 Sing-Box 核心"
-        echo -e "${G}2.${R} 添加 VLESS Reality 节点"
-        echo -e "${G}3.${R} 添加 Hysteria2 节点 (UDP)"
+        echo -e "${G}2.${R} 添加 VLESS Reality 节点 (含优选SNI)"
+        echo -e "${G}3.${R} 添加 Hysteria2 节点 (含优选SNI)"
         echo -e "${H}4.${R} 查看节点与链接"
         echo -e "${RED}5.${R} 删除节点 (按端口)"
         echo -e "${H}6.${R} 重启/停止/查看日志"
