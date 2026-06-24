@@ -769,7 +769,6 @@ _get_node_meta() {
 }
 
 # ============================================================================
-# ============================================================================
 # 【新增】防火墙状态探测 (供菜单批量放行时避免重复提示)
 # ============================================================================
 _has_active_firewall() {
@@ -784,9 +783,120 @@ _has_active_firewall() {
 }
 
 # ============================================================================
-# 防火墙端口放行 — 改用 elif 互斥，防止重复执行
+# Sing-Box 管理菜单
 # ============================================================================
+sb_manage_menu() {
+    while true; do
+        clear
+        local sb_status="${RED}未安装${R}"
+        if command -v sing-box >/dev/null 2>&1; then
+            if systemctl is-active --quiet sing-box 2>/dev/null; then
+                sb_status="${G}运行中 ✅${R}"
+            else
+                sb_status="${Y}已停止${R}"
+            fi
+        fi
+        echo -e "${G}========================================${R}"
+        echo -e "${G}       Sing-Box 落地节点管理          ${R}"
+        echo -e "${G}========================================${R}"
+        echo -e "核心状态: ${sb_status}${R}"
+        echo -e "${G}========================================${R}"
+        echo -e "${C}1.${R} 安装/更新 Sing-Box 核心"
+        echo -e "${G}2.${R} 添加 VLESS Reality 节点 (含优选SNI)"
+        echo -e "${G}3.${R} 添加 Hysteria2 节点 (含优选SNI)"
+        echo -e "${H}4.${R} 查看节点与链接"
+        echo -e "${RED}5.${R} 删除节点 (按端口)"
+        echo -e "${H}6.${R} 重启/停止/查看日志"
+        echo -e "${Y}7.${R} 手动开放端口 (防火墙放行)"
+        echo -e "${G}========================================${R}"
+        echo -e "${H}0.${R} 返回主菜单"
+        echo -e "${G}========================================${R}"
+        
+        read -e -p "请输入选择: " c
+        case $c in
+            1) 
+                echo -e "${C}正在连接官方源安装...${R}"
+                if command -v apt >/dev/null 2>&1; then
+                    curl -fsSL https://sing-box.app/deb-install.sh | bash
+                elif command -v yum >/dev/null 2>&1; then
+                    curl -fsSL https://sing-box.app/rpm-install.sh | bash
+                else
+                    echo -e "${RED}不支持该系统${R}"
+                fi
+                read -rs -n 1 -p "按任意键继续..." ;;
+            2) sb_add_reality ;;
+            3) sb_add_hy2 ;;
+            4) sb_view_nodes ;;
+            5) sb_del_node ;;
+            6)
+                echo -e "${C}1.重启 2.停止 3.日志 (回车取消):${R}"
+                read -e -p "选择: " act
+                case $act in
+                    1) systemctl restart sing-box && echo -e "${G}已重启${R}" ;;
+                    2) systemctl stop sing-box && echo -e "${Y}已停止${R}" ;;
+                    3) journalctl -u sing-box -n 30 --no-pager ;;
+                esac
+                read -rs -n 1 -p "按任意键继续..." ;;
+            7)
+                echo -e "${C}--- 手动开放端口 ---${R}"
+                read -e -p "请输入要放行的端口号: " m_port
+                if [[ ! "$m_port" =~ ^[0-9]{1,5}$ ]] || (( ${m_port#0} < 1 || ${m_port#0} > 65535 )); then
+                    echo -e "${RED}端口无效，需为 1-65535 的数字${R}"
+                else
+                    echo -e "${Y}选择协议:${R}"
+                    echo -e "${G}1.${R} TCP"
+                    echo -e "${G}2.${R} UDP"
+                    echo -e "${G}3.${R} TCP + UDP"
+                    read -e -p "选择 (回车默认TCP): " m_proto
+                    local proto_str="TCP"
+                    case "$m_proto" in
+                        2) proto_str="UDP" ;;
+                        3) proto_str="TCP + UDP" ;;
+                    esac
+                    if ! _has_active_firewall; then
+                        echo -e "${Y}  ⚠ 未检测到活跃防火墙，请手动确认云安全组已放行 ${proto_str} ${m_port}${R}"
+                    else
+                        case "$m_proto" in
+                            2) open_port "$m_port" "udp" ;;
+                            3) open_port "$m_port" "tcp"; open_port "$m_port" "udp" ;;
+                            *)  open_port "$m_port" "tcp" ;;
+                        esac
+                    fi
+                fi
+                read -rs -n 1 -p "按任意键继续..." ;;
+            0|"") break ;;
+            *) echo -e "${RED}输入无效${R}"; sleep 1 ;;
+        esac
+    done
+}
+
+}
+
 open_port() {
+    local port=$1
+    local proto="${2:-tcp}"
+    local opened=0
+
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
+        ufw allow ${port}/${proto} >/dev/null 2>&1 && opened=1
+
+    elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+        firewall-cmd --permanent --add-port=${port}/${proto} >/dev/null 2>&1
+        firewall-cmd --reload >/dev/null 2>&1 && opened=1
+
+    elif command -v iptables >/dev/null 2>&1; then
+        if ! iptables -C INPUT -p ${proto} --dport ${port} -j ACCEPT 2>/dev/null; then
+            iptables -I INPUT -p ${proto} --dport ${port} -j ACCEPT
+            opened=1
+        fi
+    fi
+
+    if [ "$opened" -eq 1 ]; then
+        echo -e "${G}  ✅ 已放行 ${proto^^} ${port}${R}"
+    else
+        echo -e "${Y}  ⚠ 未检测到活跃防火墙，请手动确认云安全组已放行 ${proto^^} ${port}${R}"
+    fi
+}
 
 # ============================================================================
 # 【修复】添加 VLESS Reality — jq 写入前先备份配置
