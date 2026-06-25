@@ -942,7 +942,7 @@ sb_add_hy2() {
         fi
     fi
 
-    # ★ 关键修复：清空输入缓冲区，防止 select_sni 里的 read 读到上一行残留的回车符
+    # 清空输入缓冲区，防止 select_sni 里的 read 读到残留回车
     while read -r -t 0.1; do :; done
 
     local sni; sni=$(select_sni)
@@ -961,16 +961,18 @@ sb_add_hy2() {
 
     sb_init_conf
     local conf="/etc/sing-box/config.json"
-    cp "$conf" "${conf}.bak.$(date +%s)}"
+    # ★ 修复原脚本备份文件名多了一个 } 的隐患
+    cp "$conf" "${conf}.bak.$(date +%s)"
 
-    # ★ hop_ports 必须是数组 [$hop]，不能是字符串 $hop
+    # ★ 核心修复：使用 certificates 数组格式，兼容 sing-box 1.8 ~ 1.11+ 所有版本
+    # 旧版 certificate_path 在 1.11 已被彻底移除，会导致 check 直接失败且无输出
     if [ -n "$hop_ports" ]; then
         jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" --arg crt "$crt" --arg key "$key" --arg hop "$hop_ports" \
-           '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"hop_ports":[$hop],"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificate_path":$crt,"key_path":$key}}]' \
+           '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"hop_ports":[$hop],"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificates":[{"certificate_file":$crt,"key_file":$key}]}}]' \
            "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
     else
         jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" --arg crt "$crt" --arg key "$key" \
-           '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificate_path":$crt,"key_path":$key}}]' \
+           '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificates":[{"certificate_file":$crt,"key_file":$key}]}}]' \
            "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
     fi
        
@@ -1025,7 +1027,8 @@ sb_add_hy2() {
         local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
         if [ -n "$latest_bak" ]; then mv "$latest_bak" "$conf"; echo -e "${Y}已从备份恢复原配置。${R}"; fi
         rm -f "$crt" "$key"
-        sing-box check -c "$conf" 2>&1 | head -5
+        echo -e "${RED}以下是 sing-box 报告的详细错误 (如无输出则为 JSON 解析致命错误):${R}"
+        sing-box check -c "$conf" 2>&1 || true
     fi
     read -rs -n 1 -p "按任意键继续..."
 }
