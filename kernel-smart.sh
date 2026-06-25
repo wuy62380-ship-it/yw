@@ -1107,7 +1107,7 @@ _show_nodes_list() {
                 else
                     link="${RED}[信息不完整，无法生成链接]${R}"
                 fi
-                ;;
+                
             hysteria2)
                 local pass sni
                 pass=$(echo "$in" | jq -r '.users[0].password // empty')
