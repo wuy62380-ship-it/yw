@@ -969,41 +969,36 @@ sb_add_hy2() {
     local conf="/etc/sing-box/config.json"
     cp "$conf" "${conf}.bak.$(date +%s)"
 
-    # ★ 核心修复：不再往配置里写任何 hop 字段，无论有没有跳跃端口，配置结构完全一样
+    # ★ 终极真相：Hysteria2 必须用 certificate_path/key_path，且必须带 alpn:["h3"]
     jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" --arg crt "$crt" --arg key "$key" \
-       '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"alpn":["h3"],"certificates":[{"certificate":$crt,"key":$key}]}}]' \
+       '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"alpn":["h3"],"certificate_path":$crt,"key_path":$key}}]' \
        "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
        
     if sing-box check -c "$conf" >/dev/null 2>&1; then
         echo -e "${Y}正在检查防火墙并放行端口...${R}"
         open_port "$port" "udp"
         
-        # ★ 真正的端口跳跃实现：用防火墙 NAT 转发
+        # 真正的端口跳跃：防火墙 NAT 转发
         if [ -n "$hop_ports" ]; then
             echo -e "${Y}正在配置跳跃端口 NAT 转发 (${hop_ports} -> ${port})...${R}"
             local hs="${hop_ports%%-*}" he="${hop_ports##*-}"
             local nat_success=0
             
             if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
-                # 放行端口
                 firewall-cmd --permanent --add-port=${hs}-${he}/udp >/dev/null 2>&1
-                # 添加端口转发
                 if firewall-cmd --permanent --add-forward-port=port=${hs}-${he}:proto=udp:toport=${port} >/dev/null 2>&1; then
                     firewall-cmd --reload >/dev/null 2>&1
                     echo -e "${G}  ✅ Firewalld 已放行并配置转发 (${hop_ports}/udp -> ${port})${R}"
                     nat_success=1
                 else
                     firewall-cmd --reload >/dev/null 2>&1
-                    echo -e "${Y}  ⚠ Firewalld 转发配置失败，尝试使用 iptables...${R}"
                 fi
             fi
 
             if [ "$nat_success" -eq 0 ] && command -v iptables >/dev/null 2>&1; then
-                # 兼容 ufw 和原生 iptables：直接在 nat 表 PREROUTING 链添加 DNAT 规则
                 if iptables -t nat -I PREROUTING 1 -p udp --dport ${hs}:${he} -j DNAT --to-destination :${port} 2>/dev/null; then
                     echo -e "${G}  ✅ iptables 已添加 DNAT 转发 (${hop_ports}/udp -> ${port})${R}"
                     nat_success=1
-                    # 如果是 ufw 环境，顺带放行
                     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
                         ufw allow ${hs}:${he}/udp >/dev/null 2>&1
                     fi
@@ -1013,7 +1008,7 @@ sb_add_hy2() {
             fi
             
             if [ "$nat_success" -eq 0 ]; then
-                echo -e "${Y}  ⚠ 无法自动配置跳跃端口转发，请手动执行以下命令:${R}"
+                echo -e "${Y}  ⚠ 无法自动配置跳跃端口转发，请手动执行:${R}"
                 echo -e "${B}  iptables -t nat -I PREROUTING -p udp --dport ${hs}:${he} -j DNAT --to-destination :${port}${R}"
             fi
             echo -e "${H}  提示: iptables 规则重启后可能失效，建议保存规则 (如 apt install iptables-persistent)${R}"
