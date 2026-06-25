@@ -734,7 +734,6 @@ _save_node_meta() {
     local port="$1" name="$2" type="$3" pub_key="${4:-}" hop_ports="${5:-}"
     _init_meta_file
     
-    # 使用管道安全构建 JSON，彻底摒弃 eval 防止特殊字符注入报错
     local tmp_meta=$(jq -n --arg n "$name" --arg t "$type" '{name: $n, type: $t}')
     
     if [ -n "$pub_key" ]; then
@@ -912,9 +911,9 @@ sb_add_reality() {
     local conf="/etc/sing-box/config.json"
     cp "$conf" "${conf}.bak.$(date +%s)"
 
-    # 修复：使用双引号并转义内部引号，让 $port 被 bash 正常展开为数字拼接，解决 jq 语法报错
+    # 修复：用单引号截断拼接 '"$port"'，防止 bash 抢先解析 $p $u 等 jq 变量
     jq --argjson p "$port" --arg u "$uuid" --arg pk "$priv_key" --arg s "$sni" \
-       ".inbounds += [{\"type\":\"vless\",\"tag\":\"vless-in-${port}\",\"listen\":\"::\",\"listen_port\":$p,\"users\":[{\"uuid\":$u,\"flow\":\"xtls-rprx-vision\"}],\"tls\":{\"enabled\":true,\"server_name\":$s,\"reality\":{\"enabled\":true,\"handshake\":{\"server\":$s,\"server_port\":443},\"private_key\":$pk}}}]" \
+       '.inbounds += [{"type":"vless","tag":"vless-in-'"$port"'","listen":"::","listen_port":$p,"users":[{"uuid":$u,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$s,"reality":{"enabled":true,"handshake":{"server":$s,"server_port":443},"private_key":$pk}}}]' \
        "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
 
     if sing-box check -c "$conf" >/dev/null 2>&1; then
@@ -1000,14 +999,14 @@ sb_add_hy2() {
     local conf="/etc/sing-box/config.json"
     cp "$conf" "${conf}.bak.$(date +%s)"
 
-    # 修复：使用双引号转义，让 $port 正常展开解决 jq 语法错误
+    # 修复：用单引号截断拼接 '"$port"'，确保 bash 和 jq 变量互不干扰
     if [ -n "$hop_ports" ]; then
         jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" --arg crt "$crt" --arg key "$key" --arg hop "$hop_ports" \
-           ".inbounds += [{\"type\":\"hysteria2\",\"tag\":\"hy2-in-${port}\",\"listen\":\"::\",\"listen_port\":$p,\"hop_ports\":$hop,\"users\":[{\"password\":$pass}],\"tls\":{\"enabled\":true,\"server_name\":$s,\"certificate_path\":$crt,\"key_path\":$key}}]" \
+           '.inbounds += [{"type":"hysteria2","tag":"hy2-in-'"$port"'","listen":"::","listen_port":$p,"hop_ports":$hop,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificate_path":$crt,"key_path":$key}}]' \
            "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
     else
         jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" --arg crt "$crt" --arg key "$key" \
-           ".inbounds += [{\"type\":\"hysteria2\",\"tag\":\"hy2-in-${port}\",\"listen\":\"::\",\"listen_port\":$p,\"users\":[{\"password\":$pass}],\"tls\":{\"enabled\":true,\"server_name\":$s,\"certificate_path\":$crt,\"key_path\":$key}}]" \
+           '.inbounds += [{"type":"hysteria2","tag":"hy2-in-'"$port"'","listen":"::","listen_port":$p,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificate_path":$crt,"key_path":$key}}]' \
            "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
     fi
 
@@ -1070,7 +1069,7 @@ _show_nodes_list() {
         type=$(echo "$in" | jq -r '.type')
         port=$(echo "$in" | jq -r '.listen_port')
         
-        # 修复：优先从 meta 取名，如果因为历史原因 meta 丢失，则回退显示 tag 防止出现"未命名"
+        # 优先从 meta 取名，如果 meta 丢失则降级显示 tag
         node_name=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].name // empty')
         if [ -z "$node_name" ]; then
             node_name=$(echo "$in" | jq -r '.tag // "未命名"')
@@ -1142,96 +1141,6 @@ sb_del_node() {
     if [ "$found" -eq 0 ]; then echo -e "${RED}未找到端口 ${del_port} 的节点${R}"; read -rs -n 1 -p "按任意键返回..."; return; fi
     cp "$conf" "${conf}.bak.$(date +%s)"
     jq --argjson p "$del_port" 'del(.inbounds[] | select(.listen_port == $p))' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
-    # 清理 hy2 证书
-    rm -f "/etc/sing-box/hy2_${del_port}.crt" "/etc/sing-box/hy2_${del_port}.key"
-    _del_node_meta "$del_port"
-    if [ "$(jq '.inbounds | length' "$conf" 2>/dev/null)" -eq 0 ]; then
-        systemctl stop sing-box >/dev/null 2>&1
-        echo -e "${Y}已无节点，服务已停止${R}"
-    else
-        systemctl restart sing-box 2>/dev/null
-        echo -e "${G}节点已删除，服务已重启${R}"
-    fi
-    read -rs -n 1 -p "按任意键返回..."
-}
-
-_show_nodes_list() {
-    local conf="/etc/sing-box/config.json" my_ip; my_ip=$(get_my_ip)
-    local inbounds; inbounds=$(jq -c '.inbounds[]' "$conf" 2>/dev/null)
-    if [ -z "$inbounds" ]; then echo -e "${H}暂无节点${R}"; return 1; fi
-
-    local meta_json; meta_json=$(cat "$META_FILE" 2>/dev/null || echo '{}')
-    local idx=1
-
-    echo "$inbounds" | while IFS= read -r in; do
-        local type port node_name link hop_display
-        type=$(echo "$in" | jq -r '.type')
-        port=$(echo "$in" | jq -r '.listen_port')
-        node_name=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].name // "未命名"')
-
-        case "$type" in
-            vless)
-                local uuid sni pub_key
-                uuid=$(echo "$in" | jq -r '.users[0].uuid')
-                sni=$(echo "$in" | jq -r '.tls.server_name')
-                pub_key=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].pub_key // ""')
-                link="vless://${uuid}@${my_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&type=tcp#${node_name}"
-                ;;
-            hysteria2)
-                local pass sni hop_from_cfg
-                pass=$(echo "$in" | jq -r '.users[0].password')
-                sni=$(echo "$in" | jq -r '.tls.server_name')
-                hop_from_cfg=$(echo "$in" | jq -r '.hop_ports // ""')
-                if [ -n "$hop_from_cfg" ]; then
-                    link="hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}&hop=${hop_from_cfg}#${node_name}"
-                    hop_display="${hop_from_cfg}"
-                else
-                    link="hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}#${node_name}"
-                fi
-                ;;
-            *) link="${H}[不支持的协议类型: ${type}]${R}" ;;
-        esac
-
-        echo -e "${G}─────────────────────────────────────${R}"
-        echo -e "${C}[${idx}]${R} ${Y}${node_name}${R}"
-        echo -e "  协议: ${type} | 端口: ${port}"
-        if [ -n "$hop_display" ]; then
-            echo -e "  端口跳跃: ${Y}${hop_display}${R}"
-        fi
-        echo -e "  链接:"
-        echo -e "  ${B}${link}${R}"
-        idx=$((idx + 1))
-    done
-    echo -e "${G}─────────────────────────────────────${R}"
-}
-
-sb_view_nodes() {
-    sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
-    clear
-    echo -e "${G}========================================${R}"
-    echo -e "${G}         当前节点列表与链接             ${R}"
-    echo -e "${G}========================================${R}"
-    _show_nodes_list
-    echo -e "${G}========================================${R}"
-    read -rs -n 1 -p "按任意键返回..."
-}
-
-sb_del_node() {
-    sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
-    local conf="/etc/sing-box/config.json"
-    local count=$(jq '.inbounds | length' "$conf" 2>/dev/null)
-    if [ "$count" -eq 0 ] || [ -z "$count" ]; then
-        echo -e "${H}暂无节点可删除${R}"; read -rs -n 1 -p "按任意键返回..."; return
-    fi
-    echo -e "${C}--- 删除节点 ---${R}"
-    _show_nodes_list
-    read -e -p "请输入要删除的端口号: " del_port
-    if [[ ! "$del_port" =~ ^[0-9]+$ ]]; then echo -e "${RED}端口格式错误${R}"; read -rs -n 1 -p "按任意键返回..."; return; fi
-    local found=$(jq --argjson p "$del_port" '.inbounds | map(select(.listen_port == $p)) | length' "$conf" 2>/dev/null)
-    if [ "$found" -eq 0 ]; then echo -e "${RED}未找到端口 ${del_port} 的节点${R}"; read -rs -n 1 -p "按任意键返回..."; return; fi
-    cp "$conf" "${conf}.bak.$(date +%s)"
-    jq --argjson p "$del_port" 'del(.inbounds[] | select(.listen_port == $p))' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
-    # 清理 hy2 证书
     rm -f "/etc/sing-box/hy2_${del_port}.crt" "/etc/sing-box/hy2_${del_port}.key"
     _del_node_meta "$del_port"
     if [ "$(jq '.inbounds | length' "$conf" 2>/dev/null)" -eq 0 ]; then
