@@ -1170,7 +1170,6 @@ sb_del_node() {
             fi
             
             _del_node_meta "$del_port"
-            _cleanup_port_hop "$del_port"
             
             if jq -e '.inbounds | length > 0' "$conf" >/dev/null 2>&1; then
                 systemctl restart sing-box
