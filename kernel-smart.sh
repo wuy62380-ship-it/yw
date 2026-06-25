@@ -1140,6 +1140,8 @@ _show_nodes_list() {
     done
     echo -e "${G}─────────────────────────────────────${R}"
 }
+                fi
+                ;;
             hysteria2)
                 local pass sni
                 pass=$(echo "$in" | jq -r '.users[0].password // empty')
