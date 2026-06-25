@@ -969,14 +969,14 @@ sb_add_hy2() {
     local conf="/etc/sing-box/config.json"
     cp "$conf" "${conf}.bak.$(date +%s)"
 
-    # ★ 最终修复：sing-box 1.11+ 要求严格使用 "certificate" 和 "key"
+    # ★ 修复1：补充 Hysteria2 强制要求的 alpn: ["h3"]，使用新格式 certificate/key
     if [ -n "$hop_ports" ]; then
         jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" --arg crt "$crt" --arg key "$key" --arg hop "$hop_ports" \
-           '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"hop_ports":[$hop],"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificates":[{"certificate":$crt,"key":$key}]}}]' \
+           '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"hop_ports":[$hop],"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"alpn":["h3"],"certificates":[{"certificate":$crt,"key":$key}]}}]' \
            "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
     else
         jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" --arg crt "$crt" --arg key "$key" \
-           '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificates":[{"certificate":$crt,"key":$key}]}}]' \
+           '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"alpn":["h3"],"certificates":[{"certificate":$crt,"key":$key}]}}]' \
            "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
     fi
        
@@ -1027,12 +1027,14 @@ sb_add_hy2() {
         echo -e "${H}注意: Hysteria2 是 UDP 协议，请确保云安全组也已放行 UDP ${port}${R}"
         [ -n "$hop_ports" ] && echo -e "${H}注意: 跳跃端口同样需要云安全组放行 UDP ${hop_ports}${R}"
     else
-        echo -e "${RED}配置校验失败！已自动回滚到备份配置。${R}"
+        # ★ 修复2：必须先打印错误，再恢复备份！之前是先恢复备份再看错误，导致错误信息被覆盖了
+        echo -e "${RED}配置校验失败！${R}"
+        echo -e "${RED}以下是 sing-box 的真实报错信息:${R}"
+        sing-box check -c "$conf" 2>&1 || true
+        echo -e "${Y}正在自动回滚到备份配置...${R}"
         local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
         if [ -n "$latest_bak" ]; then mv "$latest_bak" "$conf"; echo -e "${Y}已从备份恢复原配置。${R}"; fi
         rm -f "$crt" "$key"
-        echo -e "${RED}以下是 sing-box 报告的详细错误 (如无输出则为 JSON 解析致命错误):${R}"
-        sing-box check -c "$conf" 2>&1 || true
     fi
     read -rs -n 1 -p "按任意键继续..."
 }
