@@ -1192,7 +1192,7 @@ sb_del_node() {
 # ============================================================
 # 查看节点与链接（完美支持端口跳跃显示）
 # ============================================================
-sb_show_nodes() {
+4) sb_list_nodes ;;
     sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
     local conf="/etc/sing-box/config.json"
     if [ ! -f "$conf" ]; then echo -e "${RED}配置文件不存在${R}"; read -rs -n 1 -p "按任意键返回..."; return; fi
