@@ -867,6 +867,9 @@ sb_add_reality() {
     read -e -p "端口: " port
     if [[ ! "$port" =~ ^[0-9]+$ ]]; then echo -e "${RED}端口错误${R}"; read -rs -n 1 -p "按任意键返回..."; return; fi
 
+    # 清空输入缓冲区，防止 select_sni 里的 read 读到残留回车
+    while read -r -t 0.1; do :; done
+
     local sni; sni=$(select_sni)
 
     echo -e "${Y}正在生成 UUID 和密钥对...${R}"
@@ -883,10 +886,12 @@ sb_add_reality() {
 
     sb_init_conf
     local conf="/etc/sing-box/config.json"
+    # 修复原脚本备份文件名多了一个 } 的隐患
     cp "$conf" "${conf}.bak.$(date +%s)"
 
-    jq --argjson p "$port" --arg u "$uuid" --arg pk "$priv_key" --arg s "$sni" \
-       '.inbounds += [{"type":"vless","tag":"vless-in-$p","listen":"::","listen_port":$p,"users":[{"uuid":$u,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$s,"reality":{"enabled":true,"handshake":{"server":$s,"server_port":443},"private_key":$pk}}}]' \
+    # ★ 核心修复：使用 address 替代 server + server_port，兼容 sing-box 1.11+
+    jq --argjson p "$port" --arg u "$uuid" --arg pk "$priv_key" --arg s "$sni" --arg addr "${s}:443" \
+       '.inbounds += [{"type":"vless","tag":"vless-in-$p","listen":"::","listen_port":$p,"users":[{"uuid":$u,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$s,"reality":{"enabled":true,"handshake":{"address":$addr},"private_key":$pk}}}]' \
        "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
 
     if sing-box check -c "$conf" >/dev/null 2>&1; then
@@ -915,7 +920,8 @@ sb_add_reality() {
         echo -e "${RED}配置校验失败！已自动回滚到备份配置。${R}"
         local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
         if [ -n "$latest_bak" ]; then mv "$latest_bak" "$conf"; echo -e "${Y}已从备份恢复原配置。${R}"; fi
-        sing-box check -c "$conf" 2>&1 | head -5
+        echo -e "${RED}以下是 sing-box 报告的详细错误 (如无输出则为 JSON 解析致命错误):${R}"
+        sing-box check -c "$conf" 2>&1 || true
     fi
     read -rs -n 1 -p "按任意键继续..."
 }
