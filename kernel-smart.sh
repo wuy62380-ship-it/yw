@@ -948,7 +948,7 @@ sb_add_hy2() {
         fi
     fi
 
-    # 清空输入缓冲区，防止 select_sni 里的 read 读到残留回车
+    # 清空输入缓冲区
     while read -r -t 0.1; do :; done
 
     local sni; sni=$(select_sni)
@@ -969,36 +969,56 @@ sb_add_hy2() {
     local conf="/etc/sing-box/config.json"
     cp "$conf" "${conf}.bak.$(date +%s)"
 
-    # ★ 修复1：补充 Hysteria2 强制要求的 alpn: ["h3"]，使用新格式 certificate/key
-    if [ -n "$hop_ports" ]; then
-        jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" --arg crt "$crt" --arg key "$key" --arg hop "$hop_ports" \
-           '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"hop_ports":[$hop],"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"alpn":["h3"],"certificates":[{"certificate":$crt,"key":$key}]}}]' \
-           "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
-    else
-        jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" --arg crt "$crt" --arg key "$key" \
-           '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"alpn":["h3"],"certificates":[{"certificate":$crt,"key":$key}]}}]' \
-           "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
-    fi
+    # ★ 核心修复：不再往配置里写任何 hop 字段，无论有没有跳跃端口，配置结构完全一样
+    jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" --arg crt "$crt" --arg key "$key" \
+       '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"alpn":["h3"],"certificates":[{"certificate":$crt,"key":$key}]}}]' \
+       "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
        
     if sing-box check -c "$conf" >/dev/null 2>&1; then
         echo -e "${Y}正在检查防火墙并放行端口...${R}"
         open_port "$port" "udp"
+        
+        # ★ 真正的端口跳跃实现：用防火墙 NAT 转发
         if [ -n "$hop_ports" ]; then
-            echo -e "${Y}正在放行跳跃端口 UDP ${hop_ports}...${R}"
-            if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
-                local hs="${hop_ports%%-*}" he="${hop_ports##*-}"
-                ufw allow ${hs}:${he}/udp >/dev/null 2>&1 && echo -e "${G}  ✅ UFW 已放行 ${hop_ports}/udp${R}" || echo -e "${Y}  ⚠ UFW 放行失败，请手动处理${R}"
-            elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
-                firewall-cmd --permanent --add-port=${hop_ports}/udp >/dev/null 2>&1
-                firewall-cmd --reload >/dev/null 2>&1 && echo -e "${G}  ✅ Firewalld 已放行 ${hop_ports}/udp${R}" || echo -e "${Y}  ⚠ Firewalld 放行失败，请手动处理${R}"
-            elif command -v iptables >/dev/null 2>&1; then
-                local hs="${hop_ports%%-*}" he="${hop_ports##*-}"
-                iptables -C INPUT -p udp --dport ${hs}:${he} -j ACCEPT >/dev/null 2>&1 || \
-                iptables -I INPUT -p udp --dport ${hs}:${he} -j ACCEPT >/dev/null 2>&1 && echo -e "${G}  ✅ iptables 已放行 ${hop_ports}/udp${R}" || echo -e "${Y}  ⚠ iptables 放行失败，请手动处理${R}"
-            else
-                echo -e "${Y}  ⚠ 无法自动放行跳跃端口 ${hop_ports}/udp，请手动检查云安全组${R}"
+            echo -e "${Y}正在配置跳跃端口 NAT 转发 (${hop_ports} -> ${port})...${R}"
+            local hs="${hop_ports%%-*}" he="${hop_ports##*-}"
+            local nat_success=0
+            
+            if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+                # 放行端口
+                firewall-cmd --permanent --add-port=${hs}-${he}/udp >/dev/null 2>&1
+                # 添加端口转发
+                if firewall-cmd --permanent --add-forward-port=port=${hs}-${he}:proto=udp:toport=${port} >/dev/null 2>&1; then
+                    firewall-cmd --reload >/dev/null 2>&1
+                    echo -e "${G}  ✅ Firewalld 已放行并配置转发 (${hop_ports}/udp -> ${port})${R}"
+                    nat_success=1
+                else
+                    firewall-cmd --reload >/dev/null 2>&1
+                    echo -e "${Y}  ⚠ Firewalld 转发配置失败，尝试使用 iptables...${R}"
+                fi
             fi
+
+            if [ "$nat_success" -eq 0 ] && command -v iptables >/dev/null 2>&1; then
+                # 兼容 ufw 和原生 iptables：直接在 nat 表 PREROUTING 链添加 DNAT 规则
+                if iptables -t nat -I PREROUTING 1 -p udp --dport ${hs}:${he} -j DNAT --to-destination :${port} 2>/dev/null; then
+                    echo -e "${G}  ✅ iptables 已添加 DNAT 转发 (${hop_ports}/udp -> ${port})${R}"
+                    nat_success=1
+                    # 如果是 ufw 环境，顺带放行
+                    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
+                        ufw allow ${hs}:${he}/udp >/dev/null 2>&1
+                    fi
+                else
+                    echo -e "${RED}  ❌ iptables DNAT 转发添加失败！${R}"
+                fi
+            fi
+            
+            if [ "$nat_success" -eq 0 ]; then
+                echo -e "${Y}  ⚠ 无法自动配置跳跃端口转发，请手动执行以下命令:${R}"
+                echo -e "${B}  iptables -t nat -I PREROUTING -p udp --dport ${hs}:${he} -j DNAT --to-destination :${port}${R}"
+            fi
+            echo -e "${H}  提示: iptables 规则重启后可能失效，建议保存规则 (如 apt install iptables-persistent)${R}"
         fi
+
         _save_node_meta "$port" "$node_name" "hysteria2" "" "$hop_ports"
         systemctl enable sing-box >/dev/null 2>&1
         systemctl restart sing-box
@@ -1020,14 +1040,13 @@ sb_add_hy2() {
         local link="hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}${hop_param}#${node_name}"
         echo -e "${G}✅ Hysteria2 添加成功并已启动！${R}"
         if [ -n "$hop_ports" ]; then
-            echo -e "${C}跳跃端口: ${hop_ports}/udp${R}"
+            echo -e "${C}跳跃端口: ${hop_ports}/udp (已通过 NAT 转发至 ${port})${R}"
         fi
         echo -e "${Y}客户端链接:${R}"
         echo -e "${B}${link}${R}"
         echo -e "${H}注意: Hysteria2 是 UDP 协议，请确保云安全组也已放行 UDP ${port}${R}"
         [ -n "$hop_ports" ] && echo -e "${H}注意: 跳跃端口同样需要云安全组放行 UDP ${hop_ports}${R}"
     else
-        # ★ 修复2：必须先打印错误，再恢复备份！之前是先恢复备份再看错误，导致错误信息被覆盖了
         echo -e "${RED}配置校验失败！${R}"
         echo -e "${RED}以下是 sing-box 的真实报错信息:${R}"
         sing-box check -c "$conf" 2>&1 || true
