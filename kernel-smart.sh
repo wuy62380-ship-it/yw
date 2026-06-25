@@ -1076,7 +1076,18 @@ _show_nodes_list() {
         port=$(echo "$in" | jq -r '.listen_port // empty')
         [ -z "$type" ] || [ -z "$port" ] && { idx=$((idx + 1)); continue; }
 
-        node_name=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].name // "未命名"')
+        # ★ 修复：优先从 meta 读名字，如果 meta 没有则直接从 config 的 tag 里强行提取名字
+        node_name=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].name // empty')
+        if [ -z "$node_name" ] || [ "$node_name" = "null" ]; then
+            local tag
+            tag=$(echo "$in" | jq -r '.tag // empty')
+            if [ -n "$tag" ] && [[ "$tag" == *"-"* ]]; then
+                node_name="${tag#*-}"
+            else
+                node_name="未命名"
+            fi
+        fi
+
         hop_display=""
         hop_ports=""
         hop_param=""
@@ -1090,13 +1101,45 @@ _show_nodes_list() {
                 sni=$(echo "$in" | jq -r '.tls.server_name // empty')
                 pub_key=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].pub_key // empty')
                 sid=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].sid // empty')
-                [ -n "$sid" ] && sid_param="&sid=${sid}"
-                if [ -n "$uuid" ] && [ -n "$sni" ] && [ -n "$pub_key" ]; then
+                [ -n "$sid" ] && [ "$sid" != "null" ] && sid_param="&sid=${sid}"
+                if [ -n "$uuid" ] && [ -n "$sni" ] && [ -n "$pub_key" ] && [ "$pub_key" != "null" ]; then
                     link="vless://${uuid}@${my_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&type=tcp${sid_param}#${node_name}"
                 else
                     link="${RED}[信息不完整，无法生成链接]${R}"
                 fi
                 ;;
+            hysteria2)
+                local pass sni
+                pass=$(echo "$in" | jq -r '.users[0].password // empty')
+                sni=$(echo "$in" | jq -r '.tls.server_name // empty')
+                hop_ports=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].hop_ports // empty')
+                if [ -z "$hop_ports" ] || [ "$hop_ports" = "null" ]; then
+                    hop_ports=$(echo "$in" | jq -r '.hop_ports // [] | join(",")')
+                fi
+                if [ -n "$hop_ports" ]; then
+                    hop_display=" | 跳跃端口: ${hop_ports}"
+                    hop_param="&hop=${hop_ports}"
+                fi
+                if [ -n "$pass" ] && [ -n "$sni" ]; then
+                    link="hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}${hop_param}#${node_name}"
+                else
+                    link="${RED}[信息不完整，无法生成链接]${R}"
+                fi
+                ;;
+            *)
+                link="${H}[不支持的协议类型: ${type}]${R}"
+                ;;
+        esac
+
+        echo -e "${G}─────────────────────────────────────${R}"
+        echo -e "${C}[${idx}]${R} ${Y}${node_name}${R}"
+        echo -e "  协议: ${type} | 端口: ${port}${hop_display}"
+        echo -e "  链接:"
+        echo -e "  ${B}${link}${R}"
+        idx=$((idx + 1))
+    done
+    echo -e "${G}─────────────────────────────────────${R}"
+}
             hysteria2)
                 local pass sni
                 pass=$(echo "$in" | jq -r '.users[0].password // empty')
