@@ -967,18 +967,16 @@ sb_add_hy2() {
 
     sb_init_conf
     local conf="/etc/sing-box/config.json"
-    # ★ 修复原脚本备份文件名多了一个 } 的隐患
     cp "$conf" "${conf}.bak.$(date +%s)"
 
-    # ★ 核心修复：使用 certificates 数组格式，兼容 sing-box 1.8 ~ 1.11+ 所有版本
-    # 旧版 certificate_path 在 1.11 已被彻底移除，会导致 check 直接失败且无输出
+    # ★ 最终修复：sing-box 1.11+ 要求严格使用 "certificate" 和 "key"
     if [ -n "$hop_ports" ]; then
         jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" --arg crt "$crt" --arg key "$key" --arg hop "$hop_ports" \
-           '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"hop_ports":[$hop],"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificates":[{"certificate_file":$crt,"key_file":$key}]}}]' \
+           '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"hop_ports":[$hop],"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificates":[{"certificate":$crt,"key":$key}]}}]' \
            "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
     else
         jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" --arg crt "$crt" --arg key "$key" \
-           '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificates":[{"certificate_file":$crt,"key_file":$key}]}}]' \
+           '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificates":[{"certificate":$crt,"key":$key}]}}]' \
            "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
     fi
        
