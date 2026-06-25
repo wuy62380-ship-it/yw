@@ -859,15 +859,25 @@ sb_add_reality() {
     read -e -p "端口: " port
     if [[ ! "$port" =~ ^[0-9]+$ ]]; then echo -e "${RED}端口错误${R}"; read -rs -n 1 -p "按任意键返回..."; return; fi
 
+    # 清空输入缓冲区
     while read -r -t 0.1; do :; done
+
     local sni; sni=$(select_sni)
 
     echo -e "${Y}正在生成 UUID 和密钥对...${R}"
     local uuid priv_key pub_key keys short_id
     uuid=$(cat /proc/sys/kernel/random/uuid)
     keys=$(sing-box generate reality-keypair 2>/dev/null)
-    priv_key=$(echo "$keys" | grep PrivateKey | awk '{print $2}')
-    pub_key=$(echo "$keys" | grep PublicKey | awk '{print $2}')
+    
+    # ★ 核心修复：兼容新版 sing-box 输出 JSON 格式，旧版输出纯文本格式
+    if echo "$keys" | jq -e . >/dev/null 2>&1; then
+        priv_key=$(echo "$keys" | jq -r '.PrivateKey')
+        pub_key=$(echo "$keys" | jq -r '.PublicKey')
+    else
+        priv_key=$(echo "$keys" | grep PrivateKey | awk '{print $2}')
+        pub_key=$(echo "$keys" | grep PublicKey | awk '{print $2}')
+    fi
+    
     short_id=$(openssl rand -hex 4)
     if [ -z "$pub_key" ]; then echo -e "${RED}密钥生成失败！${R}"; read -rs -n 1 -p "按任意键返回..."; return; fi
 
