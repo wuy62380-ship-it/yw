@@ -1127,3 +1127,38 @@ sb_del_node() {
     fi
     read -rs -n 1 -p "按任意键返回..."
 }
+
+# ============================================================================
+# 主入口
+# ============================================================================
+
+_main_menu() {
+    while true; do
+        clear
+        echo -e "${G}========================================${R}"
+        echo -e "${G}        YW 服务器优化管理面板           ${R}"
+        echo -e "${G}========================================${R}"
+        echo -e "${C}1.${R} 系统信息查询"
+        echo -e "${C}2.${R} Sing-Box 落地节点管理"
+        echo -e "${C}3.${R} 安装 BBRv3 (XanMod内核)"
+        echo -e "${C}4.${R} Linux 内核参数优化"
+        echo -e "${C}5.${R} Swap 虚拟内存管理"
+        echo -e "${G}----------------------------------------${R}"
+        echo -e "${H}0.${R} 退出"
+        echo -e "${G}========================================${R}"
+        read -e -p "请输入选择: " main_choice
+        case $main_choice in
+            1) show_sys_info ;;
+            2) sb_manage_menu ;;
+            3) bbrv3 ;;
+            4) Kernel_optimize ;;
+            5) root_use; change_swap_size ;;
+            0|"") echo -e "${G}已退出${R}"; exit 0 ;;
+            *) echo -e "${RED}无效选择${R}"; sleep 1 ;;
+        esac
+    done
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    _main_menu
+fi
