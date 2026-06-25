@@ -927,6 +927,21 @@ sb_add_hy2() {
     read -e -p "端口: " port
     if [[ ! "$port" =~ ^[0-9]+$ ]]; then echo -e "${RED}端口错误${R}"; read -rs -n 1 -p "按任意键返回..."; return; fi
 
+    local hop_ports=""
+    read -e -p "跳跃端口范围 (如 20000-20100，回车跳过): " hop_ports
+    if [ -n "$hop_ports" ]; then
+        if [[ ! "$hop_ports" =~ ^[0-9]+-[0-9]+$ ]]; then
+            echo -e "${RED}格式错误，请使用 起始端口-结束端口 格式 (如 20000-20100)${R}"
+            read -rs -n 1 -p "按任意键返回..."; return
+        fi
+        local hop_start="${hop_ports%%-*}"
+        local hop_end="${hop_ports##*-}"
+        if (( hop_start < 1 || hop_end > 65535 || hop_start >= hop_end )); then
+            echo -e "${RED}端口范围无效 (需在 1-65535 且起始<结束)${R}"
+            read -rs -n 1 -p "按任意键返回..."; return
+        fi
+    fi
+
     local sni; sni=$(select_sni)
 
     echo -e "${Y}正在生成密码和自签证书...${R}"
@@ -943,16 +958,39 @@ sb_add_hy2() {
 
     sb_init_conf
     local conf="/etc/sing-box/config.json"
-    cp "$conf" "${conf}.bak.$(date +%s)"
+    cp "$conf" "${conf}.bak.$(date +%s)}"
 
-    jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" --arg crt "$crt" --arg key "$key" \
-       '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificate_path":$crt,"key_path":$key}}]' \
-       "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
+    # ★ 关键修复：hop_ports 必须是数组 [$hop]，不能是字符串 $hop
+    if [ -n "$hop_ports" ]; then
+        jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" --arg crt "$crt" --arg key "$key" --arg hop "$hop_ports" \
+           '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"hop_ports":[$hop],"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificate_path":$crt,"key_path":$key}}]' \
+           "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
+    else
+        jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" --arg crt "$crt" --arg key "$key" \
+           '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificate_path":$crt,"key_path":$key}}]' \
+           "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
+    fi
        
     if sing-box check -c "$conf" >/dev/null 2>&1; then
         echo -e "${Y}正在检查防火墙并放行端口...${R}"
         open_port "$port" "udp"
-        _save_node_meta "$port" "$node_name" "hysteria2"
+        if [ -n "$hop_ports" ]; then
+            echo -e "${Y}正在放行跳跃端口 UDP ${hop_ports}...${R}"
+            if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
+                local hs="${hop_ports%%-*}" he="${hop_ports##*-}"
+                ufw allow ${hs}:${he}/udp >/dev/null 2>&1 && echo -e "${G}  ✅ UFW 已放行 ${hop_ports}/udp${R}" || echo -e "${Y}  ⚠ UFW 放行失败，请手动处理${R}"
+            elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+                firewall-cmd --permanent --add-port=${hop_ports}/udp >/dev/null 2>&1
+                firewall-cmd --reload >/dev/null 2>&1 && echo -e "${G}  ✅ Firewalld 已放行 ${hop_ports}/udp${R}" || echo -e "${Y}  ⚠ Firewalld 放行失败，请手动处理${R}"
+            elif command -v iptables >/dev/null 2>&1; then
+                local hs="${hop_ports%%-*}" he="${hop_ports##*-}"
+                iptables -C INPUT -p udp --dport ${hs}:${he} -j ACCEPT >/dev/null 2>&1 || \
+                iptables -I INPUT -p udp --dport ${hs}:${he} -j ACCEPT >/dev/null 2>&1 && echo -e "${G}  ✅ iptables 已放行 ${hop_ports}/udp${R}" || echo -e "${Y}  ⚠ iptables 放行失败，请手动处理${R}"
+            else
+                echo -e "${Y}  ⚠ 无法自动放行跳跃端口 ${hop_ports}/udp，请手动检查云安全组${R}"
+            fi
+        fi
+        _save_node_meta "$port" "$node_name" "hysteria2" "" "$hop_ports"
         systemctl enable sing-box >/dev/null 2>&1
         systemctl restart sing-box
         sleep 2
@@ -968,11 +1006,17 @@ sb_add_hy2() {
             return
         fi
         local my_ip; my_ip=$(get_my_ip)
-        local link="hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}#${node_name}"
+        local hop_param=""
+        [ -n "$hop_ports" ] && hop_param="&hop=${hop_ports}"
+        local link="hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}${hop_param}#${node_name}"
         echo -e "${G}✅ Hysteria2 添加成功并已启动！${R}"
+        if [ -n "$hop_ports" ]; then
+            echo -e "${C}跳跃端口: ${hop_ports}/udp${R}"
+        fi
         echo -e "${Y}客户端链接:${R}"
         echo -e "${B}${link}${R}"
         echo -e "${H}注意: Hysteria2 是 UDP 协议，请确保云安全组也已放行 UDP ${port}${R}"
+        [ -n "$hop_ports" ] && echo -e "${H}注意: 跳跃端口同样需要云安全组放行 UDP ${hop_ports}${R}"
     else
         echo -e "${RED}配置校验失败！已自动回滚到备份配置。${R}"
         local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
@@ -984,39 +1028,80 @@ sb_add_hy2() {
 }
 
 _show_nodes_list() {
-    local conf="/etc/sing-box/config.json" my_ip; my_ip=$(get_my_ip)
-    local inbounds; inbounds=$(jq -c '.inbounds[]' "$conf" 2>/dev/null)
-    if [ -z "$inbounds" ]; then echo -e "${H}暂无节点${R}"; return 1; fi
-    
-    local meta_json; meta_json=$(cat "$META_FILE" 2>/dev/null || echo '{}')
-    local idx=1
+    local conf="/etc/sing-box/config.json"
+    if [ ! -f "$conf" ] || ! jq -e . "$conf" >/dev/null 2>&1; then
+        echo -e "${RED}配置文件不存在或格式错误: ${conf}${R}"; return 1
+    fi
 
-    echo "$inbounds" | while IFS= read -r in; do
-        local type port node_name link
-        type=$(echo "$in" | jq -r '.type')
-        port=$(echo "$in" | jq -r '.listen_port')
+    local my_ip; my_ip=$(get_my_ip)
+    local inbound_count
+    inbound_count=$(jq -r '.inbounds | length' "$conf" 2>/dev/null)
+    if [ "$inbound_count" = "0" ] || [ -z "$inbound_count" ]; then
+        echo -e "${H}暂无节点${R}"; return 1
+    fi
+
+    local meta_json='{}'
+    if [ -f "$META_FILE" ] && jq -e . "$META_FILE" >/dev/null 2>&1; then
+        meta_json=$(cat "$META_FILE")
+    fi
+
+    local idx=1
+    local total="$inbound_count"
+
+    while [ "$idx" -le "$total" ]; do
+        local in type port node_name link hop_display hop_ports hop_param
+        in=$(jq -c ".inbounds[$((idx-1))]" "$conf" 2>/dev/null)
+        [ -z "$in" ] && { idx=$((idx + 1)); continue; }
+
+        type=$(echo "$in" | jq -r '.type // empty')
+        port=$(echo "$in" | jq -r '.listen_port // empty')
+        [ -z "$type" ] || [ -z "$port" ] && { idx=$((idx + 1)); continue; }
+
         node_name=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].name // "未命名"')
+        hop_display=""
+        hop_ports=""
+        hop_param=""
 
         case "$type" in
             vless)
                 local uuid sni pub_key
-                uuid=$(echo "$in" | jq -r '.users[0].uuid')
-                sni=$(echo "$in" | jq -r '.tls.server_name')
-                pub_key=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].pub_key // ""')
-                link="vless://${uuid}@${my_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&type=tcp#${node_name}"
+                uuid=$(echo "$in" | jq -r '.users[0].uuid // empty')
+                sni=$(echo "$in" | jq -r '.tls.server_name // empty')
+                pub_key=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].pub_key // empty')
+                if [ -n "$uuid" ] && [ -n "$sni" ] && [ -n "$pub_key" ]; then
+                    link="vless://${uuid}@${my_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&type=tcp#${node_name}"
+                else
+                    link="${RED}[信息不完整，无法生成链接]${R}"
+                fi
                 ;;
             hysteria2)
                 local pass sni
-                pass=$(echo "$in" | jq -r '.users[0].password')
-                sni=$(echo "$in" | jq -r '.tls.server_name')
-                link="hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}#${node_name}"
+                pass=$(echo "$in" | jq -r '.users[0].password // empty')
+                sni=$(echo "$in" | jq -r '.tls.server_name // empty')
+                # 优先从 meta 读，meta 没有则从 config 的 hop_ports 数组拼接
+                hop_ports=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].hop_ports // empty')
+                if [ -z "$hop_ports" ]; then
+                    hop_ports=$(echo "$in" | jq -r '.hop_ports // [] | join(",")')
+                fi
+                if [ -n "$hop_ports" ]; then
+                    hop_display=" | 跳跃端口: ${hop_ports}"
+                    # 多段范围用逗号拼接：20000-20100,30000-30100 → &hop=20000-20100,30000-30100
+                    hop_param="&hop=${hop_ports}"
+                fi
+                if [ -n "$pass" ] && [ -n "$sni" ]; then
+                    link="hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}${hop_param}#${node_name}"
+                else
+                    link="${RED}[信息不完整，无法生成链接]${R}"
+                fi
                 ;;
-            *) link="${H}[不支持的协议类型: ${type}]${R}" ;;
+            *)
+                link="${H}[不支持的协议类型: ${type}]${R}"
+                ;;
         esac
 
         echo -e "${G}─────────────────────────────────────${R}"
         echo -e "${C}[${idx}]${R} ${Y}${node_name}${R}"
-        echo -e "  协议: ${type} | 端口: ${port}"
+        echo -e "  协议: ${type} | 端口: ${port}${hop_display}"
         echo -e "  链接:"
         echo -e "  ${B}${link}${R}"
         idx=$((idx + 1))
