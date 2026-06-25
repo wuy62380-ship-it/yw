@@ -920,12 +920,142 @@ sb_add_reality() {
     read -rs -n 1 -p "按任意键继续..."
 }
 
+# ============================================================
+# 端口跳跃辅助函数
+# ============================================================
+
+_save_hop_meta() {
+    local port="$1" start="$2" end="$3" proto="$4"
+    mkdir -p /etc/sing-box/meta
+    cat > "/etc/sing-box/meta/hop_${port}.conf" <<EOF
+HOP_START=${start}
+HOP_END=${end}
+HOP_PROTO=${proto}
+EOF
+}
+
+_del_hop_meta() {
+    local port="$1"
+    rm -f "/etc/sing-box/meta/hop_${port}.conf"
+}
+
+_load_hop_meta() {
+    local port="$1" f="/etc/sing-box/meta/hop_${port}.conf"
+    [ -f "$f" ] && { source "$f"; echo "${HOP_START} ${HOP_END} ${HOP_PROTO}"; }
+}
+
+_persist_iptables() {
+    if command -v netfilter-persistent >/dev/null 2>&1; then
+        netfilter-persistent save >/dev/null 2>&1
+    elif [ -f /etc/redhat-release ] && command -v iptables-save >/dev/null 2>&1; then
+        iptables-save > /etc/sysconfig/iptables 2>/dev/null
+    fi
+}
+
+_add_port_hop() {
+    local main_port="$1" hop_start="$2" hop_end="$3" proto="$4"
+    local cmt="SINGBOX_HOP_${main_port}"
+
+    if command -v iptables >/dev/null 2>&1; then
+        if ! iptables -t nat -C PREROUTING -p "${proto}" \
+             --dport "${hop_start}:${hop_end}" \
+             -j REDIRECT --to-ports "${main_port}" \
+             -m comment --comment "${cmt}" 2>/dev/null; then
+            iptables -t nat -A PREROUTING -p "${proto}" \
+                --dport "${hop_start}:${hop_end}" \
+                -j REDIRECT --to-ports "${main_port}" \
+                -m comment --comment "${cmt}"
+            echo -e "${G}  [iptables] ${hop_start}:${hop_end} -> ${main_port}${R}"
+        fi
+    elif command -v nft >/dev/null 2>&1; then
+        nft list tables 2>/dev/null | grep -q "inet singbox_nat" || \
+            nft add table inet singbox_nat
+        nft list chains 2>/dev/null | grep -q "inet singbox_nat prerouting" || \
+            nft 'add chain inet singbox_nat prerouting { type nat hook prerouting priority dstnat; }'
+        nft add rule inet singbox_nat prerouting \
+            "${proto}" dport "${hop_start}-${hop_end}" \
+            redirect to ":${main_port}" comment "\"${cmt}\""
+        echo -e "${G}  [nftables] ${hop_start}-${hop_end} -> ${main_port}${R}"
+    fi
+
+    if command -v firewall-cmd >/dev/null 2>&1; then
+        firewall-cmd --permanent --add-port="${hop_start}-${hop_end}/${proto}" >/dev/null 2>&1
+        firewall-cmd --reload >/dev/null 2>&1
+    elif command -v ufw >/dev/null 2>&1; then
+        ufw allow "${hop_start}:${hop_end}/${proto}" >/dev/null 2>&1
+    fi
+
+    _persist_iptables
+}
+
+_del_port_hop() {
+    local main_port="$1" hop_start="$2" hop_end="$3" proto="$4"
+    local cmt="SINGBOX_HOP_${main_port}"
+
+    if command -v iptables >/dev/null 2>&1; then
+        iptables -t nat -D PREROUTING -p "${proto}" \
+            --dport "${hop_start}:${hop_end}" \
+            -j REDIRECT --to-ports "${main_port}" \
+            -m comment --comment "${cmt}" 2>/dev/null
+    elif command -v nft >/dev/null 2>&1; then
+        local handle
+        handle=$(nft -a list chain inet singbox_nat prerouting 2>/dev/null \
+                 | grep "\"${cmt}\"" | grep -oP 'handle \K[0-9]+')
+        [ -n "$handle" ] && nft delete rule inet singbox_nat prerouting handle "$handle" 2>/dev/null
+    fi
+
+    if command -v firewall-cmd >/dev/null 2>&1; then
+        firewall-cmd --permanent --remove-port="${hop_start}-${hop_end}/${proto}" >/dev/null 2>&1
+        firewall-cmd --reload >/dev/null 2>&1
+    elif command -v ufw >/dev/null 2>&1; then
+        ufw delete allow "${hop_start}:${hop_end}/${proto}" >/dev/null 2>&1
+    fi
+
+    _persist_iptables
+}
+
+# 零参数调用，自动从 meta 文件读取并清理
+_cleanup_port_hop() {
+    local port="$1" info
+    info=$(_load_hop_meta "$port")
+    [ -z "$info" ] && return
+    local hop_start hop_end hop_proto
+    read -r hop_start hop_end hop_proto <<< "$info"
+    echo -e "${Y}正在清理端口跳跃规则 (${hop_start}-${hop_end})...${R}"
+    _del_port_hop "$port" "$hop_start" "$hop_end" "$hop_proto"
+    _del_hop_meta "$port"
+}
+
+# ============================================================
+# sb_add_hy2（替换原函数）
+# ============================================================
 sb_add_hy2() {
     sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
     if ! command -v openssl >/dev/null 2>&1; then echo -e "${RED}请先安装 openssl！${R}"; read -rs -n 1 -p "按任意键返回..."; return; fi
     echo -e "${C}--- 添加 Hysteria2 落地节点 ---${R}"
     read -e -p "端口: " port
-    if [[ ! "$port" =~ ^[0-9]+$ ]]; then echo -e "${RED}端口错误${R}"; read -rs -n 1 -p "按任意键返回..."; return; fi
+    if [[ ! "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+        echo -e "${RED}端口错误 (1-65535)${R}"; read -rs -n 1 -p "按任意键返回..."; return
+    fi
+
+    # ---- 端口跳跃 ----
+    local hop_start="" hop_end="" enable_hop="n"
+    read -e -p "是否启用端口跳跃? [y/N]: " enable_hop
+    if [[ "$enable_hop" =~ ^[Yy]$ ]]; then
+        read -e -p "跳跃起始端口: " hop_start
+        read -e -p "跳跃结束端口: " hop_end
+        if [[ ! "$hop_start" =~ ^[0-9]+$ ]] || [[ ! "$hop_end" =~ ^[0-9]+$ ]] \
+           || [ "$hop_start" -lt 1 ] || [ "$hop_end" -gt 65535 ] \
+           || [ "$hop_start" -ge "$hop_end" ]; then
+            echo -e "${RED}端口范围错误，需为 1-65535 且起始 < 结束${R}"
+            read -rs -n 1 -p "按任意键返回..."; return
+        fi
+        if [ "$port" -ge "$hop_start" ] && [ "$port" -le "$hop_end" ]; then
+            echo -e "${RED}主端口 ${port} 不能在跳跃范围 ${hop_start}-${hop_end} 内${R}"
+            read -rs -n 1 -p "按任意键返回..."; return
+        fi
+        echo -e "${H}将跳跃 $((hop_end - hop_start + 1)) 个端口: ${hop_start} ~ ${hop_end} -> ${port}${R}"
+    fi
 
     local sni; sni=$(select_sni)
 
@@ -948,10 +1078,17 @@ sb_add_hy2() {
     jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" --arg crt "$crt" --arg key "$key" \
        '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificate_path":$crt,"key_path":$key}}]' \
        "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
-       
+
     if sing-box check -c "$conf" >/dev/null 2>&1; then
         echo -e "${Y}正在检查防火墙并放行端口...${R}"
         open_port "$port" "udp"
+
+        if [[ "$enable_hop" =~ ^[Yy]$ ]]; then
+            echo -e "${Y}正在设置端口跳跃规则...${R}"
+            _add_port_hop "$port" "$hop_start" "$hop_end" "udp"
+            _save_hop_meta "$port" "$hop_start" "$hop_end" "udp"
+        fi
+
         _save_node_meta "$port" "$node_name" "hysteria2"
         systemctl enable sing-box >/dev/null 2>&1
         systemctl restart sing-box
@@ -964,75 +1101,34 @@ sb_add_hy2() {
             if [ -n "$latest_bak" ]; then mv "$latest_bak" "$conf"; echo -e "${Y}已从备份恢复原配置。${R}"; fi
             rm -f "$crt" "$key"
             _del_node_meta "$port"
+            [[ "$enable_hop" =~ ^[Yy]$ ]] && { _del_port_hop "$port" "$hop_start" "$hop_end" "udp"; _del_hop_meta "$port"; }
             read -rs -n 1 -p "按任意键返回..."
             return
         fi
         local my_ip; my_ip=$(get_my_ip)
-        local link="hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}#${node_name}"
+        local link
+        if [[ "$enable_hop" =~ ^[Yy]$ ]]; then
+            link="hysteria2://${pass}@${my_ip}:${hop_start}-${hop_end}?insecure=1&sni=${sni}#${node_name}"
+        else
+            link="hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}#${node_name}"
+        fi
         echo -e "${G}✅ Hysteria2 添加成功并已启动！${R}"
         echo -e "${Y}客户端链接:${R}"
         echo -e "${B}${link}${R}"
-        echo -e "${H}注意: Hysteria2 是 UDP 协议，请确保云安全组也已放行 UDP ${port}${R}"
+        if [[ "$enable_hop" =~ ^[Yy]$ ]]; then
+            echo -e "${H}提示: 端口跳跃 ${hop_start}-${hop_end} -> ${port}，请确保云安全组已放行 UDP ${hop_start}-${hop_end}${R}"
+        else
+            echo -e "${H}注意: Hysteria2 是 UDP 协议，请确保云安全组也已放行 UDP ${port}${R}"
+        fi
     else
         echo -e "${RED}配置校验失败！已自动回滚到备份配置。${R}"
         local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
         if [ -n "$latest_bak" ]; then mv "$latest_bak" "$conf"; echo -e "${Y}已从备份恢复原配置。${R}"; fi
         rm -f "$crt" "$key"
+        [[ "$enable_hop" =~ ^[Yy]$ ]] && { _del_port_hop "$port" "$hop_start" "$hop_end" "udp"; _del_hop_meta "$port"; }
         sing-box check -c "$conf" 2>&1 | head -5
     fi
     read -rs -n 1 -p "按任意键继续..."
-}
-
-_show_nodes_list() {
-    local conf="/etc/sing-box/config.json" my_ip; my_ip=$(get_my_ip)
-    local inbounds; inbounds=$(jq -c '.inbounds[]' "$conf" 2>/dev/null)
-    if [ -z "$inbounds" ]; then echo -e "${H}暂无节点${R}"; return 1; fi
-    
-    local meta_json; meta_json=$(cat "$META_FILE" 2>/dev/null || echo '{}')
-    local idx=1
-
-    echo "$inbounds" | while IFS= read -r in; do
-        local type port node_name link
-        type=$(echo "$in" | jq -r '.type')
-        port=$(echo "$in" | jq -r '.listen_port')
-        node_name=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].name // "未命名"')
-
-        case "$type" in
-            vless)
-                local uuid sni pub_key
-                uuid=$(echo "$in" | jq -r '.users[0].uuid')
-                sni=$(echo "$in" | jq -r '.tls.server_name')
-                pub_key=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].pub_key // ""')
-                link="vless://${uuid}@${my_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&type=tcp#${node_name}"
-                ;;
-            hysteria2)
-                local pass sni
-                pass=$(echo "$in" | jq -r '.users[0].password')
-                sni=$(echo "$in" | jq -r '.tls.server_name')
-                link="hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}#${node_name}"
-                ;;
-            *) link="${H}[不支持的协议类型: ${type}]${R}" ;;
-        esac
-
-        echo -e "${G}─────────────────────────────────────${R}"
-        echo -e "${C}[${idx}]${R} ${Y}${node_name}${R}"
-        echo -e "  协议: ${type} | 端口: ${port}"
-        echo -e "  链接:"
-        echo -e "  ${B}${link}${R}"
-        idx=$((idx + 1))
-    done
-    echo -e "${G}─────────────────────────────────────${R}"
-}
-
-sb_view_nodes() {
-    sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
-    clear
-    echo -e "${G}========================================${R}"
-    echo -e "${G}         当前节点与客户端链接          ${R}"
-    echo -e "${G}========================================${R}"
-    _show_nodes_list
-    echo -e "${G}========================================${R}"
-    read -rs -n 1 -p "按任意键返回..."
 }
 
 sb_del_node() {
@@ -1074,6 +1170,7 @@ sb_del_node() {
             fi
             
             _del_node_meta "$del_port"
+            _cleanup_port_hop "$del_port"
             
             if jq -e '.inbounds | length > 0' "$conf" >/dev/null 2>&1; then
                 systemctl restart sing-box
