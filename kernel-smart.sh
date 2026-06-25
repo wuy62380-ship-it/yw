@@ -859,9 +859,7 @@ sb_add_reality() {
     read -e -p "端口: " port
     if [[ ! "$port" =~ ^[0-9]+$ ]]; then echo -e "${RED}端口错误${R}"; read -rs -n 1 -p "按任意键返回..."; return; fi
 
-    # 清空输入缓冲区
     while read -r -t 0.1; do :; done
-
     local sni; sni=$(select_sni)
 
     echo -e "${Y}正在生成 UUID 和密钥对...${R}"
@@ -869,7 +867,6 @@ sb_add_reality() {
     uuid=$(cat /proc/sys/kernel/random/uuid)
     keys=$(sing-box generate reality-keypair 2>/dev/null)
     
-    # ★ 核心修复：兼容新版 sing-box 输出 JSON 格式，旧版输出纯文本格式
     if echo "$keys" | jq -e . >/dev/null 2>&1; then
         priv_key=$(echo "$keys" | jq -r '.PrivateKey')
         pub_key=$(echo "$keys" | jq -r '.PublicKey')
@@ -889,8 +886,8 @@ sb_add_reality() {
     local conf="/etc/sing-box/config.json"
     cp "$conf" "${conf}.bak.$(date +%s)"
 
-    jq --argjson p "$port" --arg u "$uuid" --arg pk "$priv_key" --arg s "$sni" --arg addr "${s}:443" --arg sid "$short_id" \
-       '.inbounds += [{"type":"vless","tag":"vless-in-$p","listen":"::","listen_port":$p,"users":[{"uuid":$u,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$s,"reality":{"enabled":true,"handshake":{"address":$addr},"private_key":$pk,"short_id":[$sid]}}}]' \
+    jq --argjson p "$port" --arg u "$uuid" --arg pk "$priv_key" --arg s "$sni" --arg sid "$short_id" \
+       '.inbounds += [{"type":"vless","tag":"vless-in-$p","listen":"::","listen_port":$p,"users":[{"uuid":$u,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$s,"reality":{"enabled":true,"handshake":{"server":$s,"server_port":443},"private_key":$pk,"short_id":[$sid]}}}]' \
        "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
 
     if sing-box check -c "$conf" >/dev/null 2>&1; then
