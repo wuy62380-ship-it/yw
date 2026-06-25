@@ -1014,7 +1014,6 @@ _del_port_hop() {
     _persist_iptables
 }
 
-# 零参数调用，自动从 meta 文件读取并清理
 _cleanup_port_hop() {
     local port="$1" info
     info=$(_load_hop_meta "$port")
@@ -1170,6 +1169,7 @@ sb_del_node() {
             fi
             
             _del_node_meta "$del_port"
+            _cleanup_port_hop "$del_port"
             
             if jq -e '.inbounds | length > 0' "$conf" >/dev/null 2>&1; then
                 systemctl restart sing-box
@@ -1186,6 +1186,69 @@ sb_del_node() {
             fi
         fi
     fi
+    read -rs -n 1 -p "按任意键返回..."
+}
+
+# ============================================================
+# 查看节点与链接（完美支持端口跳跃显示）
+# ============================================================
+sb_show_nodes() {
+    sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
+    local conf="/etc/sing-box/config.json"
+    if [ ! -f "$conf" ]; then echo -e "${RED}配置文件不存在${R}"; read -rs -n 1 -p "按任意键返回..."; return; fi
+
+    local inbounds=$(jq -c '.inbounds[]?' "$conf" 2>/dev/null)
+    if [ -z "$inbounds" ]; then echo -e "${H}暂无节点${R}"; read -rs -n 1 -p "按任意键返回..."; return; fi
+
+    local meta_json=$(cat "$META_FILE" 2>/dev/null || echo '{}')
+    local my_ip=$(get_my_ip)
+    clear
+    echo -e "${C}========================================${R}"
+    echo -e "${C}         节点列表与链接                 ${R}"
+    echo -e "${C}========================================${R}"
+
+    echo "$inbounds" | while IFS= read -r in; do
+        local type port node_name link hop_info display_port
+        type=$(echo "$in" | jq -r '.type')
+        port=$(echo "$in" | jq -r '.listen_port')
+        node_name=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].name // "未命名"')
+
+        # 检查是否有端口跳跃
+        hop_info=$(_load_hop_meta "$port")
+        if [ -n "$hop_info" ]; then
+            local hop_start hop_end
+            read -r hop_start hop_end <<< "$hop_info"
+            display_port="${hop_start}-${hop_end}"
+        else
+            display_port="$port"
+        fi
+
+        if [ "$type" = "hysteria2" ]; then
+            local pass sni
+            pass=$(echo "$in" | jq -r '.users[0].password')
+            sni=$(echo "$in" | jq -r '.tls.server_name')
+            link="hysteria2://${pass}@${my_ip}:${display_port}?insecure=1&sni=${sni}#${node_name}"
+        elif [ "$type" = "vless" ]; then
+            local uuid sni pub_key
+            uuid=$(echo "$in" | jq -r '.users[0].uuid')
+            sni=$(echo "$in" | jq -r '.tls.server_name')
+            pub_key=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].pub_key // ""')
+            if [ -n "$pub_key" ]; then
+                link="vless://${uuid}@${my_ip}:${display_port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&type=tcp#${node_name}"
+            else
+                link="vless://${uuid}@${my_ip}:${display_port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&type=tcp#${node_name}"
+            fi
+        else
+            link="${H}该协议暂不支持自动生成链接${R}"
+        fi
+
+        echo -e "${Y}名称: ${C}${node_name}${Y} | 协议: ${C}${type}${Y} | 主端口: ${C}${port}${R}"
+        if [ -n "$hop_info" ]; then
+            echo -e "${G}[端口跳跃已开启: ${display_port}]${R}"
+        fi
+        echo -e "${B}${link}${R}"
+        echo -e "${C}----------------------------------------${R}"
+    done
     read -rs -n 1 -p "按任意键返回..."
 }
 
