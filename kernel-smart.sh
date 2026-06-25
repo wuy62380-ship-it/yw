@@ -1107,7 +1107,7 @@ _show_nodes_list() {
                 else
                     link="${RED}[信息不完整，无法生成链接]${R}"
                 fi
-                
+                ;;
             hysteria2)
                 local pass sni
                 pass=$(echo "$in" | jq -r '.users[0].password // empty')
@@ -1210,7 +1210,6 @@ sb_del_node() {
     jq --argjson p "$del_port" 'del(.inbounds[] | select(.listen_port == $p))' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
 
     if sing-box check -c "$conf" >/dev/null 2>&1; then
-        # 清理可能存在的证书文件和 NAT 规则
         rm -f "/etc/sing-box/hy2_${del_port}.crt" "/etc/sing-box/hy2_${del_port}.key"
         local hop_ports
         hop_ports=$(_get_node_meta "$del_port" "hop_ports")
