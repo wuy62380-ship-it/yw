@@ -1049,14 +1049,17 @@ sb_add_hy2() {
 _show_nodes_list() {
     local conf="/etc/sing-box/config.json"
     if [ ! -f "$conf" ] || ! jq -e . "$conf" >/dev/null 2>&1; then
-        echo -e "${RED}配置文件不存在或格式错误: ${conf}${R}"; return 1
+        echo -e "${RED}配置文件不存在或格式错误: ${conf}${R}"
+        return 1
     fi
 
-    local my_ip; my_ip=$(get_my_ip)
+    local my_ip
+    my_ip=$(get_my_ip)
     local inbound_count
     inbound_count=$(jq -r '.inbounds | length' "$conf" 2>/dev/null)
     if [ "$inbound_count" = "0" ] || [ -z "$inbound_count" ]; then
-        echo -e "${H}暂无节点${R}"; return 1
+        echo -e "${H}暂无节点${R}"
+        return 1
     fi
 
     local meta_json='{}'
@@ -1076,7 +1079,6 @@ _show_nodes_list() {
         port=$(echo "$in" | jq -r '.listen_port // empty')
         [ -z "$type" ] || [ -z "$port" ] && { idx=$((idx + 1)); continue; }
 
-        # ★ 修复：优先从 meta 读名字，如果 meta 没有则直接从 config 的 tag 里强行提取名字
         node_name=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].name // empty')
         if [ -z "$node_name" ] || [ "$node_name" = "null" ]; then
             local tag
@@ -1101,7 +1103,9 @@ _show_nodes_list() {
                 sni=$(echo "$in" | jq -r '.tls.server_name // empty')
                 pub_key=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].pub_key // empty')
                 sid=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].sid // empty')
-                [ -n "$sid" ] && [ "$sid" != "null" ] && sid_param="&sid=${sid}"
+                if [ -n "$sid" ] && [ "$sid" != "null" ]; then
+                    sid_param="&sid=${sid}"
+                fi
                 if [ -n "$uuid" ] && [ -n "$sni" ] && [ -n "$pub_key" ] && [ "$pub_key" != "null" ]; then
                     link="vless://${uuid}@${my_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&type=tcp${sid_param}#${node_name}"
                 else
@@ -1114,40 +1118,6 @@ _show_nodes_list() {
                 sni=$(echo "$in" | jq -r '.tls.server_name // empty')
                 hop_ports=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].hop_ports // empty')
                 if [ -z "$hop_ports" ] || [ "$hop_ports" = "null" ]; then
-                    hop_ports=$(echo "$in" | jq -r '.hop_ports // [] | join(",")')
-                fi
-                if [ -n "$hop_ports" ]; then
-                    hop_display=" | 跳跃端口: ${hop_ports}"
-                    hop_param="&hop=${hop_ports}"
-                fi
-                if [ -n "$pass" ] && [ -n "$sni" ]; then
-                    link="hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}${hop_param}#${node_name}"
-                else
-                    link="${RED}[信息不完整，无法生成链接]${R}"
-                fi
-                ;;
-            *)
-                link="${H}[不支持的协议类型: ${type}]${R}"
-                ;;
-        esac
-
-        echo -e "${G}─────────────────────────────────────${R}"
-        echo -e "${C}[${idx}]${R} ${Y}${node_name}${R}"
-        echo -e "  协议: ${type} | 端口: ${port}${hop_display}"
-        echo -e "  链接:"
-        echo -e "  ${B}${link}${R}"
-        idx=$((idx + 1))
-    done
-    echo -e "${G}─────────────────────────────────────${R}"
-}
-                fi
-                ;;
-            hysteria2)
-                local pass sni
-                pass=$(echo "$in" | jq -r '.users[0].password // empty')
-                sni=$(echo "$in" | jq -r '.tls.server_name // empty')
-                hop_ports=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].hop_ports // empty')
-                if [ -z "$hop_ports" ]; then
                     hop_ports=$(echo "$in" | jq -r '.hop_ports // [] | join(",")')
                 fi
                 if [ -n "$hop_ports" ]; then
@@ -1192,20 +1162,26 @@ sb_del_node() {
     local inbounds
     inbounds=$(jq -r '.inbounds[] | "\(.type) \(.listen_port)"' "$conf" 2>/dev/null)
     if [ -z "$inbounds" ]; then
-        echo -e "${H}当前没有任何节点${R}"; read -rs -n 1 -p "按任意键返回..."; return
+        echo -e "${H}当前没有任何节点${R}"
+        read -rs -n 1 -p "按任意键返回..."
+        return
     fi
 
     echo -e "${Y}当前节点列表:${R}"
     echo "$inbounds" | awk '{print " - "$1" 端口: "$2}'
     read -e -p "请输入要删除的节点端口: " del_port
     if [[ -z "$del_port" || ! "$del_port" =~ ^[0-9]+$ ]]; then
-        echo -e "${RED}端口无效${R}"; read -rs -n 1 -p "按任意键返回..."; return
+        echo -e "${RED}端口无效${R}"
+        read -rs -n 1 -p "按任意键返回..."
+        return
     fi
 
     local count
     count=$(jq --argjson p "$del_port" '[.inbounds[] | select(.listen_port == $p)] | length' "$conf" 2>/dev/null)
     if [ "$count" = "0" ] || [ -z "$count" ]; then
-        echo -e "${RED}未找到端口为 ${del_port} 的节点${R}"; read -rs -n 1 -p "按任意键返回..."; return
+        echo -e "${RED}未找到端口为 ${del_port} 的节点${R}"
+        read -rs -n 1 -p "按任意键返回..."
+        return
     fi
 
     cp "$conf" "${conf}.bak.$(date +%s)}"
