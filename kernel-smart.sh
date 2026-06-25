@@ -942,6 +942,9 @@ sb_add_hy2() {
         fi
     fi
 
+    # ★ 关键修复：清空输入缓冲区，防止 select_sni 里的 read 读到上一行残留的回车符
+    while read -r -t 0.1; do :; done
+
     local sni; sni=$(select_sni)
 
     echo -e "${Y}正在生成密码和自签证书...${R}"
@@ -960,7 +963,7 @@ sb_add_hy2() {
     local conf="/etc/sing-box/config.json"
     cp "$conf" "${conf}.bak.$(date +%s)}"
 
-    # ★ 关键修复：hop_ports 必须是数组 [$hop]，不能是字符串 $hop
+    # ★ hop_ports 必须是数组 [$hop]，不能是字符串 $hop
     if [ -n "$hop_ports" ]; then
         jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" --arg crt "$crt" --arg key "$key" --arg hop "$hop_ports" \
            '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"hop_ports":[$hop],"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificate_path":$crt,"key_path":$key}}]' \
