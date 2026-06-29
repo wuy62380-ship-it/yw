@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# Linux YW 内核与网络调优 (直播特化 + 游戏辅修版)
+# Linux YW 内核与网络调优 (直播特化 + 游戏辅修 + 小内存/直连全场景覆盖)
 # ============================================================================
 
 # --- 颜色定义 ---
@@ -189,7 +189,8 @@ change_swap_size() {
 }
 
 # ============================================================================
-# Core Kernel Optimization (直播特化 + 游戏辅修)
+# Core Kernel Optimization
+# 直播/游戏/直连 三场景，全内存段自适应
 # ============================================================================
 
 _kernel_optimize_core() {
@@ -208,13 +209,15 @@ _kernel_optimize_core() {
     local TCP_NOTSENT_LOWAT TCP_FASTOPEN TCP_TW_REUSE TCP_MTU_PROBING
     local TCP_SLOW_START_AFTER_IDLE TCP_ECN TCP_THIN_LINEAR_TIMEOUTS
     local TCP_NO_METRICS_SAVE TCP_FRTO
-    local SCENE_EXTRA=""
     local NETDEV_BUDGET NETDEV_MAX_BACKLOG
+    local SCENE_EXTRA=""
+    local MEMORY_TIER="" # 标记当前处于哪个内存段，用于日志
 
+    # =============================================
+    # 第一步：设定全量基准参数 (按场景)
+    # =============================================
     case "$scene" in
         stream)
-            # ── 直播推流极限模式 ──
-            # 核心：大UDP缓冲抗丢包 + 高netdev_budget加速软中断处理 + 大TCP缓冲保传输
             SWAPPINESS=10; DIRTY_RATIO=15; DIRTY_BG_RATIO=5; OVERCOMMIT=1; VFS_PRESSURE=50
             MIN_FREE_KB=131072
             RMEM_MAX=134217728; WMEM_MAX=134217728
@@ -228,11 +231,9 @@ _kernel_optimize_core() {
             TCP_SLOW_START_AFTER_IDLE=0; TCP_ECN=0
             TCP_THIN_LINEAR_TIMEOUTS=1; TCP_NO_METRICS_SAVE=1; TCP_FRTO=0
             NETDEV_BUDGET=1200; NETDEV_MAX_BACKLOG=500000
-            SCENE_EXTRA=$'# ── 直播推流特化 ──\nnet.ipv4.udp_rmem_min = 262144\nnet.ipv4.udp_wmem_min = 262144\nnet.ipv4.udp_rmem_max = 268435456\nnet.ipv4.udp_wmem_max = 268435456\nnet.core.netdev_budget = 1200\nnet.core.netdev_max_backlog = 500000\nnet.ipv4.tcp_thin_linear_timeouts = 1\nnet.ipv4.tcp_no_metrics_save = 1\nnet.ipv4.udp_mem = 65536 131072 262144'
+            SCENE_EXTRA=$'net.ipv4.tcp_thin_linear_timeouts = 1\nnet.ipv4.tcp_no_metrics_save = 1'
             ;;
         game)
-            # ── 电竞级游戏模式 ──
-            # 核心：小TCP缓冲防Bufferbloat + 大UDP缓冲保游戏包 + 快速死连接检测
             SWAPPINESS=10; DIRTY_RATIO=10; DIRTY_BG_RATIO=5; OVERCOMMIT=1; VFS_PRESSURE=50
             MIN_FREE_KB=131072
             RMEM_MAX=8388608; WMEM_MAX=8388608
@@ -246,7 +247,23 @@ _kernel_optimize_core() {
             TCP_SLOW_START_AFTER_IDLE=0; TCP_ECN=0
             TCP_THIN_LINEAR_TIMEOUTS=1; TCP_NO_METRICS_SAVE=1; TCP_FRTO=0
             NETDEV_BUDGET=600; NETDEV_MAX_BACKLOG=250000
-            SCENE_EXTRA=$'# ── 电竞游戏特化 ──\nnet.ipv4.udp_rmem_min = 262144\nnet.ipv4.udp_wmem_min = 262144\nnet.ipv4.udp_rmem_max = 268435456\nnet.ipv4.udp_wmem_max = 268435456\nnet.core.optmem_max = 20480\nnet.ipv4.tcp_thin_linear_timeouts = 1\nnet.ipv4.tcp_no_metrics_save = 1\nnet.ipv4.tcp_frto = 0\nnet.ipv4.udp_mem = 65536 131072 262144'
+            SCENE_EXTRA=$'net.ipv4.tcp_thin_linear_timeouts = 1\nnet.ipv4.tcp_no_metrics_save = 1\nnet.ipv4.tcp_frto = 0\nnet.core.optmem_max = 20480'
+            ;;
+        direct)
+            SWAPPINESS=10; DIRTY_RATIO=20; DIRTY_BG_RATIO=10; OVERCOMMIT=1; VFS_PRESSURE=50
+            MIN_FREE_KB=65536
+            RMEM_MAX=67108864; WMEM_MAX=67108864
+            TCP_RMEM="4096 87380 67108864"; TCP_WMEM="4096 65536 67108864"
+            SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"
+            SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=15
+            KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5
+            UDP_RMEM_MIN=16384; UDP_WMEM_MIN=16384
+            UDP_RMEM_MAX=16777216; UDP_WMEM_MAX=16777216
+            TCP_NOTSENT_LOWAT=16384; TCP_FASTOPEN=3; TCP_TW_REUSE=1; TCP_MTU_PROBING=1
+            TCP_SLOW_START_AFTER_IDLE=0; TCP_ECN=0
+            TCP_THIN_LINEAR_TIMEOUTS=0; TCP_NO_METRICS_SAVE=0; TCP_FRTO=1
+            NETDEV_BUDGET=300; NETDEV_MAX_BACKLOG=100000
+            SCENE_EXTRA=$'net.ipv4.tcp_frto = 1'
             ;;
         *)
             echo -e "${gl_red}错误: 未知场景${gl_bai}"
@@ -254,34 +271,67 @@ _kernel_optimize_core() {
             ;;
     esac
 
-    # 内存自适应
+    # =============================================
+    # 第二步：内存自适应 (逐级降级，保留场景特性)
+    # =============================================
     local MEM_MB_VAL
     MEM_MB_VAL=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
     local HAS_SWAP
     HAS_SWAP=$(free -m | awk '/Swap/{print $2}')
 
     if [ "$MEM_MB_VAL" -ge 16384 ] 2>/dev/null; then
-        MIN_FREE_KB=131072; SWAPPINESS=5
+        # ── 大内存 (>=16GB): 全量参数，无需调整 ──
+        MIN_FREE_KB=131072
+        SWAPPINESS=5
+        MEMORY_TIER="大内存全量"
+
     elif [ "$MEM_MB_VAL" -ge 4096 ] 2>/dev/null; then
+        # ── 中等内存 (4-16GB): 轻微降低保留内存 ──
         MIN_FREE_KB=65536
+        MEMORY_TIER="中等内存"
+
     elif [ "$MEM_MB_VAL" -ge 1024 ] 2>/dev/null; then
+        # ── 小内存 (1-4GB): 缩缓冲区，但保留场景核心特性 ──
         MIN_FREE_KB=32768
-        if [ "$scene" = "game" ]; then
-            RMEM_MAX=8388608; WMEM_MAX=8388608
-            TCP_RMEM="4096 16384 8388608"; TCP_WMEM="4096 16384 8388608"
-        else
-            RMEM_MAX=16777216; WMEM_MAX=16777216
-            TCP_RMEM="4096 87380 16777216"; TCP_WMEM="4096 65536 16777216"
-            NETDEV_BUDGET=600; NETDEV_MAX_BACKLOG=250000
-            SCENE_EXTRA=$'# ── 直播低内存自适应 ──\nnet.ipv4.udp_rmem_min = 131072\nnet.ipv4.udp_wmem_min = 131072\nnet.ipv4.udp_rmem_max = 16777216\nnet.ipv4.udp_wmem_max = 16777216\nnet.core.netdev_budget = 600\nnet.core.netdev_max_backlog = 250000\nnet.ipv4.tcp_no_metrics_save = 1'
-        fi
+        MEMORY_TIER="小内存自适应"
+
+        case "$scene" in
+            stream)
+                # 直播：TCP 缓冲降到 16MB，但 UDP 必须保留拉满（直播命脉）
+                RMEM_MAX=16777216; WMEM_MAX=16777216
+                TCP_RMEM="4096 87380 16777216"; TCP_WMEM="4096 65536 16777216"
+                # netdev_budget 降到 600 防止 CPU 被软中断吃光
+                NETDEV_BUDGET=600; NETDEV_MAX_BACKLOG=250000
+                # UDP 保持拉满
+                UDP_RMEM_MIN=262144; UDP_WMEM_MIN=262144
+                UDP_RMEM_MAX=268435456; UDP_WMEM_MAX=268435456
+                SCENE_EXTRA=$'# ── 直播小内存: TCP降缓冲保内存，UDP拉满保不丢包 ──\nnet.ipv4.udp_rmem_min = 262144\nnet.ipv4.udp_wmem_min = 262144\nnet.ipv4.udp_rmem_max = 268435456\nnet.ipv4.udp_wmem_max = 268435456\nnet.core.netdev_budget = 600\nnet.core.netdev_max_backlog = 250000\nnet.ipv4.tcp_thin_linear_timeouts = 1\nnet.ipv4.tcp_no_metrics_save = 1\nnet.ipv4.udp_mem = 32768 65536 131072'
+                ;;
+            game)
+                # 游戏：TCP 保持 8MB (游戏本来就小缓冲防 Bufferbloat)，UDP 拉满
+                RMEM_MAX=8388608; WMEM_MAX=8388608
+                TCP_RMEM="4096 16384 8388608"; TCP_WMEM="4096 16384 8388608"
+                NETDEV_BUDGET=600; NETDEV_MAX_BACKLOG=250000
+                UDP_RMEM_MIN=262144; UDP_WMEM_MIN=262144
+                UDP_RMEM_MAX=268435456; UDP_WMEM_MAX=268435456
+                SCENE_EXTRA=$'# ── 游戏小内存: TCP 8MB防抖，UDP拉满保游戏包 ──\nnet.ipv4.udp_rmem_min = 262144\nnet.ipv4.udp_wmem_min = 262144\nnet.ipv4.udp_rmem_max = 268435456\nnet.ipv4.udp_wmem_max = 268435456\nnet.core.optmem_max = 20480\nnet.ipv4.tcp_thin_linear_timeouts = 1\nnet.ipv4.tcp_no_metrics_save = 1\nnet.ipv4.tcp_frto = 0\nnet.ipv4.udp_mem = 32768 65536 131072'
+                ;;
+            direct)
+                # 直连：TCP 缓冲降到 16MB，UDP 适度
+                RMEM_MAX=16777216; WMEM_MAX=16777216
+                TCP_RMEM="4096 87380 16777216"; TCP_WMEM="4096 65536 16777216"
+                UDP_RMEM_MIN=65536; UDP_WMEM_MIN=65536
+                UDP_RMEM_MAX=8388608; UDP_WMEM_MAX=8388608
+                SCENE_EXTRA=$'# ── 直连小内存 ──\nnet.ipv4.tcp_frto = 1'
+                ;;
+        esac
+
     else
-        # 极小内存保护
+        # ── 极小内存 (<1GB): 强制保命，但仍保留场景核心标识 ──
         MIN_FREE_KB=16384; OVERCOMMIT=0; SWAPPINESS=10
-        RMEM_MAX=4194304; WMEM_MAX=4194304
-        SOMAXCONN=1024; BACKLOG=1000
-        TCP_RMEM="4096 32768 4194304"; TCP_WMEM="4096 32768 4194304"
-        SCENE_EXTRA=""
+        SOMAXCONN=2048; BACKLOG=2000; SYN_BACKLOG=2048
+        MEMORY_TIER="极小内存保命"
+
         if [ -f /sys/module/zswap/parameters/enabled ]; then
             echo N > /sys/module/zswap/parameters/enabled 2>/dev/null
         fi
@@ -296,9 +346,41 @@ _kernel_optimize_core() {
             check_swap
             auto_setup_zram
         fi
+
+        case "$scene" in
+            stream)
+                # TCP 降到 4MB，但 UDP 仍然给到 32MB (直播不能丢包)
+                RMEM_MAX=4194304; WMEM_MAX=4194304
+                TCP_RMEM="4096 32768 4194304"; TCP_WMEM="4096 32768 4194304"
+                UDP_RMEM_MIN=131072; UDP_WMEM_MIN=131072
+                UDP_RMEM_MAX=33554432; UDP_WMEM_MAX=33554432
+                NETDEV_BUDGET=300; NETDEV_MAX_BACKLOG=50000
+                SCENE_EXTRA=$'# ── 直播极小内存: TCP极限压缩，UDP保32MB不丢包 ──\nnet.ipv4.udp_rmem_min = 131072\nnet.ipv4.udp_wmem_min = 131072\nnet.ipv4.udp_rmem_max = 33554432\nnet.ipv4.udp_wmem_max = 33554432\nnet.core.netdev_budget = 300\nnet.core.netdev_max_backlog = 50000\nnet.ipv4.tcp_no_metrics_save = 1\nnet.ipv4.udp_mem = 16384 32768 65536'
+                ;;
+            game)
+                # TCP 保持 4MB (游戏本身就小缓冲)，UDP 给 32MB
+                RMEM_MAX=4194304; WMEM_MAX=4194304
+                TCP_RMEM="4096 16384 4194304"; TCP_WMEM="4096 16384 4194304"
+                UDP_RMEM_MIN=131072; UDP_WMEM_MIN=131072
+                UDP_RMEM_MAX=33554432; UDP_WMEM_MAX=33554432
+                NETDEV_BUDGET=300; NETDEV_MAX_BACKLOG=50000
+                SCENE_EXTRA=$'# ── 游戏极小内存: TCP 4MB防抖，UDP保32MB ──\nnet.ipv4.udp_rmem_min = 131072\nnet.ipv4.udp_wmem_min = 131072\nnet.ipv4.udp_rmem_max = 33554432\nnet.ipv4.udp_wmem_max = 33554432\nnet.core.optmem_max = 10240\nnet.ipv4.tcp_no_metrics_save = 1\nnet.ipv4.tcp_frto = 0\nnet.ipv4.udp_mem = 16384 32768 65536'
+                ;;
+            direct)
+                # 直连极小内存：全部压缩
+                RMEM_MAX=4194304; WMEM_MAX=4194304
+                TCP_RMEM="4096 32768 4194304"; TCP_WMEM="4096 32768 4194304"
+                UDP_RMEM_MIN=16384; UDP_WMEM_MIN=16384
+                UDP_RMEM_MAX=4194304; UDP_WMEM_MAX=4194304
+                NETDEV_BUDGET=300; NETDEV_MAX_BACKLOG=50000
+                SCENE_EXTRA=$'# ── 直连极小内存 ──\nnet.ipv4.tcp_frto = 1'
+                ;;
+        esac
     fi
 
-    # BBR 检测
+    # =============================================
+    # 第三步：BBR 检测
+    # =============================================
     local KVER
     KVER=$(uname -r | grep -oP '^\d+\.\d+')
     CC="cubic"; QDISC="fq_codel"
@@ -309,7 +391,9 @@ _kernel_optimize_core() {
         fi
     fi
 
-    # TCP MEM 计算
+    # =============================================
+    # 第四步：TCP MEM 计算
+    # =============================================
     local TCP_MEM_MIN=$((MEM_MB_VAL * 256))
     local TCP_MEM_DEF=$((MEM_MB_VAL * 512))
     local TCP_MEM_MAX=$((MEM_MB_VAL * 1024))
@@ -322,14 +406,15 @@ _kernel_optimize_core() {
     [ "$TW_BUCKETS" -gt 524288 ] && TW_BUCKETS=524288
     [ "$MAX_ORPHANS" -gt 131072 ] && MAX_ORPHANS=131072
 
-    # 备份
+    # =============================================
+    # 第五步：写入配置
+    # =============================================
     local backup_conf="${CONF}.bak.$(date +%s)"
     [ -f "$CONF" ] && cp "$CONF" "$backup_conf"
 
-    # 写入配置
     cat > "$CONF" << SYSEOF
 # YW Linux 内核调优配置
-# 模式: $mode_name | 场景: $scene
+# 模式: $mode_name | 场景: $scene | 内存段: $MEMORY_TIER
 # 内存: ${MEM_MB_VAL}MB | 生成时间: $(date '+%Y-%m-%d %H:%M:%S')
 
 # ── TCP 拥塞控制 ──
@@ -413,6 +498,7 @@ SYSEOF
     # conntrack
     if [ -f /proc/sys/net/netfilter/nf_conntrack_max ]; then
         cat >> "$CONF" << SYSEOF
+
 # ── 连接跟踪 ──
 net.netfilter.nf_conntrack_max = $((SOMAXCONN * 32))
 net.netfilter.nf_conntrack_tcp_timeout_established = 7200
@@ -425,8 +511,14 @@ SYSEOF
     fi
 
     # 场景附加参数
-    [ -n "$SCENE_EXTRA" ] && echo -e "$SCENE_EXTRA" >> "$CONF"
+    if [ -n "$SCENE_EXTRA" ]; then
+        echo "" >> "$CONF"
+        echo -e "$SCENE_EXTRA" >> "$CONF"
+    fi
 
+    # =============================================
+    # 第六步：加载并验证
+    # =============================================
     echo -e "${gl_lv}正在加载配置...${gl_bai}"
     local sysctl_err
     sysctl_err=$(sysctl -p "$CONF" 2>&1 | grep -v "Invalid argument" | grep -v "No such file or directory" | grep -v "unknown key")
@@ -444,7 +536,9 @@ SYSEOF
     bbr_on
 
     echo -e "${gl_lv}✅ 验证结果:${gl_bai}"
-    echo -e "   - 核心: \e[32m$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)\e[0m | 缓冲: \e[32m$((RMEM_MAX/1024/1024))MB\e[0m | Swap策略: \e[32m$SWAPPINESS\e[0m"
+    echo -e "   - 内存段: \e[33m${MEMORY_TIER} (${MEM_MB_VAL}MB)\e[0m"
+    echo -e "   - 核心: \e[32m${CC}\e[0m | TCP缓冲: \e[32m$((RMEM_MAX/1024/1024))MB\e[0m | UDP最小: \e[32m$((UDP_RMEM_MIN/1024))KB\e[0m"
+    echo -e "   - netdev_budget: \e[32m${NETDEV_BUDGET}\e[0m | Swap策略: \e[32m${SWAPPINESS}\e[0m"
     echo -e "${gl_lv}✅ ${mode_name} 优化完成！${gl_bai}"
 }
 
@@ -465,8 +559,7 @@ xanmod_add_repo() {
         os_codename="releases"
     fi
     if echo "jammy focal bullseye buster releases" | grep -qw "$os_codename"; then
-        echo -e "${gl_hong}XanMod 已停止对当前系统($os_codename)支持${gl_bai}"
-        return 1
+        echo -e "${gl_hong}XanMod 已停止对当前系统($os_codename)支持${gl_bai}"; return 1
     fi
     [ -z "$os_codename" ] && { echo "无法获取代号"; return 1; }
     install wget gnupg ca-certificates || return 1
@@ -492,8 +585,7 @@ xanmod_detect_package() {
         while [ "$l" -ge 1 ]; do
             local p="${prefix}-x64v${l}"
             if apt-cache policy "$p" 2>/dev/null | grep -q 'Candidate: [^ ]'; then
-                printf '%s\n' "$p"
-                return 0
+                printf '%s\n' "$p"; return 0
             fi
             l=$((l-1))
         done
@@ -504,23 +596,19 @@ xanmod_detect_package() {
 bbrv3() {
     root_use
     if [ "$(uname -m)" = "aarch64" ]; then
-        bash <(curl -sL jhb.ovh/jb/bbrv3arm.sh)
-        return 0
+        bash <(curl -sL jhb.ovh/jb/bbrv3arm.sh); return 0
     fi
     if [ -r /etc/os-release ]; then
         . /etc/os-release
         if [ "$ID" != "debian" ] && [ "$ID" != "ubuntu" ]; then
-            echo "仅支持Debian/Ubuntu"
-            return 0
+            echo "仅支持Debian/Ubuntu"; return 0
         fi
     else
         return 0
     fi
     if dpkg-query -W -f='${Package}\n' 'linux-*xanmod*' 2>/dev/null | grep -q '^linux-.*xanmod'; then
         while true; do
-            clear
-            echo "当前: $(uname -r)"
-            echo "1.更新 2.卸载 0.返回"
+            clear; echo "当前: $(uname -r)"; echo "1.更新 2.卸载 0.返回"
             read -e -p "选择: " c
             case $c in
                 1) check_disk_space 3 && check_swap && xanmod_add_repo && apt update -y && apt install -y --only-upgrade "$(xanmod_detect_package)" && bbr_on && server_reboot ;;
@@ -529,8 +617,7 @@ bbrv3() {
             esac
         done
     else
-        clear
-        echo "设置BBR3 (仅Debian/Ubuntu)"
+        clear; echo "设置BBR3 (仅Debian/Ubuntu)"
         read -e -p "继续？: " c
         if [[ "$c" =~ ^[Yy]$ ]]; then
             check_disk_space 3 && check_swap && xanmod_add_repo && apt update -y && apt install -y "$(xanmod_detect_package)" && bbr_on && server_reboot
@@ -561,34 +648,73 @@ verify_network_status() {
     clear
     local rmem
     rmem=$(sysctl -n net.core.rmem_max 2>/dev/null)
+    local udp_min
+    udp_min=$(sysctl -n net.ipv4.udp_rmem_min 2>/dev/null)
+    local budget
+    budget=$(sysctl -n net.core.netdev_budget 2>/dev/null)
     local mode="未知"
+    local mem_tier=""
+    local mem_mb
+    mem_mb=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null)
+
+    if [ "$mem_mb" -lt 1024 ] 2>/dev/null; then
+        mem_tier="极小内存(<1GB)"
+    elif [ "$mem_mb" -lt 4096 ] 2>/dev/null; then
+        mem_tier="小内存(1-4GB)"
+    elif [ "$mem_mb" -lt 16384 ] 2>/dev/null; then
+        mem_tier="中等内存(4-16GB)"
+    else
+        mem_tier="大内存(>=16GB)"
+    fi
+
     case $rmem in
-        8388608)
-            if sysctl -n net.ipv4.tcp_keepalive_time 2>/dev/null | grep -q "120"; then
-                mode="电竞级游戏模式 (8MB 防Bufferbloat + 快速死连接检测)"
+        4194304)
+            if [ "$udp_min" -ge 131072 ] 2>/dev/null; then
+                if [ "$budget" -ge 300 ] 2>/dev/null; then
+                    mode="直播推流模式 (极小内存自适应, TCP 4MB + UDP ${udp_min}KB)"
+                else
+                    mode="直播推流模式 (小内存自适应, TCP 4MB + UDP ${udp_min}KB)"
+                fi
             else
-                mode="中转网关模式 (8MB 防卡顿)"
+                mode="直连模式 (极小内存, TCP 4MB)"
             fi
             ;;
-        16777216) mode="直播低内存自适应 (16MB)" ;;
-        4194304) mode="极限低内存保护 (4MB)" ;;
-        67108864|134217728)
-            if sysctl -n net.core.netdev_budget 2>/dev/null | grep -q "1200"; then
-                mode="直播推流极限模式 (64MB + UDP拉爆 + 软中断狂暴)"
+        8388608)
+            if sysctl -n net.ipv4.tcp_keepalive_time 2>/dev/null | grep -q "120"; then
+                mode="电竞游戏模式 (TCP 8MB 防Bufferbloat + 快速死连检测)"
             else
-                mode="高性能模式 (64MB + IO聚簇)"
+                mode="中转网关模式 (TCP 8MB)"
+            fi
+            ;;
+        16777216)
+            if [ "$udp_min" -ge 262144 ] 2>/dev/null; then
+                mode="直播推流模式 (小内存自适应, TCP 16MB + UDP ${udp_min}KB 拉满)"
+            else
+                mode="直连模式 (小内存, TCP 16MB)"
+            fi
+            ;;
+        67108864)
+            mode="直连模式 (TCP 64MB, 均衡传输)"
+            ;;
+        134217728)
+            if [ "$budget" -ge 1200 ] 2>/dev/null; then
+                mode="直播推流极限模式 (TCP 64MB + UDP ${udp_min}KB + 软中断狂暴)"
+            else
+                mode="高性能模式 (TCP 64MB)"
             fi
             ;;
     esac
+
     echo -e "${gl_huang}========================================${gl_bai}"
     echo -e "${gl_huang}       智能模式识别验证               ${gl_bai}"
     echo -e "${gl_huang}========================================${gl_bai}"
+    echo -e "物理内存: ${mem_mb}MB (${mem_tier})"
     echo -e "算法: $(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null) | 队列: $(sysctl -n net.core.default_qdisc 2>/dev/null)"
     echo -e "防抖(ECN): $(sysctl -n net.ipv4.tcp_ecn 2>/dev/null) | 慢启动: $(sysctl -n net.ipv4.tcp_slow_start_after_idle 2>/dev/null)"
     echo -e "F-RTO: $(sysctl -n net.ipv4.tcp_frto 2>/dev/null) | 指标缓存: $(sysctl -n net.ipv4.tcp_no_metrics_save 2>/dev/null)"
     echo -e "最大TCP缓冲: $((rmem/1024/1024))MB"
-    echo -e "UDP最小缓冲: $(( $(sysctl -n net.ipv4.udp_rmem_min 2>/dev/null) / 1024 ))KB"
-    echo -e "netdev_budget: $(sysctl -n net.core.netdev_budget 2>/dev/null)"
+    echo -e "UDP最小缓冲: $((udp_min/1024))KB"
+    echo -e "netdev_budget: ${budget}"
     echo -e ">>> 智能鉴定结果: ${gl_lv}${mode}${gl_bai}"
     echo -e "${gl_huang}========================================${gl_bai}"
 }
@@ -709,10 +835,7 @@ show_sys_info() {
         echo -e "${gl_huang}0. 返回主菜单"
         echo -e "${gl_huang}=============="
         read -e -p "请输入选择: " menu_choice
-        case "$menu_choice" in
-            0|"") break ;;
-            *) break ;;
-        esac
+        case "$menu_choice" in 0|"") break ;; *) break ;; esac
     done
     return 0
 }
@@ -729,21 +852,14 @@ get_my_ip() {
     echo "${ip:-未知IP}"
 }
 
-# 单次 TLS 握手测速，返回毫秒数
 _test_tls_once() {
     local host="$1"
     local t1 t2 ms
-    # %s%3N 在 GNU date 上返回毫秒级时间戳，兼容性最好
     t1=$(date +%s%3N 2>/dev/null)
     if timeout 2 openssl s_client -connect "${host}:443" -servername "${host}" </dev/null &>/dev/null; then
         t2=$(date +%s%3N 2>/dev/null)
         ms=$((t2 - t1))
-        # 防止异常负数
-        if [ "$ms" -ge 0 ] 2>/dev/null; then
-            echo "$ms"
-        else
-            echo "9999"
-        fi
+        if [ "$ms" -ge 0 ] 2>/dev/null; then echo "$ms"; else echo "9999"; fi
     else
         echo "9999"
     fi
@@ -756,39 +872,24 @@ select_sni() {
     echo -e "${G}3. 手动输入域名${R}" >&2
     read -e -p "请选择 (1默认 / 2优选 / 3手动): " c
     case $c in
-        1)
-            echo "www.microsoft.com"
-            ;;
+        1) echo "www.microsoft.com" ;;
         2)
             local d=(
-                "azure.microsoft.com"
-                "bing.com"
-                "www.icloud.com"
-                "statici.icloud.com"
-                "www.microsoft.com"
-                "xp.apple.com"
-                "vs.aws.amazon.com"
-                "www.xbox.com"
-                "snap.licdn.com"
-                "www.oracle.com"
-                "www.xilinx.com"
-                "ts2.tc.mm.bing.net"
-                "images.nvidia.com"
-                "speed.cloudflare.com"
-                "workers.cloudflare.com"
+                "azure.microsoft.com" "bing.com" "www.icloud.com"
+                "statici.icloud.com" "www.microsoft.com" "xp.apple.com"
+                "vs.aws.amazon.com" "www.xbox.com" "snap.licdn.com"
+                "www.oracle.com" "www.xilinx.com" "ts2.tc.mm.bing.net"
+                "images.nvidia.com" "speed.cloudflare.com" "workers.cloudflare.com"
                 "www.lovelive-anime.jp"
             )
             local f="/tmp/sb_sni_test.$$"
             : > "$f"
-
-            # ===== 第一轮：串行逐个测一遍，找出前5名 =====
             echo -e "${Y}[第1轮] 串行测速 16 个域名，约需 16-20 秒...${R}" >&2
             local idx=1
             for i in "${d[@]}"; do
                 local ms
                 ms=$(_test_tls_once "$i")
                 echo "${ms} ${i}" >> "$f"
-                # 显示实时进度
                 if [ "$ms" -lt 9999 ] 2>/dev/null; then
                     echo -ne "  ${gl_hui}[${idx}/${#d[@]}]${R} ${i}: ${G}${ms}ms${R}\r" >&2
                 else
@@ -797,24 +898,18 @@ select_sni() {
                 idx=$((idx + 1))
             done
             echo "" >&2
-
-            # 取前5名进入第二轮
             local top5
             top5=$(sort -n "$f" | head -5)
-
             echo -e "${Y}[第2轮] 对前 5 名各测 3 轮取最小值...${R}" >&2
             local f2="/tmp/sb_sni_test2.$$"
             : > "$f2"
-
             while IFS=' ' read -r ms dom; do
                 local best=9999
                 local r
                 for r in 1 2 3; do
                     local m
                     m=$(_test_tls_once "$dom")
-                    if [ "$m" -lt "$best" ] 2>/dev/null; then
-                        best=$m
-                    fi
+                    if [ "$m" -lt "$best" ] 2>/dev/null; then best=$m; fi
                 done
                 echo "${best} ${dom}" >> "$f2"
                 if [ "$best" -lt 9999 ] 2>/dev/null; then
@@ -823,17 +918,11 @@ select_sni() {
                     echo -e "  ${dom}: ${RED}超时${R}" >&2
                 fi
             done <<< "$top5"
-
-            # 最终结果
             local b_d="www.microsoft.com"
             local b_t=9999
             while IFS=' ' read -r t dom; do
-                if [ -n "$t" ] && [ "$t" -lt "$b_t" ] 2>/dev/null; then
-                    b_t=$t
-                    b_d="$dom"
-                fi
+                if [ -n "$t" ] && [ "$t" -lt "$b_t" ] 2>/dev/null; then b_t=$t; b_d="$dom"; fi
             done < "$f2"
-
             rm -f "$f" "$f2"
             echo "" >&2
             echo -e "${G}✅ 优选结果: ${b_d} (最低 ${b_t}ms)${R}" >&2
@@ -843,9 +932,7 @@ select_sni() {
             read -e -p "输入域名: " s
             echo "${s:-www.microsoft.com}"
             ;;
-        *)
-            echo "www.microsoft.com"
-            ;;
+        *) echo "www.microsoft.com" ;;
     esac
 }
 
@@ -855,12 +942,10 @@ select_sni() {
 
 sb_check() {
     if ! command -v sing-box >/dev/null 2>&1; then
-        echo -e "${RED}请先安装 Sing-Box 核心！${R}"
-        return 1
+        echo -e "${RED}请先安装 Sing-Box 核心！${R}"; return 1
     fi
     if ! command -v jq >/dev/null 2>&1; then
-        echo -e "${RED}请先安装 jq (apt install jq -y)！${R}"
-        return 1
+        echo -e "${RED}请先安装 jq (apt install jq -y)！${R}"; return 1
     fi
     return 0
 }
@@ -876,12 +961,9 @@ sb_init_conf() {
 META_FILE="/etc/sing-box/.nodes_meta"
 
 _init_meta_file() {
-    if [ -f "/etc/sing-box/nodes_meta.json" ]; then
-        rm -f "/etc/sing-box/nodes_meta.json"
-    fi
+    if [ -f "/etc/sing-box/nodes_meta.json" ]; then rm -f "/etc/sing-box/nodes_meta.json"; fi
     if [ ! -f "$META_FILE" ] || ! jq -e . "$META_FILE" >/dev/null 2>&1; then
-        mkdir -p /etc/sing-box
-        echo '{}' > "$META_FILE"
+        mkdir -p /etc/sing-box; echo '{}' > "$META_FILE"
     fi
 }
 
@@ -974,7 +1056,6 @@ sb_manage_menu() {
                 sb_status="${Y}待配置 (无节点)${R}"
             fi
         fi
-
         echo -e "${G}========================================${R}"
         echo -e "${G}       Sing-Box 落地节点管理          ${R}"
         echo -e "${G}========================================${R}"
@@ -991,7 +1072,6 @@ sb_manage_menu() {
         echo -e "${G}========================================${R}"
         echo -e "${H}0.${R} 返回主菜单"
         echo -e "${G}========================================${R}"
-
         read -e -p "请输入选择: " c
         case $c in
             1)
@@ -1050,17 +1130,11 @@ sb_manage_menu() {
 sb_add_reality() {
     sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
     echo -e "${C}--- 添加 VLESS Reality 落地节点 ---${R}"
-
     read -e -p "端口: " port
     if [[ ! "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
-        echo -e "${RED}端口错误 (需为 1-65535)${R}"
-        read -rs -n 1 -p "按任意键返回..."
-        return
+        echo -e "${RED}端口错误 (需为 1-65535)${R}"; read -rs -n 1 -p "按任意键返回..."; return
     fi
-
-    local sni
-    sni=$(select_sni)
-
+    local sni; sni=$(select_sni)
     echo -e "${Y}正在生成 UUID 和密钥对...${R}"
     local uuid priv_key pub_key keys
     uuid=$(cat /proc/sys/kernel/random/uuid)
@@ -1069,57 +1143,37 @@ sb_add_reality() {
     pub_key=$(echo "$keys" | grep "PublicKey" | awk '{print $2}')
     if [ -z "$pub_key" ] || [ -z "$priv_key" ]; then
         echo -e "${RED}密钥生成失败！请确认 sing-box 版本支持 Reality${R}"
-        read -rs -n 1 -p "按任意键返回..."
-        return
+        read -rs -n 1 -p "按任意键返回..."; return
     fi
-
     local default_name="Reality-${port}"
     read -e -p "输入自定义名称 (回车跳过，默认: ${default_name}): " node_name
     [ -z "$node_name" ] && node_name="$default_name"
-
-    sb_init_conf
-    local conf="/etc/sing-box/config.json"
+    sb_init_conf; local conf="/etc/sing-box/config.json"
     cp "$conf" "${conf}.bak.$(date +%s)"
-
     jq --argjson p "$port" --arg u "$uuid" --arg pk "$priv_key" --arg s "$sni" \
        '.inbounds += [{"type":"vless","tag":"vless-in-\($p)","listen":"::","listen_port":$p,"users":[{"uuid":$u,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$s,"reality":{"enabled":true,"handshake":{"server":$s,"server_port":443},"private_key":$pk}}}]' \
        "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
-
     if sing-box check -c "$conf" >/dev/null 2>&1; then
         echo -e "${Y}正在检查防火墙并放行端口...${R}"
         open_port "$port" "tcp"
         _save_node_meta "$port" "$node_name" "vless" "$pub_key"
-        systemctl enable sing-box >/dev/null 2>&1
-        systemctl restart sing-box
-        sleep 2
+        systemctl enable sing-box >/dev/null 2>&1; systemctl restart sing-box; sleep 2
         if ! systemctl is-active --quiet sing-box 2>/dev/null; then
             echo -e "${RED}❌ 服务启动失败！错误日志如下：${R}"
             journalctl -u sing-box -n 15 --no-pager 2>/dev/null
             echo -e "${Y}正在回滚配置...${R}"
-            local latest_bak
-            latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
-            if [ -n "$latest_bak" ]; then
-                mv "$latest_bak" "$conf"
-                echo -e "${Y}已从备份恢复原配置。${R}"
-            fi
-            _del_node_meta "$port"
-            read -rs -n 1 -p "按任意键返回..."
-            return
+            local latest_bak; latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
+            if [ -n "$latest_bak" ]; then mv "$latest_bak" "$conf"; echo -e "${Y}已从备份恢复原配置。${R}"; fi
+            _del_node_meta "$port"; read -rs -n 1 -p "按任意键返回..."; return
         fi
-        local my_ip
-        my_ip=$(get_my_ip)
+        local my_ip; my_ip=$(get_my_ip)
         local link="vless://${uuid}@${my_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&type=tcp#${node_name}"
         echo -e "${G}✅ VLESS Reality 添加成功并已启动！${R}"
-        echo -e "${Y}客户端链接:${R}"
-        echo -e "${B}${link}${R}"
+        echo -e "${Y}客户端链接:${R}"; echo -e "${B}${link}${R}"
     else
         echo -e "${RED}配置校验失败！已自动回滚到备份配置。${R}"
-        local latest_bak
-        latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
-        if [ -n "$latest_bak" ]; then
-            mv "$latest_bak" "$conf"
-            echo -e "${Y}已从备份恢复原配置。${R}"
-        fi
+        local latest_bak; latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
+        if [ -n "$latest_bak" ]; then mv "$latest_bak" "$conf"; echo -e "${Y}已从备份恢复原配置。${R}"; fi
         sing-box check -c "$conf" 2>&1 | head -5
     fi
     read -rs -n 1 -p "按任意键继续..."
@@ -1132,98 +1186,62 @@ sb_add_reality() {
 sb_add_hy2() {
     sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
     if ! command -v openssl >/dev/null 2>&1; then
-        echo -e "${RED}请先安装 openssl！${R}"
-        read -rs -n 1 -p "按任意键返回..."
-        return
+        echo -e "${RED}请先安装 openssl！${R}"; read -rs -n 1 -p "按任意键返回..."; return
     fi
-
     echo -e "${C}--- 添加 Hysteria2 落地节点 ---${R}"
-
     read -e -p "端口: " port
     if [[ ! "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
-        echo -e "${RED}端口错误 (需为 1-65535)${R}"
-        read -rs -n 1 -p "按任意键返回..."
-        return
+        echo -e "${RED}端口错误 (需为 1-65535)${R}"; read -rs -n 1 -p "按任意键返回..."; return
     fi
-
-    local sni
-    sni=$(select_sni)
-
+    local sni; sni=$(select_sni)
     echo -e "${Y}正在生成密码和自签证书...${R}"
-    local pass
-    pass=$(openssl rand -base64 16)
-    local crt="/etc/sing-box/hy2_${port}.crt"
-    local key="/etc/sing-box/hy2_${port}.key"
+    local pass; pass=$(openssl rand -base64 16)
+    local crt="/etc/sing-box/hy2_${port}.crt" key="/etc/sing-box/hy2_${port}.key"
     if [ ! -f "$crt" ] || [ ! -f "$key" ]; then
-        openssl req -x509 -nodes -newkey rsa:2048 \
-            -keyout "$key" -out "$crt" \
-            -subj "/CN=${sni}" -days 3650 2>/dev/null
+        openssl req -x509 -nodes -newkey rsa:2048 -keyout "$key" -out "$crt" -subj "/CN=${sni}" -days 3650 2>/dev/null
     fi
-    chmod 600 "$key" 2>/dev/null
-    chmod 644 "$crt" 2>/dev/null
-
+    chmod 600 "$key" 2>/dev/null; chmod 644 "$crt" 2>/dev/null
     local default_name="Hy2-${port}"
     read -e -p "输入自定义名称 (回车跳过，默认: ${default_name}): " node_name
     [ -z "$node_name" ] && node_name="$default_name"
-
-    sb_init_conf
-    local conf="/etc/sing-box/config.json"
+    sb_init_conf; local conf="/etc/sing-box/config.json"
     cp "$conf" "${conf}.bak.$(date +%s)"
-
     jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" --arg crt "$crt" --arg key "$key" \
        '.inbounds += [{"type":"hysteria2","tag":"hy2-in-\($p)","listen":"::","listen_port":$p,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificate_path":$crt,"key_path":$key}}]' \
        "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
-
     if sing-box check -c "$conf" >/dev/null 2>&1; then
         echo -e "${Y}正在检查防火墙并放行端口...${R}"
         open_port "$port" "udp"
         _save_node_meta "$port" "$node_name" "hysteria2"
-        systemctl enable sing-box >/dev/null 2>&1
-        systemctl restart sing-box
-        sleep 2
+        systemctl enable sing-box >/dev/null 2>&1; systemctl restart sing-box; sleep 2
         if ! systemctl is-active --quiet sing-box 2>/dev/null; then
             echo -e "${RED}❌ 服务启动失败！错误日志如下：${R}"
             journalctl -u sing-box -n 15 --no-pager 2>/dev/null
             echo -e "${Y}正在回滚配置...${R}"
-            local latest_bak
-            latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
-            if [ -n "$latest_bak" ]; then
-                mv "$latest_bak" "$conf"
-                echo -e "${Y}已从备份恢复原配置。${R}"
-            fi
-            rm -f "$crt" "$key"
-            _del_node_meta "$port"
-            read -rs -n 1 -p "按任意键返回..."
-            return
+            local latest_bak; latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
+            if [ -n "$latest_bak" ]; then mv "$latest_bak" "$conf"; echo -e "${Y}已从备份恢复原配置。${R}"; fi
+            rm -f "$crt" "$key"; _del_node_meta "$port"; read -rs -n 1 -p "按任意键返回..."; return
         fi
-        local my_ip
-        my_ip=$(get_my_ip)
+        local my_ip; my_ip=$(get_my_ip)
         local link="hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}#${node_name}"
         echo -e "${G}✅ Hysteria2 添加成功并已启动！${R}"
-        echo -e "${Y}客户端链接:${R}"
-        echo -e "${B}${link}${R}"
+        echo -e "${Y}客户端链接:${R}"; echo -e "${B}${link}${R}"
         echo -e "${H}注意: Hysteria2 是 UDP 协议，请确保云安全组也已放行 UDP ${port}${R}"
     else
         echo -e "${RED}配置校验失败！已自动回滚到备份配置。${R}"
-        local latest_bak
-        latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
-        if [ -n "$latest_bak" ]; then
-            mv "$latest_bak" "$conf"
-            echo -e "${Y}已从备份恢复原配置。${R}"
-        fi
-        rm -f "$crt" "$key"
-        sing-box check -c "$conf" 2>&1 | head -5
+        local latest_bak; latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
+        if [ -n "$latest_bak" ]; then mv "$latest_bak" "$conf"; echo -e "${Y}已从备份恢复原配置。${R}"; fi
+        rm -f "$crt" "$key"; sing-box check -c "$conf" 2>&1 | head -5
     fi
     read -rs -n 1 -p "按任意键继续..."
 }
 
 # ============================================================================
-# 添加 AnyTLS (需自有域名 + 真实证书)
+# 添加 AnyTLS
 # ============================================================================
 
 sb_add_anytls() {
     sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
-
     echo -e "${C}--- 添加 AnyTLS 落地节点 ---${R}"
     echo -e "${Y}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${R}"
     echo -e "${Y} ⚠  AnyTLS 与 Reality 不同，要求：${R}"
@@ -1231,53 +1249,37 @@ sb_add_anytls() {
     echo -e "${Y}    2. 必须获取该域名的真实 TLS 证书${R}"
     echo -e "${Y}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${R}"
     echo ""
-
     read -e -p "请输入你的域名 (必须已 A 记录解析到本机IP): " domain
     if [ -z "$domain" ]; then
-        echo -e "${RED}域名不能为空${R}"
-        read -rs -n 1 -p "按任意键返回..."
-        return
+        echo -e "${RED}域名不能为空${R}"; read -rs -n 1 -p "按任意键返回..."; return
     fi
     domain=$(echo "$domain" | sed 's|^https\?://||' | sed 's|/.*||' | tr -d '[:space:]')
-
     local my_ip domain_ip
     my_ip=$(get_my_ip)
     domain_ip=$(curl -4 -s --connect-timeout 5 "https://dns.google/resolve?name=${domain}&type=A" 2>/dev/null | jq -r '.Answer[0].data' 2>/dev/null)
     if [ -z "$domain_ip" ]; then
         domain_ip=$(dig +short "$domain" A 2>/dev/null | tail -1)
     fi
-
     echo -e "${H}  本机 IP: ${my_ip} | 域名解析: ${domain_ip:-未解析}${R}"
     if [ -n "$domain_ip" ] && [ "$domain_ip" != "$my_ip" ]; then
         echo -e "${RED}❌ 域名 ${domain} 未解析到本机 IP！${R}"
         read -e -p "   仍然继续？: " cont
-        if [[ ! "$cont" =~ ^[Yy]$ ]]; then
-            read -rs -n 1 -p "按任意键返回..."
-            return
-        fi
+        if [[ ! "$cont" =~ ^[Yy]$ ]]; then read -rs -n 1 -p "按任意键返回..."; return; fi
     fi
-
     read -e -p "端口: " port
     if [[ ! "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
-        echo -e "${RED}端口错误 (需为 1-65535)${R}"
-        read -rs -n 1 -p "按任意键返回..."
-        return
+        echo -e "${RED}端口错误 (需为 1-65535)${R}"; read -rs -n 1 -p "按任意键返回..."; return
     fi
-
     echo -e "${Y}正在生成 UUID...${R}"
-    local uuid
-    uuid=$(cat /proc/sys/kernel/random/uuid)
-
+    local uuid; uuid=$(cat /proc/sys/kernel/random/uuid)
     local default_name="AnyTLS-${port}"
     read -e -p "输入自定义名称 (回车跳过，默认: ${default_name}): " node_name
     [ -z "$node_name" ] && node_name="$default_name"
 
-    # 证书处理
     local cert_dir="/etc/sing-box/certs"
     local cert_file="${cert_dir}/${domain}.fullchain.pem"
     local key_file="${cert_dir}/${domain}.key.pem"
-    local cert_ok=0
-    local is_self_signed=0
+    local cert_ok=0 is_self_signed=0
 
     if [ -f "$cert_file" ] && [ -f "$key_file" ]; then
         if openssl x509 -checkend 86400 -noout -in "$cert_file" 2>/dev/null; then
@@ -1285,8 +1287,7 @@ sb_add_anytls() {
             issuer=$(openssl x509 -in "$cert_file" -noout -issuer 2>/dev/null)
             subject=$(openssl x509 -in "$cert_file" -noout -subject 2>/dev/null)
             if [ "$issuer" = "$subject" ]; then
-                is_self_signed=1
-                echo -e "${Y}检测到自签证书 (仍在有效期内)${R}"
+                is_self_signed=1; echo -e "${Y}检测到自签证书 (仍在有效期内)${R}"
             else
                 echo -e "${G}检测到有效的 CA 签发证书，直接使用${R}"
             fi
@@ -1299,45 +1300,32 @@ sb_add_anytls() {
     if [ "$cert_ok" -eq 0 ]; then
         mkdir -p "$cert_dir"
         local acme_sh=""
-        if [ -f "$HOME/.acme.sh/acme.sh" ]; then
-            acme_sh="$HOME/.acme.sh/acme.sh"
-        elif [ -f "/root/.acme.sh/acme.sh" ]; then
-            acme_sh="/root/.acme.sh/acme.sh"
-        fi
-
+        if [ -f "$HOME/.acme.sh/acme.sh" ]; then acme_sh="$HOME/.acme.sh/acme.sh"
+        elif [ -f "/root/.acme.sh/acme.sh" ]; then acme_sh="/root/.acme.sh/acme.sh"; fi
         if [ -z "$acme_sh" ]; then
             echo -e "${Y}正在安装 acme.sh...${R}"
             curl -fsSL https://get.acme.sh | sh -s email="admin@${domain}" >/dev/null 2>&1
             acme_sh="$HOME/.acme.sh/acme.sh"
         fi
-
         if [ -f "$acme_sh" ]; then
             echo -e "${Y}尝试 standalone 模式申请 Let's Encrypt 证书 (需 80 端口可用)...${R}"
             local port_80_opened=0
             if ! ss -tlnp | grep -q ":80 "; then
-                open_port 80 "tcp" >/dev/null 2>&1
-                port_80_opened=1
+                open_port 80 "tcp" >/dev/null 2>&1; port_80_opened=1
             fi
-
             "$acme_sh" --issue -d "$domain" --standalone --httpport 80 2>&1 | tail -3
             if [ $? -eq 0 ]; then
                 "$acme_sh" --install-cert -d "$domain" \
-                    --fullchain-file "$cert_file" \
-                    --key-file "$key_file" \
+                    --fullchain-file "$cert_file" --key-file "$key_file" \
                     --reloadcmd "systemctl restart sing-box" 2>/dev/null
                 if [ -f "$cert_file" ] && [ -f "$key_file" ] && [ -s "$cert_file" ]; then
-                    echo -e "${G}✅ Let's Encrypt 证书申请成功！${R}"
-                    cert_ok=1
+                    echo -e "${G}✅ Let's Encrypt 证书申请成功！${R}"; cert_ok=1
                 fi
             else
                 echo -e "${Y}standalone 模式失败${R}"
             fi
-
-            if [ "$port_80_opened" -eq 1 ]; then
-                open_port 80 "tcp" "close" >/dev/null 2>&1
-            fi
+            if [ "$port_80_opened" -eq 1 ]; then open_port 80 "tcp" "close" >/dev/null 2>&1; fi
         fi
-
         if [ "$cert_ok" -eq 0 ]; then
             echo -e "${Y}Let's Encrypt 申请失败，回退到自签证书...${R}"
             echo -e "${H}⚠ 自签证书仍可工作，但 TLS 指纹可能被识别${R}"
@@ -1345,61 +1333,40 @@ sb_add_anytls() {
                 -keyout "$key_file" -out "$cert_file" \
                 -subj "/CN=${domain}" -days 3650 2>/dev/null
             if [ -f "$cert_file" ] && [ -f "$key_file" ] && [ -s "$cert_file" ]; then
-                cert_ok=1
-                is_self_signed=1
-                echo -e "${Y}自签证书已生成${R}"
+                cert_ok=1; is_self_signed=1; echo -e "${Y}自签证书已生成${R}"
             fi
         fi
     fi
-
     if [ "$cert_ok" -eq 0 ]; then
         echo -e "${RED}❌ 证书准备失败，无法添加 AnyTLS 节点${R}"
-        read -rs -n 1 -p "按任意键返回..."
-        return
+        read -rs -n 1 -p "按任意键返回..."; return
     fi
+    chmod 600 "$key_file" 2>/dev/null; chmod 644 "$cert_file" 2>/dev/null
 
-    chmod 600 "$key_file" 2>/dev/null
-    chmod 644 "$cert_file" 2>/dev/null
-
-    sb_init_conf
-    local conf="/etc/sing-box/config.json"
+    sb_init_conf; local conf="/etc/sing-box/config.json"
     cp "$conf" "${conf}.bak.$(date +%s)"
-
     jq --argjson p "$port" --arg u "$uuid" --arg cert "$cert_file" --arg key "$key_file" \
        '.inbounds += [{"type":"anytls","tag":"anytls-in-\($p)","listen":"::","listen_port":$p,"users":[{"uuid":$u}],"tls":{"enabled":true,"certificate_path":$cert,"key_path":$key}}]' \
        "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
-
     if sing-box check -c "$conf" >/dev/null 2>&1; then
         echo -e "${Y}正在检查防火墙并放行端口...${R}"
         open_port "$port" "tcp"
         _save_node_meta "$port" "$node_name" "anytls"
-        systemctl enable sing-box >/dev/null 2>&1
-        systemctl restart sing-box
-        sleep 2
+        systemctl enable sing-box >/dev/null 2>&1; systemctl restart sing-box; sleep 2
         if ! systemctl is-active --quiet sing-box 2>/dev/null; then
             echo -e "${RED}❌ 服务启动失败！错误日志如下：${R}"
             journalctl -u sing-box -n 15 --no-pager 2>/dev/null
             echo -e "${Y}正在回滚配置...${R}"
-            local latest_bak
-            latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
-            if [ -n "$latest_bak" ]; then
-                mv "$latest_bak" "$conf"
-                echo -e "${Y}已从备份恢复原配置。${R}"
-            fi
-            _del_node_meta "$port"
-            read -rs -n 1 -p "按任意键返回..."
-            return
+            local latest_bak; latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
+            if [ -n "$latest_bak" ]; then mv "$latest_bak" "$conf"; echo -e "${Y}已从备份恢复原配置。${R}"; fi
+            _del_node_meta "$port"; read -rs -n 1 -p "按任意键返回..."; return
         fi
-
-        local my_ip
-        my_ip=$(get_my_ip)
+        local my_ip; my_ip=$(get_my_ip)
         local insecure_param=""
         [ "$is_self_signed" -eq 1 ] && insecure_param="&insecure=1"
         local link="anytls://${uuid}@${my_ip}:${port}?sni=${domain}&type=tcp${insecure_param}#${node_name}"
-
         echo -e "${G}✅ AnyTLS 节点添加成功并已启动！${R}"
-        echo -e "${Y}客户端链接:${R}"
-        echo -e "${B}${link}${R}"
+        echo -e "${Y}客户端链接:${R}"; echo -e "${B}${link}${R}"
         echo ""
         echo -e "${H}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${R}"
         echo -e "${H} 证书: ${cert_file}${R}"
@@ -1408,14 +1375,9 @@ sb_add_anytls() {
         echo -e "${H}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${R}"
     else
         echo -e "${RED}配置校验失败！已自动回滚到备份配置。${R}"
-        local latest_bak
-        latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
-        if [ -n "$latest_bak" ]; then
-            mv "$latest_bak" "$conf"
-            echo -e "${Y}已从备份恢复原配置。${R}"
-        fi
-        echo -e "${RED}校验错误详情:${R}"
-        sing-box check -c "$conf" 2>&1 | head -10
+        local latest_bak; latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
+        if [ -n "$latest_bak" ]; then mv "$latest_bak" "$conf"; echo -e "${Y}已从备份恢复原配置。${R}"; fi
+        echo -e "${RED}校验错误详情:${R}"; sing-box check -c "$conf" 2>&1 | head -10
     fi
     read -rs -n 1 -p "按任意键继续..."
 }
@@ -1426,25 +1388,19 @@ sb_add_anytls() {
 
 _show_nodes_list() {
     local conf="/etc/sing-box/config.json"
-    local my_ip
-    my_ip=$(get_my_ip)
+    local my_ip; my_ip=$(get_my_ip)
     local inbounds_count
     inbounds_count=$(jq '.inbounds | length' "$conf" 2>/dev/null)
     if [ "${inbounds_count:-0}" -eq 0 ] 2>/dev/null; then
-        echo -e "${H}暂无节点${R}"
-        return 1
+        echo -e "${H}暂无节点${R}"; return 1
     fi
-
-    local meta_json
-    meta_json=$(cat "$META_FILE" 2>/dev/null || echo '{}')
+    local meta_json; meta_json=$(cat "$META_FILE" 2>/dev/null || echo '{}')
     local idx=1
-
     jq -c '.inbounds[]' "$conf" 2>/dev/null | while IFS= read -r in; do
         local type port node_name link
         type=$(echo "$in" | jq -r '.type')
         port=$(echo "$in" | jq -r '.listen_port')
         node_name=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].name // "未命名"')
-
         case "$type" in
             vless)
                 local uuid sni pub_key flow
@@ -1474,11 +1430,8 @@ _show_nodes_list() {
                 sni=$(echo "$in" | jq -r '.tls.server_name')
                 link="hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}#${node_name}"
                 ;;
-            *)
-                link="${H}[不支持的协议类型: ${type}]${R}"
-                ;;
+            *) link="${H}[不支持的协议类型: ${type}]${R}" ;;
         esac
-
         echo -e "${G}─────────────────────────────────────${R}"
         echo -e "${C}[${idx}]${R} ${Y}${node_name}${R}"
         echo -e "  协议: ${type} | 端口: ${port}"
@@ -1507,46 +1460,34 @@ sb_view_nodes() {
 sb_del_node() {
     sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
     sb_view_nodes
-
     local conf="/etc/sing-box/config.json"
     read -e -p "请输入要删除的节点端口号: " del_port
     if ! jq -e --argjson p "$del_port" '.inbounds[] | select(.listen_port == $p) | any' "$conf" >/dev/null 2>&1; then
         echo -e "${RED}未找到监听端口为 ${del_port} 的节点${R}"
-        read -rs -n 1 -p "按任意键返回..."
-        return
+        read -rs -n 1 -p "按任意键返回..."; return
     fi
-
     local node_type
     node_type=$(jq -r --argjson p "$del_port" '.inbounds[] | select(.listen_port == $p) | .type' "$conf")
-
     cp "$conf" "${conf}.bak.$(date +%s)"
     jq --argjson p "$del_port" 'del(.inbounds[] | select(.listen_port == $p))' \
         "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
-
     if sing-box check -c "$conf" >/dev/null 2>&1; then
         echo -e "${Y}正在关闭防火墙端口...${R}"
-        if [ "$node_type" = "hysteria2" ]; then
-            open_port "$del_port" "udp" "close"
-        else
-            open_port "$del_port" "tcp" "close"
-        fi
+        if [ "$node_type" = "hysteria2" ]; then open_port "$del_port" "udp" "close"
+        else open_port "$del_port" "tcp" "close"; fi
         _del_node_meta "$del_port"
         systemctl restart sing-box
         echo -e "${G}✅ 节点删除成功！${R}"
     else
         echo -e "${RED}删除后配置校验失败，正在回滚...${R}"
-        local latest_bak
-        latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
-        if [ -n "$latest_bak" ]; then
-            mv "$latest_bak" "$conf"
-            echo -e "${Y}已从备份恢复原配置。${R}"
-        fi
+        local latest_bak; latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
+        if [ -n "$latest_bak" ]; then mv "$latest_bak" "$conf"; echo -e "${Y}已从备份恢复原配置。${R}"; fi
     fi
     read -rs -n 1 -p "按任意键返回..."
 }
 
 # ============================================================================
-# 内核优化菜单 (精简版：直播 + 游戏)
+# 内核优化菜单 (直播 + 游戏 + 直连)
 # ============================================================================
 
 Kernel_optimize() {
@@ -1557,16 +1498,30 @@ Kernel_optimize() {
         if [ -f /etc/sysctl.d/99-yw-optimize.conf ]; then
             cur=$(grep "^# 模式:" /etc/sysctl.d/99-yw-optimize.conf 2>/dev/null | sed 's/^# 模式: //' | awk -F'|' '{print $1}' | xargs)
         fi
+        local mem_mb
+        mem_mb=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null)
+        local mem_tag="${gl_lv}${mem_mb}MB${gl_bai}"
+        if [ "$mem_mb" -lt 1024 ] 2>/dev/null; then
+            mem_tag="${RED}${mem_mb}MB (极小)${gl_bai}"
+        elif [ "$mem_mb" -lt 4096 ] 2>/dev/null; then
+            mem_tag="${gl_huang}${mem_mb}MB (小)${gl_bai}"
+        elif [ "$mem_mb" -lt 16384 ] 2>/dev/null; then
+            mem_tag="${gl_lv}${mem_mb}MB (中)${gl_bai}"
+        else
+            mem_tag="${gl_lv}${mem_mb}MB (大)${gl_bai}"
+        fi
+
         echo -e "${gl_lv}Linux系统内核参数优化 (直播特化版)${gl_bai}"
         echo "------------------------------------------------"
-        echo -e "当前模式: ${gl_huang}${cur:-未设置}${gl_bai}"
+        echo -e "当前模式: ${gl_huang}${cur:-未设置}${gl_bai}  |  内存: ${mem_tag}"
         echo -e "--------------------"
         echo -e "1. 直播推流极限模式：   UDP 256KB缓冲+软中断狂暴+64MB TCP ${gl_huang}★推荐${gl_bai}"
         echo -e "2. 电竞游戏模式：       8MB防Bufferbloat+快速死连检测+UDP拉满"
+        echo -e "3. 直连落地模式：       均衡TCP 64MB+开启F-RTO+适合直连出口"
         echo -e "--------------------"
-        echo -e "3. 还原默认设置"
-        echo -e "4. 释放内存缓存 (谨慎)"
-        echo -e "5. 验证当前网络状态"
+        echo -e "4. 还原默认设置"
+        echo -e "5. 释放内存缓存 (谨慎)"
+        echo -e "6. 验证当前网络状态"
         echo "--------------------"
         echo "0. 返回主菜单"
         echo "--------------------"
@@ -1574,18 +1529,17 @@ Kernel_optimize() {
         case $sub_choice in
             1) cd ~; clear; _kernel_optimize_core "直播推流极限模式" "stream" ;;
             2) cd ~; clear; _kernel_optimize_core "电竞游戏模式" "game" ;;
-            3) cd ~; clear; restore_defaults ;;
-            4)
+            3) cd ~; clear; _kernel_optimize_core "直连落地模式" "direct" ;;
+            4) cd ~; clear; restore_defaults ;;
+            5)
                 echo -e "${gl_red}警告：强制释放内存缓存可能导致短暂 IO 抖动！${gl_bai}"
                 read -e -p "确定要执行 echo 3 > /proc/sys/vm/drop_caches 吗？: " drop_choice
                 if [[ "$drop_choice" =~ ^[Yy]$ ]]; then
                     sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null && echo -e "${gl_lv}✅ 内存缓存已释放${gl_bai}"
-                else
-                    echo "已取消"
-                fi
+                else echo "已取消"; fi
                 read -rs -n 1 -p "按任意键继续..."
                 ;;
-            5) verify_network_status; read -rs -n 1 -p "按任意键返回菜单..." ;;
+            6) verify_network_status; read -rs -n 1 -p "按任意键返回菜单..." ;;
             0|"") break ;;
             *) echo -e "${gl_red}无效的选择${gl_bai}"; read -rs -n 1 -p "按任意键继续..." ;;
         esac
@@ -1602,7 +1556,7 @@ main_menu() {
         clear
         echo -e "${gl_kjlan}Linux YW 网络与节点管理 (直播特化版)${gl_bai}"
         echo "--------------------------------------------------"
-        echo -e "  1. 内核调优 (直播推流 / 电竞游戏)"
+        echo -e "  1. 内核调优 (直播 / 游戏 / 直连)"
         echo -e "  2. Sing-Box 节点管理 (含优选SNI)"
         echo -e "  3. Swap 虚拟内存管理"
         echo -e "  4. BBRv3 内核管理 (仅限Debian/Ubuntu)"
