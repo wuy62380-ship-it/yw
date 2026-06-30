@@ -127,7 +127,6 @@ change_swap_size() {
     echo -e "${gl_huang}========================================${gl_bai}"
     echo -e "当前 Swap 大小: ${gl_lv}${current_swap} MB${gl_bai}"
     echo -e "磁盘剩余空间: $(df -m / | tail -1 | awk '{print $4}') MB"
-    echo ""
     echo -e "请选择预设大小:"
     echo -e "1. 创建/增加到 1 GB"
     echo -e "2. 创建/增加到 2 GB"
@@ -435,7 +434,7 @@ verify_network_status() {
 }
 
 # ============================================================================
-# 系统信息查询 (恢复原版完整版)
+# 系统信息查询 (原版完整版)
 # ============================================================================
 show_sys_info() {
     while true; do
@@ -629,8 +628,22 @@ sb_manage_menu() {
                 systemctl is-active --quiet sing-box 2>/dev/null && sb_status="${G}运行中 ✅${R}" || sb_status="${Y}已停止${R}"
             else sb_status="${Y}待配置${R}"; fi
         fi
-        echo -e "${G}========================================${R}\n       Sing-Box 落地节点管理          \n${G}========================================${R}\n核心状态: ${sb_status}\n${G}========================================${R}"
-        echo -e "${C}1.${R} 安装/更新 Sing-Box 核心\n${G}2.${R} 添加 VLESS Reality (优选SNI)\n${G}3.${R} 添加 Hysteria2 (优选SNI+端口跳跃)\n${C}4.${R} 添加 AnyTLS (需域名+证书)\n${H}5.${R} 查看节点与链接\n${RED}6.${R} 删除节点\n${H}7.${R} 重启/停止/日志\n${Y}8.${R} 手动开放端口\n${G}========================================${R}\n${H}0.${R} 返回\n${G}========================================${R}"
+        echo -e "${G}========================================${R}"
+        echo -e "       Sing-Box 落地节点管理          "
+        echo -e "${G}========================================${R}"
+        echo -e "核心状态: ${sb_status}"
+        echo -e "${G}========================================${R}"
+        echo -e "${C}1.${R} 安装/更新 Sing-Box 核心"
+        echo -e "${G}2.${R} 添加 VLESS Reality (优选SNI)"
+        echo -e "${G}3.${R} 添加 Hysteria2 (优选SNI+端口跳跃)"
+        echo -e "${C}4.${R} 添加 AnyTLS (需域名+证书)"
+        echo -e "${H}5.${R} 查看节点与链接"
+        echo -e "${RED}6.${R} 删除节点"
+        echo -e "${H}7.${R} 重启/停止/日志"
+        echo -e "${Y}8.${R} 手动开放端口"
+        echo -e "${G}========================================${R}"
+        echo -e "${H}0.${R} 返回"
+        echo -e "${G}========================================${R}"
         read -e -p "选择: " c
         case $c in
             1) echo -e "${C}正在安装...${R}"; if command -v apt >/dev/null 2>&1; then curl -fsSL https://sing-box.app/deb-install.sh | bash; elif command -v yum >/dev/null 2>&1; then curl -fsSL https://sing-box.app/rpm-install.sh | bash; else echo -e "${RED}不支持${R}"; fi; read -rs -n 1 -p "继续..." ;;
@@ -670,7 +683,8 @@ sb_add_reality() {
             _del_node_meta "$port"; read -rs -n 1 -p "按任意键返回..."; return
         fi
         local my_ip; my_ip=$(get_my_ip)
-        echo -e "${G}✅ 成功！${R}\n${B}vless://${uuid}@${my_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&type=tcp#${node_name}${R}"
+        echo -e "${G}✅ 成功！${R}"
+        echo -e "${B}vless://${uuid}@${my_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&type=tcp#${node_name}${R}"
     else
         echo -e "${RED}配置校验失败${R}"; local lb; lb=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$lb" ] && mv "$lb" "$conf"; sing-box check -c "$conf" 2>&1 | head -5
     fi
@@ -678,7 +692,7 @@ sb_add_reality() {
 }
 
 # ============================================================================
-# 添加 Hysteria2 (含端口跳跃 - 修复JSON注入)
+# 添加 Hysteria2 (修复: hop_ports 必须放在 tls 内部，否则sing-box直接报错回滚)
 # ============================================================================
 sb_add_hy2() {
     sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
@@ -713,9 +727,9 @@ sb_add_hy2() {
     local default_name="Hy2-${port}"; read -e -p "名称 (回车默认 ${default_name}): " node_name; [ -z "$node_name" ] && node_name="$default_name"
     sb_init_conf; local conf="/etc/sing-box/config.json"; cp "$conf" "${conf}.bak.$(date +%s)"
 
-    # 使用纯 jq 条件判断注入，绝不手动拼接 JSON 字符串
+    # 核心修复：先写入标准结构，如果有跳跃端口再追加到 .tls 内部
     jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" --arg crt "$crt" --arg key "$key" --arg hp "$hop_ports" \
-       '.inbounds += [{"type":"hysteria2","tag":"hy2-in-\($p)","listen":"::","listen_port":$p,"hop_ports":(if $hp != "" then $hp else null end),"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificate_path":$crt,"key_path":$key}}]' \
+       '.inbounds += [{"type":"hysteria2","tag":"hy2-in-\($p)","listen":"::","listen_port":$p,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificate_path":$crt,"key_path":$key}}] | if $hp != "" then .[-1].tls += {"hop_ports": $hp} else . end' \
        "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
 
     if sing-box check -c "$conf" >/dev/null 2>&1; then
@@ -733,7 +747,8 @@ sb_add_hy2() {
             rm -f "$crt" "$key"; _del_node_meta "$port"; read -rs -n 1 -p "按任意键返回..."; return
         fi
         local my_ip; my_ip=$(get_my_ip)
-        echo -e "${G}✅ 成功！${R}\n${B}hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}${hop_param}#${node_name}${R}"
+        echo -e "${G}✅ 成功！${R}"
+        echo -e "${B}hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}${hop_param}#${node_name}${R}"
         [ -n "$hop_ports" ] && echo -e "${H}注: 跳跃端口 ${hop_ports} 必须在云安全组放行 UDP${R}"
     else
         echo -e "${RED}配置校验失败${R}"; local lb; lb=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$lb" ] && mv "$lb" "$conf"
@@ -747,7 +762,8 @@ sb_add_hy2() {
 # ============================================================================
 sb_add_anytls() {
     sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
-    echo -e "${C}--- 添加 AnyTLS ---${R}\n${Y}⚠ 需自有域名+真实证书 (非Reality)${R}\n"
+    echo -e "${C}--- 添加 AnyTLS ---${R}"
+    echo -e "${Y}⚠ 需自有域名+真实证书 (非Reality)${R}"
     read -e -p "域名 (已A记录解析到本机): " domain
     [ -z "$domain" ] && { echo -e "${RED}不能为空${R}"; read -rs -n 1 -p "按任意键返回..."; return; }
     domain=$(echo "$domain" | sed 's|^https\?://||' | sed 's|/.*||' | tr -d '[:space:]')
@@ -769,7 +785,7 @@ sb_add_anytls() {
             echo -e "${Y}申请证书中 (需80端口)...${R}"; local p80=0
             ss -tlnp | grep -q ":80 " || { open_port 80 "tcp" >/dev/null 2>&1; p80=1; }
             "$acme_sh" --issue -d "$domain" --standalone --httpport 80 >/dev/null 2>&1 && \
-            "$acme_sh" --install-cert -d "$domain" --fullchain-file "$cert_file" --key-file "$key_file" >/dev/null 2>&1 && \
+            "$acme_sh" --install-cert -d "$domain" --fullchain-file "$cert_file" --key_file "$key_file" >/dev/null 2>&1 && \
             [ -f "$cert_file" ] && [ -s "$cert_file" ] && cert_ok=1
             [ "$p80" -eq 1 ] && open_port 80 "tcp" "close" >/dev/null 2>&1
         fi
@@ -793,7 +809,8 @@ sb_add_anytls() {
             local lb; lb=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$lb" ] && mv "$lb" "$conf"; _del_node_meta "$port"; read -rs -n 1 -p "按任意键返回..."; return
         fi
         local my_ip; my_ip=$(get_my_ip); local insecure=""; [ "$is_self_signed" -eq 1 ] && insecure="&insecure=1"
-        echo -e "${G}✅ 成功！${R}\n${B}anytls://${uuid}@${my_ip}:${port}?sni=${domain}&type=tcp${insecure}#${node_name}${R}"
+        echo -e "${G}✅ 成功！${R}"
+        echo -e "${B}anytls://${uuid}@${my_ip}:${port}?sni=${domain}&type=tcp${insecure}#${node_name}${R}"
     else
         echo -e "${RED}校验失败${R}"; local lb; lb=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$lb" ] && mv "$lb" "$conf"; sing-box check -c "$conf" 2>&1 | head -5
     fi
@@ -801,7 +818,7 @@ sb_add_anytls() {
 }
 
 # ============================================================================
-# 查看节点列表 (修复管道变量丢失 + 完美联动meta)
+# 查看节点列表 (修复管道变量丢失问题)
 # ============================================================================
 _show_nodes_list() {
     local conf="/etc/sing-box/config.json" my_ip; my_ip=$(get_my_ip)
@@ -809,7 +826,7 @@ _show_nodes_list() {
     if [ "${cnt:-0}" -eq 0 ] 2>/dev/null; then echo -e "${H}暂无节点${R}"; return 1; fi
     local meta; meta=$(cat "$META_FILE" 2>/dev/null || echo '{}')
     local idx=1
-    # 关键修复：使用进程替换 < <(...) 代替管道 | ，解决 idx 在子shell中无法自增的BUG
+    # 关键修复：使用进程替换 < <(...) 替代管道 | ，解决 idx 在子shell中无法自增BUG
     while IFS= read -r in; do
         local type port node_name link
         type=$(echo "$in" | jq -r '.type')
@@ -823,7 +840,6 @@ _show_nodes_list() {
                 sni=$(echo "$in" | jq -r '.tls.server_name')
                 flow=$(echo "$in" | jq -r '.users[0].flow // empty')
                 pub_key=$(echo "$meta" | jq -r --arg p "$port" '.[$p].pub_key // ""')
-                # 仅当 flow 非空时才拼接到链接
                 [ -n "$flow" ] && flow_param="&flow=${flow}"
                 link="vless://${uuid}@${my_ip}:${port}?encryption=none${flow_param}&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&type=tcp#${node_name}"
                 ;;
@@ -843,7 +859,6 @@ _show_nodes_list() {
                 local pass sni hop_meta hop_param=""
                 pass=$(echo "$in" | jq -r '.users[0].password')
                 sni=$(echo "$in" | jq -r '.tls.server_name')
-                # 完美联动：从 meta 读取跳跃端口
                 hop_meta=$(echo "$meta" | jq -r --arg p "$port" '.[$p].hop_ports // empty')
                 [ -n "$hop_meta" ] && hop_param="&hop=${hop_meta}"
                 link="hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}${hop_param}#${node_name}"
@@ -863,18 +878,22 @@ _show_nodes_list() {
 }
 sb_view_nodes() {
     sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
-    clear; echo -e "${G}========================================\n       当前节点与链接              \n${G}========================================${R}"
-    _show_nodes_list; echo -e "${G}========================================${R}"; read -rs -n 1 -p "按任意键返回..."
+    clear
+    echo -e "${G}========================================${R}"
+    echo -e "       当前节点与链接              "
+    echo -e "${G}========================================${R}"
+    _show_nodes_list
+    echo -e "${G}========================================${R}"
+    read -rs -n 1 -p "按任意键返回..."
 }
 
 # ============================================================================
-# 删除节点 (修复read格式 + 完美联动清理跳跃端口)
+# 删除节点 (完美联动清理跳跃端口)
 # ============================================================================
 sb_del_node() {
     sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
     sb_view_nodes
     local conf="/etc/sing-box/config.json"
-    # 修复原版：read 缺 -p 且引号没闭合
     read -e -p "请输入要删除的节点端口号: " del_port
     
     if ! jq -e --argjson p "$del_port" '.inbounds[] | select(.listen_port == $p) | any' "$conf" >/dev/null 2>&1; then
@@ -884,14 +903,12 @@ sb_del_node() {
     
     local node_type hop_del
     node_type=$(jq -r --argjson p "$del_port" '.inbounds[] | select(.listen_port == $p) | .type' "$conf")
-    # 联动读取跳跃端口
     hop_del=$(jq -r --arg p "$del_port" '.[$p].hop_ports // empty' "$META_FILE" 2>/dev/null)
 
     cp "$conf" "${conf}.bak.$(date +%s)"
     jq --argjson p "$del_port" 'del(.inbounds[] | select(.listen_port == $p))' \
         "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
 
-    # 修复原版：>/dev/null 2>/dev/null 应为 2>&1
     if sing-box check -c "$conf" >/dev/null 2>&1; then
         echo -e "${Y}正在清理防火墙...${R}"
         if [ "$node_type" = "hysteria2" ]; then
@@ -915,7 +932,7 @@ sb_del_node() {
 }
 
 # ============================================================================
-# 内核菜单 & 主菜单
+# 内核菜单 & 主菜单 (彻底修复 echo -e 漏写导致不换行的问题)
 # ============================================================================
 Kernel_optimize() {
     root_use
@@ -923,8 +940,18 @@ Kernel_optimize() {
         clear; local cur="未优化"
         [ -f /etc/sysctl.d/99-yw-optimize.conf ] && cur=$(grep "^# 模式:" /etc/sysctl.d/99-yw-optimize.conf 2>/dev/null | sed 's/^# 模式: //' | awk -F'|' '{print $1}' | xargs)
         local mem_mb; mem_mb=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null)
-        echo -e "${gl_lv}内核调优 (直播特化)${gl_bai}\n当前: ${gl_huang}${cur:-未设置}${gl_bai} | 内存: ${gl_lv}${mem_mb}MB${gl_bai}"
-        echo "--------------------\n1. 直播推流极限 (中转出口/高并发)\n2. 电竞游戏 (8MB防Bufferbloat)\n3. 直连推流 (落地机直接跑推流软件,无中转)\n--------------------\n4. 还原默认\n5. 验证状态\n--------------------\n0. 返回"
+        echo -e "${gl_lv}内核调优 (直播特化)${gl_bai}"
+        echo -e "当前: ${gl_huang}${cur:-未设置}${gl_bai} | 内存: ${gl_lv}${mem_mb}MB${gl_bai}"
+        echo -e "--------------------"
+        echo -e "1. 直播推流极限 (中转出口/高并发)"
+        echo -e "2. 电竞游戏 (8MB防Bufferbloat)"
+        echo -e "3. 直连推流 (落地机直接跑推流软件,无中转)"
+        echo -e "--------------------"
+        echo -e "4. 还原默认"
+        echo -e "5. 验证状态"
+        echo -e "--------------------"
+        echo -e "0. 返回"
+        echo -e "--------------------"
         read -e -p "选择: " sub_choice
         case $sub_choice in
             1) cd ~; clear; _kernel_optimize_core "直播推流极限" "stream" ;;
@@ -942,10 +969,18 @@ main_menu() {
     root_use
     while true; do
         clear
-        echo -e "${gl_kjlan}Linux YW 网络与节点管理${gl_bai}\n--------------------------------------------------"
-        echo -e "  1. 内核调优 (直播/游戏/直连)\n  2. Sing-Box 节点管理\n  3. Swap 管理\n  4. BBRv3 内核\n  5. 系统信息"
-        echo "--------------------------------------------------\n  6. 还原默认\n--------------------------------------------------\n  0. 退出"
-        echo "--------------------------------------------------"
+        echo -e "${gl_kjlan}Linux YW 网络与节点管理${gl_bai}"
+        echo -e "--------------------------------------------------"
+        echo -e "  1. 内核调优 (直播/游戏/直连)"
+        echo -e "  2. Sing-Box 节点管理"
+        echo -e "  3. Swap 管理"
+        echo -e "  4. BBRv3 内核"
+        echo -e "  5. 系统信息"
+        echo -e "--------------------------------------------------"
+        echo -e "  6. 还原默认"
+        echo -e "--------------------------------------------------"
+        echo -e "  0. 退出"
+        echo -e "--------------------------------------------------"
         read -e -p "选项: " main_choice
         case $main_choice in
             1) Kernel_optimize ;; 2) sb_manage_menu ;; 3) change_swap_size ;; 4) bbrv3 ;; 5) show_sys_info ;;
