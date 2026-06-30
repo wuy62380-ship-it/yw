@@ -187,63 +187,12 @@ _kernel_optimize_core() {
     local TCP_SLOW_START_AFTER_IDLE=0 TCP_ECN=0 
 
     case "$scene" in
-        high)
-            SWAPPINESS=10; OVERCOMMIT=1; VFS_PRESSURE=50; DIRTY_RATIO=40; DIRTY_BG_RATIO=10
-            MIN_FREE_KB=131072; RMEM_MAX=134217728; WMEM_MAX=134217728
-            TCP_RMEM="4096 87380 67108864"; TCP_WMEM="4096 65536 67108864"
-            SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"
-            SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=10
-            KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5
-            HIGH_EXTRA=$'vm.dirty_ratio = 40\nvm.dirty_background_ratio = 10'
-            ;;
-        web)
-            SWAPPINESS=10; DIRTY_RATIO=20; DIRTY_BG_RATIO=10; OVERCOMMIT=1; VFS_PRESSURE=50
-            MIN_FREE_KB=131072; RMEM_MAX=67108864; WMEM_MAX=67108864
-            TCP_RMEM="4096 87380 67108864"; TCP_WMEM="4096 65536 67108864"
-            SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"
-            SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=15
-            KEEPALIVE_TIME=120; KEEPALIVE_INTVL=15; KEEPALIVE_PROBES=3 
-            WEB_EXTRA=$'net.ipv4.tcp_max_tw_buckets = 524288\nnet.ipv4.tcp_max_syn_backlog = 16384'
-            ;;
-        stream)
-            SWAPPINESS=10; DIRTY_RATIO=15; DIRTY_BG_RATIO=5; OVERCOMMIT=1; VFS_PRESSURE=50
-            MIN_FREE_KB=131072; RMEM_MAX=134217728; WMEM_MAX=134217728
-            TCP_RMEM="4096 87380 67108864"; TCP_WMEM="4096 65536 67108864"
-            SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"
-            SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=10
-            KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5; UDP_RMEM_MIN=131072
-            STREAM_EXTRA=$'net.ipv4.udp_rmem_min = 131072\nnet.ipv4.udp_wmem_min = 131072\nnet.ipv4.udp_rmem_max = 16777216\nnet.ipv4.udp_wmem_max = 16777216\nnet.core.netdev_budget = 1200\nnet.core.netdev_max_backlog = 500000'
-            ;;
-        game)
-            SWAPPINESS=10; DIRTY_RATIO=10; DIRTY_BG_RATIO=5; OVERCOMMIT=1; VFS_PRESSURE=50
-            MIN_FREE_KB=131072; RMEM_MAX=8388608; WMEM_MAX=8388608 
-            TCP_RMEM="4096 16384 8388608"; TCP_WMEM="4096 16384 8388608"
-            SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"
-            SCHED_AUTOGROUP=0; THP="never"; NUMA=0
-            FIN_TIMEOUT=15 
-            KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5; UDP_RMEM_MIN=131072
-            GAME_EXTRA=$'net.ipv4.udp_rmem_min = 131072\nnet.ipv4.udp_wmem_min = 131072\nnet.core.optmem_max = 20480'
-            ;;
-        gateway)
-            SWAPPINESS=10; DIRTY_RATIO=20; DIRTY_BG_RATIO=10; OVERCOMMIT=1; VFS_PRESSURE=50
-            MIN_FREE_KB=32768
-            RMEM_MAX=8388608; WMEM_MAX=8388608 
-            TCP_RMEM="4096 16384 8388608"; TCP_WMEM="4096 16384 8388608"
-            SOMAXCONN=65535; BACKLOG=100000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"
-            SCHED_AUTOGROUP=0; THP="never"; NUMA=0
-            FIN_TIMEOUT=30
-            KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5; UDP_RMEM_MIN=16384
-            GATEWAY_EXTRA=$'# ── 中转网关专属：保 CPU 算加密，不抢软中断 ──\nnet.core.optmem_max = 20480'
-            ;;
-        balanced)
-            SWAPPINESS=30; DIRTY_RATIO=20; DIRTY_BG_RATIO=10; OVERCOMMIT=0; VFS_PRESSURE=75
-            MIN_FREE_KB=32768; RMEM_MAX=16777216; WMEM_MAX=16777216
-            TCP_RMEM="4096 87380 16777216"; TCP_WMEM="4096 65536 16777216"
-            SOMAXCONN=4096; BACKLOG=5000; SYN_BACKLOG=4096; PORT_RANGE="32768 60999"
-            SCHED_AUTOGROUP=0; THP="always"; NUMA=1; FIN_TIMEOUT=30
-            KEEPALIVE_TIME=600; KEEPALIVE_INTVL=60; KEEPALIVE_PROBES=5; TCP_SLOW_START_AFTER_IDLE=1
-            BALANCED_EXTRA="vm.overcommit_memory = 0"
-            ;;
+        high) SWAPPINESS=10; OVERCOMMIT=1; VFS_PRESSURE=50; DIRTY_RATIO=40; DIRTY_BG_RATIO=10; MIN_FREE_KB=131072; RMEM_MAX=134217728; WMEM_MAX=134217728; TCP_RMEM="4096 87380 67108864"; TCP_WMEM="4096 65536 67108864"; SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"; SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=10; KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5; HIGH_EXTRA=$'vm.dirty_ratio = 40\nvm.dirty_background_ratio = 10' ;;
+        web) SWAPPINESS=10; DIRTY_RATIO=20; DIRTY_BG_RATIO=10; OVERCOMMIT=1; VFS_PRESSURE=50; MIN_FREE_KB=131072; RMEM_MAX=67108864; WMEM_MAX=67108864; TCP_RMEM="4096 87380 67108864"; TCP_WMEM="4096 65536 67108864"; SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"; SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=15; KEEPALIVE_TIME=120; KEEPALIVE_INTVL=15; KEEPALIVE_PROBES=3; WEB_EXTRA=$'net.ipv4.tcp_max_tw_buckets = 524288\nnet.ipv4.tcp_max_syn_backlog = 16384' ;;
+        stream) SWAPPINESS=10; DIRTY_RATIO=15; DIRTY_BG_RATIO=5; OVERCOMMIT=1; VFS_PRESSURE=50; MIN_FREE_KB=131072; RMEM_MAX=134217728; WMEM_MAX=134217728; TCP_RMEM="4096 87380 67108864"; TCP_WMEM="4096 65536 67108864"; SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"; SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=10; KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5; UDP_RMEM_MIN=131072; STREAM_EXTRA=$'net.ipv4.udp_rmem_min = 131072\nnet.ipv4.udp_wmem_min = 131072\nnet.ipv4.udp_rmem_max = 16777216\nnet.ipv4.udp_wmem_max = 16777216\nnet.core.netdev_budget = 1200\nnet.core.netdev_max_backlog = 500000' ;;
+        game) SWAPPINESS=10; DIRTY_RATIO=10; DIRTY_BG_RATIO=5; OVERCOMMIT=1; VFS_PRESSURE=50; MIN_FREE_KB=131072; RMEM_MAX=8388608; WMEM_MAX=8388608; TCP_RMEM="4096 16384 8388608"; TCP_WMEM="4096 16384 8388608"; SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"; SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=15; KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5; UDP_RMEM_MIN=131072; GAME_EXTRA=$'net.ipv4.udp_rmem_min = 131072\nnet.ipv4.udp_wmem_min = 131072\nnet.core.optmem_max = 20480' ;;
+        gateway) SWAPPINESS=10; DIRTY_RATIO=20; DIRTY_BG_RATIO=10; OVERCOMMIT=1; VFS_PRESSURE=50; MIN_FREE_KB=32768; RMEM_MAX=8388608; WMEM_MAX=8388608; TCP_RMEM="4096 16384 8388608"; TCP_WMEM="4096 16384 8388608"; SOMAXCONN=65535; BACKLOG=100000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"; SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=30; KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5; UDP_RMEM_MIN=16384; GATEWAY_EXTRA=$'# ── 中转网关专属：保 CPU 算加密，不抢软中断 ──\nnet.core.optmem_max = 20480' ;;
+        balanced) SWAPPINESS=30; DIRTY_RATIO=20; DIRTY_BG_RATIO=10; OVERCOMMIT=0; VFS_PRESSURE=75; MIN_FREE_KB=32768; RMEM_MAX=16777216; WMEM_MAX=16777216; TCP_RMEM="4096 87380 16777216"; TCP_WMEM="4096 65536 16777216"; SOMAXCONN=4096; BACKLOG=5000; SYN_BACKLOG=4096; PORT_RANGE="32768 60999"; SCHED_AUTOGROUP=0; THP="always"; NUMA=1; FIN_TIMEOUT=30; KEEPALIVE_TIME=600; KEEPALIVE_INTVL=60; KEEPALIVE_PROBES=5; TCP_SLOW_START_AFTER_IDLE=1; BALANCED_EXTRA="vm.overcommit_memory = 0" ;;
         *) echo -e "${gl_red}错误: 未知场景${gl_bai}"; return 1 ;;
     esac
 
@@ -256,33 +205,13 @@ _kernel_optimize_core() {
         MIN_FREE_KB=65536
     elif [ "$MEM_MB_VAL" -ge 1024 ]; then
         MIN_FREE_KB=32768
-        if [ "$scene" != "balanced" ] && [ "$scene" != "game" ] && [ "$scene" != "gateway" ]; then
-            RMEM_MAX=16777216; WMEM_MAX=16777216; TCP_RMEM="4096 87380 16777216"; TCP_WMEM="4096 65536 16777216"
-        fi
-        if [ "$scene" = "game" ] || [ "$scene" = "gateway" ]; then
-            RMEM_MAX=16777216; WMEM_MAX=16777216; TCP_RMEM="4096 32768 16777216"; TCP_WMEM="4096 32768 16777216"
-            GAME_EXTRA=$'net.ipv4.udp_rmem_min = 131072\nnet.ipv4.udp_wmem_min = 131072'
-            GATEWAY_EXTRA=$'# ── 中转网关低内存自适应 ──'
-        fi
+        if [ "$scene" != "balanced" ] && [ "$scene" != "game" ] && [ "$scene" != "gateway" ]; then RMEM_MAX=16777216; WMEM_MAX=16777216; TCP_RMEM="4096 87380 16777216"; TCP_WMEM="4096 65536 16777216"; fi
+        if [ "$scene" = "game" ] || [ "$scene" = "gateway" ]; then RMEM_MAX=16777216; WMEM_MAX=16777216; TCP_RMEM="4096 32768 16777216"; TCP_WMEM="4096 32768 16777216"; GAME_EXTRA=$'net.ipv4.udp_rmem_min = 131072\nnet.ipv4.udp_wmem_min = 131072'; GATEWAY_EXTRA=$'# ── 中转网关低内存自适应 ──'; fi
     else
-        MIN_FREE_KB=16384; OVERCOMMIT=0; SWAPPINESS=10
-        RMEM_MAX=4194304; WMEM_MAX=4194304; SOMAXCONN=1024; BACKLOG=1000
-        TCP_RMEM="4096 32768 4194304"; TCP_WMEM="4096 32768 4194304"
-        HIGH_EXTRA=""; WEB_EXTRA=""; STREAM_EXTRA=""; GAME_EXTRA=""; BALANCED_EXTRA=""; GATEWAY_EXTRA=""
-        if [ -f /sys/module/zswap/parameters/enabled ]; then
-            echo N > /sys/module/zswap/parameters/enabled 2>/dev/null
-        fi
-        if [ "$HAS_SWAP" -gt 0 ]; then
-            SWAPPINESS=60 
-            echo -e "${gl_huang}检测极小内存(${MEM_MB_VAL}MB)，已自动禁用 zswap 防卡死。${gl_bai}"
-            echo -e "${gl_lv}建议: 自动为您部署 zram 内存压缩盘...${gl_bai}"
-            auto_setup_zram
-        else
-            echo -e "${gl_red}检测极小内存(${MEM_MB_VAL}MB)无Swap！已强制降级防死机。${gl_bai}"
-            echo -e "${gl_lv}建议: 自动为您创建基础 Swap 并部署 zram...${gl_bai}"
-            check_swap
-            auto_setup_zram
-        fi
+        MIN_FREE_KB=16384; OVERCOMMIT=0; SWAPPINESS=10; RMEM_MAX=4194304; WMEM_MAX=4194304; SOMAXCONN=1024; BACKLOG=1000; TCP_RMEM="4096 32768 4194304"; TCP_WMEM="4096 32768 4194304"; HIGH_EXTRA=""; WEB_EXTRA=""; STREAM_EXTRA=""; GAME_EXTRA=""; BALANCED_EXTRA=""; GATEWAY_EXTRA=""
+        if [ -f /sys/module/zswap/parameters/enabled ]; then echo N > /sys/module/zswap/parameters/enabled 2>/dev/null; fi
+        if [ "$HAS_SWAP" -gt 0 ]; then SWAPPINESS=60; echo -e "${gl_huang}检测极小内存(${MEM_MB_VAL}MB)，已自动禁用 zswap 防卡死。${gl_bai}"; echo -e "${gl_lv}建议: 自动为您部署 zram 内存压缩盘...${gl_bai}"; auto_setup_zram
+        else echo -e "${gl_red}检测极小内存(${MEM_MB_VAL}MB)无Swap！已强制降级防死机。${gl_bai}"; echo -e "${gl_lv}建议: 自动为您创建基础 Swap 并部署 zram...${gl_bai}"; check_swap; auto_setup_zram; fi
     fi
 
     local KVER=$(uname -r | grep -oP '^\d+\.\d+')
@@ -427,220 +356,15 @@ EOF
 }
 
 # ============================================================================
-# BBRv3 Management
+# BBRv3 / System Info / Restore (为节省篇幅合并简化结构，功能完全一致)
 # ============================================================================
-
-xanmod_add_repo() {
-    local keyring="/usr/share/keyrings/xanmod-archive-keyring.gpg"
-    local list_file="/etc/apt/sources.list.d/xanmod-release.list"
-    local os_codename=""
-    if command -v lsb_release >/dev/null 2>&1; then os_codename=$(lsb_release -sc)
-    elif [ -r /etc/os-release ]; then os_codename=$(. /etc/os-release && echo "$VERSION_CODENAME"); fi
-    if ! echo "bookworm trixie forky sid noble plucky" | grep -qw "$os_codename"; then os_codename="releases"; fi
-    if echo "jammy focal bullseye buster releases" | grep -qw "$os_codename"; then echo -e "${gl_hong}XanMod 已停止对当前系统($os_codename)支持${gl_bai}"; return 1; fi
-    [ -z "$os_codename" ] && { echo "无法获取代号"; return 1; }
-    install wget gnupg ca-certificates || return 1
-    mkdir -p /usr/share/keyrings /etc/apt/sources.list.d
-    wget -qO - "https://dl.xanmod.org/archive.key" | gpg --dearmor -o "$keyring" --yes 2>/dev/null
-    chmod 644 "$keyring"
-    echo "deb [signed-by=$keyring] http://deb.xanmod.org $os_codename main" > "$list_file"
-}
-
-xanmod_detect_package() {
-    local psabi_level=$(awk 'BEGIN{ while(!/flags/) if(getline<"/proc/cpuinfo"!=1) exit 1; if(/lm/&&/cmov/&&/cx8/&&/fpu/&&/fxsr/&&/mmx/&&/syscall/&&/sse2/) level=1; if(level==1&&/cx16/&&/lahf/&&/popcnt/&&/sse4_1/&&/sse4_2/&&/ssse3/) level=2; if(level==2&&/avx/&&/avx2/&&/bmi1/&&/bmi2/&&/f16c/&&/fma/&&/abm/&&/movbe/&&/xsave/) level=3; if(level>0){print level;exit}}' /proc/cpuinfo 2>/dev/null) || return 1
-    [ "$psabi_level" -gt 3 ] && psabi_level=3
-    apt update -y >/dev/null 2>&1
-    for prefix in linux-xanmod linux-xanmod-lts; do local l="$psabi_level"; while [ "$l" -ge 1 ]; do local p="${prefix}-x64v${l}"; if apt-cache policy "$p" 2>/dev/null | grep -q 'Candidate: [^ ]'; then printf '%s\n' "$p"; return 0; fi; l=$((l-1)); done; done
-    return 1
-}
-
-bbrv3() {
-    root_use
-    if [ "$(uname -m)" = "aarch64" ]; then bash <(curl -sL jhb.ovh/jb/bbrv3arm.sh); return 0; fi
-    if [ -r /etc/os-release ]; then . /etc/os-release; if [ "$ID" != "debian" ] && [ "$ID" != "ubuntu" ]; then echo "仅支持Debian/Ubuntu"; return 0; fi; else return 0; fi
-    if dpkg-query -W -f='${Package}\n' 'linux-*xanmod*' 2>/dev/null | grep -q '^linux-.*xanmod'; then
-        while true; do clear; echo "当前: $(uname -r)\n1.更新 2.卸载 0.返回"; read -e -p "选择: " c; case $c in 1) check_disk_space 3 && check_swap && xanmod_add_repo && apt update -y && apt install -y --only-upgrade $(xanmod_detect_package) && bbr_on && server_reboot ;; 2) apt purge -y 'linux-*xanmod*' && apt autoremove -y && update-grub && rm -f /etc/apt/sources.list.d/xanmod-release.list && server_reboot ;; *) break ;; esac; done
-    else
-        clear; echo "设置BBR3 (仅Debian/Ubuntu)"; read -e -p "继续？: " c; [[ "$c" =~ ^[Yy]$ ]] && check_disk_space 3 && check_swap && xanmod_add_repo && apt update -y && apt install -y $(xanmod_detect_package) && bbr_on && server_reboot
-    fi
-}
-
-restore_defaults() {
-    echo -e "${gl_lv}还原中...${gl_bai}"; rm -f /etc/sysctl.d/99-yw-optimize.conf /etc/sysctl.d/99-network-optimize.conf
-    sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf 2>/dev/null; sysctl --system >/dev/null 2>&1
-    [ -f /sys/kernel/mm/transparent_hugepage/enabled ] && echo always > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null
-    sed -i '/# YW-optimize/,+4d' /etc/security/limits.conf 2>/dev/null
-    if [ -f /sys/module/zswap/parameters/enabled ]; then
-        echo N > /sys/module/zswap/parameters/enabled 2>/dev/null
-    fi
-    sed -i '/vm.zswap.enabled/d' /etc/sysctl.conf 2>/dev/null
-    if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled zramswap >/dev/null 2>&1; then
-        echo -e "${gl_huang}检测到由脚本部署的 zram，正在停止并取消开机自启...${gl_bai}"
-        systemctl stop zramswap >/dev/null 2>&1
-        systemctl disable zramswap >/dev/null 2>&1
-    fi
-    echo -e "${gl_lv}已还原所有设置（包括禁用 zram）${gl_bai}"
-}
-
-verify_network_status() {
-    clear
-    local rmem=$(sysctl -n net.core.rmem_max 2>/dev/null)
-    local mode="未知"
-    case $rmem in
-        8388608) 
-            if sysctl -n net.ipv4.tcp_keepalive_time 2>/dev/null | grep -q "300"; then mode="中转网关模式 (8MB 防止卡顿+保隧道)"
-            else mode="电竞级游戏模式 (8MB 绝杀缓冲)"
-            fi ;;
-        16777216) mode="通用游戏/中等内存 (16MB)" ;;
-        4194304) mode="极限低内存保护 (4MB)" ;;
-        67108864|134217728) 
-            if sysctl -n net.core.netdev_budget 2>/dev/null | grep -q "1200"; then mode="直播推流模式 (64MB + 软中断加速)"
-            elif sysctl -n vm.dirty_ratio 2>/dev/null | grep -q "40"; then mode="高性能下载模式 (64MB + IO聚簇)"
-            else mode="高并发网站模式 (64MB + 极限TW池)"
-            fi ;;
-    esac
-    echo -e "${gl_huang}========================================\n       智能模式识别验证\n========================================${gl_bai}"
-    echo -e "算法: $(sysctl -n net.ipv4.tcp_congestion_control) | 队列: $(sysctl -n net.core.default_qdisc)"
-    echo -e "防抖(ECN): $(sysctl -n net.ipv4.tcp_ecn) | 慢启动: $(sysctl -n net.ipv4.tcp_slow_start_after_idle)"
-    echo -e "最大TCP缓冲: $((rmem/1024/1024))MB"
-    echo -e ">>> 智能鉴定结果: ${gl_lv}${mode}${gl_bai}"
-    echo -e "${gl_huang}========================================${gl_bai}"
-}
-
-# ============================================================================
-# System Info Function
-# ============================================================================
-
-show_sys_info() {
-    while true; do
-        send_stats "系统信息查询"
-        local cpu_info=$(lscpu 2>/dev/null | awk -F':' '/Model name:/ {print $2}' | sed 's/^[ \t]*//')
-        local cpu_usage_percent=$(awk '{u=$2+$4; t=$2+$4+$5; if (NR==1){u1=u; t1=t;} else printf "%.0f\n", (($2+$4-u1) * 100 / (t-t1))}' <(grep 'cpu ' /proc/stat) <(sleep 1; grep 'cpu ' /proc/stat))
-        local cpu_cores=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo)
-        local cpu_freq=$(grep "MHz" /proc/cpuinfo 2>/dev/null | head -n 1 | awk '{printf "%.1f GHz\n", $4/1000}')
-        local mem_total_mb=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo)
-        local mem_avail_mb=$(awk '/MemAvailable/{printf "%d", $2/1024}' /proc/meminfo)
-        local mem_used_mb=$((mem_total_mb - mem_avail_mb))
-        local mem_percent=$(awk "BEGIN{printf \"%.1f\", ${mem_used_mb}*100/${mem_total_mb}}")
-        local mem_info="${mem_avail_mb}M/${mem_total_mb}M (${mem_percent}%)"
-        local disk_info=$(df -h / | awk 'NR==2{printf "%s/%s (%s)", $3, $2, $5}')
-        echo -ne "${gl_hui}正在获取外网IP信息(超时3秒自动跳过)...${gl_bai}\r"
-        local ipinfo=$(curl -s --connect-timeout 2 --max-time 3 ipinfo.io 2>/dev/null || echo "{}")
-        local country=$(echo "$ipinfo" | awk -F'"' '/country/{print $4}')
-        local city=$(echo "$ipinfo" | awk -F'"' '/city/{print $4}')
-        local isp_info=$(echo "$ipinfo" | awk -F'"' '/org/{print $4}')
-        local load=$(uptime | awk '{print $(NF-2), $(NF-1), $NF}')
-        local dns_addresses=$(awk '/^nameserver/{printf "%s ", $2 } END {print ""}' /etc/resolv.conf)
-        local cpu_arch=$(uname -m)
-        local hostname_val=$(uname -n)
-        local kernel_version=$(uname -r)
-        local congestion_algorithm=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
-        local queue_algorithm=$(sysctl -n net.core.default_qdisc 2>/dev/null)
-        local os_info=$(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d '=' -f2 | tr -d '"')
-        local current_time=$(date "+%Y-%m-%d %I:%M %p")
-        local swap_total_mb=$(awk '/SwapTotal/{printf "%d", $2/1024}' /proc/meminfo)
-        local swap_avail_mb=$(awk '/SwapFree/{printf "%d", $2/1024}' /proc/meminfo)
-        local swap_used_mb=$((swap_total_mb - swap_avail_mb))
-        local swap_percent="0%"
-        [ "$swap_total_mb" -gt 0 ] && swap_percent=$(awk "BEGIN{printf \"%d%%\", ${swap_used_mb}*100/${swap_total_mb}}")
-        local swap_info="${swap_used_mb}M/${swap_total_mb}M (${swap_percent}%)"
-        local runtime=$(cat /proc/uptime 2>/dev/null | awk -F. '{run_days=int($1 / 86400);run_hours=int(($1 % 86400) / 3600);run_minutes=int(($1 % 3600) / 60); if (run_days > 0) printf("%d天 ", run_days); if (run_hours > 0) printf("%d时 ", run_hours); printf("%d分\n", run_minutes)}')
-        local timezone=$(cat /etc/timezone 2>/dev/null || echo "Unknown")
-        local tcp_count=$(ss -t state established 2>/dev/null | wc -l)
-        local udp_count=$(ss -u state established 2>/dev/null | wc -l)
-        local rx=$(awk 'NR>2 && $1 !~ /^lo:/ && $1 !~ /^sit/ {gsub(/:/,""); a+=$2} END{print a+0}' /proc/net/dev)
-        local tx=$(awk 'NR>2 && $1 !~ /^lo:/ && $1 !~ /^sit/ {gsub(/:/,""); a+=$10} END{print a+0}' /proc/net/dev)
-        local rx_gb=$(awk "BEGIN{printf \"%.2f\", ${rx}/1024/1024/1024/1024}")
-        local tx_gb=$(awk "BEGIN{printf \"%.2f\", ${tx}/1024/1024/1024/1024}")
-        local ipv4_addr=$(ip -4 addr 2>/dev/null | grep inet | grep -v "127.0.0.1" | awk '{print $2}' | head -1)
-        local ipv6_addr=$(ip -6 addr 2>/dev/null | grep inet6 | grep -v "::1" | awk '{print $2}' | head -1)
-        clear
-        echo -e "${gl_kjlan}系统信息查询${gl_bai}"
-        echo -e "${gl_kjlan}=============="
-        echo -e "${gl_kjlan}主机名:         ${gl_bai}${hostname_val}"
-        echo -e "${gl_kjlan}系统版本:       ${gl_bai}${os_info}"
-        echo -e "${gl_kjlan}Linux版本:      ${gl_bai}${kernel_version}"
-        echo -e "${gl_kjlan}=============="
-        echo -e "${gl_kjlan}CPU架构:        ${gl_bai}${cpu_arch}"
-        echo -e "${gl_kjlan}CPU型号:        ${gl_bai}${cpu_info}"
-        echo -e "${gl_kjlan}CPU核心数:      ${gl_bai}${cpu_cores}"
-        echo -e "${gl_kjlan}CPU频率:        ${gl_bai}${cpu_freq}"
-        echo -e "${gl_kjlan}=============="
-        echo -e "${gl_kjlan}CPU占用:        ${gl_bai}${cpu_usage_percent}%"
-        echo -e "${gl_kjlan}系统负载:       ${gl_bai}${load}"
-        echo -e "${gl_kjlan}TCP|UDP连接数:  ${gl_bai}${tcp_count}|${udp_count}"
-        echo -e "${gl_kjlan}物理内存:       ${gl_bai}${mem_info}"
-        echo -e "${gl_kjlan}虚拟内存:       ${gl_bai}${swap_info}"
-        echo -e "${gl_kjlan}硬盘占用:       ${gl_bai}${disk_info}"
-        echo -e "${gl_kjlan}=============="
-        echo -e "${gl_kjlan}总接收:         ${gl_bai}${rx_gb}G"
-        echo -e "${gl_kjlan}总发送:         ${gl_bai}${tx_gb}G"
-        echo -e "${gl_kjlan}=============="
-        echo -e "${gl_kjlan}网络算法:       ${gl_bai}${congestion_algorithm:-N/A} ${queue_algorithm:-N/A}"
-        echo -e "${gl_kjlan}=============="
-        echo -e "${gl_kjlan}运营商:         ${gl_bai}${isp_info}"
-        [ -n "${ipv4_addr}" ] && echo -e "${gl_kjlan}IPv4地址:       ${gl_bai}${ipv4_addr}"
-        [ -n "${ipv6_addr}" ] && echo -e "${gl_kjlan}IPv6地址:       ${gl_bai}${ipv6_addr}"
-        echo -e "${gl_kjlan}DNS地址:        ${gl_bai}${dns_addresses}"
-        echo -e "${gl_kjlan}地理位置:       ${gl_bai}${country} ${city}"
-        echo -e "${gl_kjlan}系统时间:       ${gl_bai}${timezone} ${current_time}"
-        echo -e "${gl_kjlan}=============="
-        echo -e "${gl_kjlan}运行时长:       ${gl_bai}${runtime}"
-        echo -e "${gl_kjlan}=============="
-        echo -e "${gl_huang}0. 返回主菜单"
-        echo -e "${gl_huang}=============="
-        read -e -p "请输入选择: " menu_choice
-        case "$menu_choice" in 0|"") break ;; *) break ;; esac
-    done
-    return 0
-}
-
-# ============================================================================
-# Interactive Menu
-# ============================================================================
-
-Kernel_optimize() {
-    root_use
-    while true; do
-        clear
-        local cur="未优化"
-        [ -f /etc/sysctl.d/99-yw-optimize.conf ] && cur=$(grep "^# 模式:" /etc/sysctl.d/99-yw-optimize.conf 2>/dev/null | sed 's/^# 模式: //' | awk -F'|' '{print $1}' | xargs)
-        echo -e "${gl_lv}Linux系统内核参数优化${gl_bai}"
-        echo "------------------------------------------------"
-        echo -e "当前模式: ${gl_huang}${cur:-系统优化已启用}${gl_bai}"
-        echo -e "提供多种系统参数调优模式，用户可以根据自身使用场景进行选择切换。"
-        echo -e "${gl_huang}提示: ${gl_bai}生产环境请谨慎使用！"
-        echo -e "--------------------"
-        echo -e "1. 高性能优化模式：     极限IO聚簇写回，吞吐拉满"
-        echo -e "2. 均衡优化模式：       稳定至上，内存安全锁"
-        echo -e "3. 网站优化模式：       极限TW池，抗大促并发"
-        echo -e "4. 直播优化模式：       UDP极限拉爆+网卡软中断狂暴"
-        echo -e "5. 游戏服优化模式：     8MB电竞级TCP防Bufferbloat"
-        echo -e "6. 中转网关模式：       专精V2Ray/SS加密中转防卡顿 ${gl_huang}★${gl_bai}"
-        echo -e "7. 还原默认设置：       将系统设置还原为默认配置。"
-        echo -e "8. 自动调优：           根据测试数据自动调优内核参数。${gl_huang}★${gl_bai}"
-        echo -e "9. 释放内存缓存：      强制清理系统 Cache (谨慎使用)"
-        echo -e "10. 验证当前网络状态：  查看内核参数是否生效 ${gl_huang}★${gl_bai}"
-        echo "--------------------"
-        echo "0. 返回主菜单"
-        echo "--------------------"
-        read -e -p "请输入你的选择: " sub_choice
-        case $sub_choice in
-            1) cd ~; clear; tiaoyou_moshi="高性能优化模式"; _kernel_optimize_core "$tiaoyou_moshi" "high" ;;
-            2) cd ~; clear; _kernel_optimize_core "均衡优化模式" "balanced" ;;
-            3) cd ~; clear; tiaoyou_moshi="网站优化模式"; _kernel_optimize_core "$tiaoyou_moshi" "web" ;;
-            4) cd ~; clear; tiaoyou_moshi="直播优化模式"; _kernel_optimize_core "$tiaoyou_moshi" "stream" ;;
-            5) cd ~; clear; tiaoyou_moshi="游戏服优化模式"; _kernel_optimize_core "$tiaoyou_moshi" "game" ;;
-            6) cd ~; clear; tiaoyou_moshi="中转网关模式"; _kernel_optimize_core "$tiaoyou_moshi" "gateway" ;;
-            7) cd ~; clear; restore_defaults ;;
-            8) echo -e "${gl_huang}即将拉取并执行远程网络优化脚本..."; read -e -p "按回车键继续，或按 Ctrl+C 取消: "; curl -sS ${gh_proxy}raw.githubusercontent.com/YW/sh/refs/heads/main/network-optimize.sh | bash ;;
-            9) echo -e "${gl_red}警告：强制释放内存缓存可能导致短暂 IO 抖动，生产环境请谨慎！${gl_bai}"; read -e -p "确定要执行 echo 3 > /proc/sys/vm/drop_caches 吗？: " drop_choice; if [[ "$drop_choice" =~ ^[Yy]$ ]]; then sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null && echo -e "${gl_lv}✅ 内存缓存已释放${gl_bai}"; else echo "已取消"; fi; read -rs -n 1 -p "按任意键继续..." ;;
-            10) verify_network_status; read -rs -n 1 -p "按任意键返回菜单..." ;;
-            0|"") break ;;
-            *) echo -e "${gl_red}无效的选择${gl_bai}" ; read -rs -n 1 -p "按任意键继续..." ;;
-        esac
-    done
-}
+xanmod_add_repo() { local keyring="/usr/share/keyrings/xanmod-archive-keyring.gpg" list_file="/etc/apt/sources.list.d/xanmod-release.list" os_codename=""; if command -v lsb_release >/dev/null 2>&1; then os_codename=$(lsb_release -sc); elif [ -r /etc/os-release ]; then os_codename=$(. /etc/os-release && echo "$VERSION_CODENAME"); fi; if ! echo "bookworm trixie forky sid noble plucky" | grep -qw "$os_codename"; then os_codename="releases"; fi; if echo "jammy focal bullseye buster releases" | grep -qw "$os_codename"; then echo -e "${gl_hong}XanMod 已停止对当前系统($os_codename)支持${gl_bai}"; return 1; fi; [ -z "$os_codename" ] && { echo "无法获取代号"; return 1; }; install wget gnupg ca-certificates || return 1; mkdir -p /usr/share/keyrings /etc/apt/sources.list.d; wget -qO - "https://dl.xanmod.org/archive.key" | gpg --dearmor -o "$keyring" --yes 2>/dev/null; chmod 644 "$keyring"; echo "deb [signed-by=$keyring] http://deb.xanmod.org $os_codename main" > "$list_file"; }
+xanmod_detect_package() { local psabi_level=$(awk 'BEGIN{ while(!/flags/) if(getline<"/proc/cpuinfo"!=1) exit 1; if(/lm/&&/cmov/&&/cx8/&&/fpu/&&/fxsr/&&/mmx/&&/syscall/&&/sse2/) level=1; if(level==1&&/cx16/&&/lahf/&&/popcnt/&&/sse4_1/&&/sse4_2/&&/ssse3/) level=2; if(level==2&&/avx/&&/avx2/&&/bmi1/&&/bmi2/&&/f16c/&&/fma/&&/abm/&&/movbe/&&/xsave/) level=3; if(level>0){print level;exit}}' /proc/cpuinfo 2>/dev/null) || return 1; [ "$psabi_level" -gt 3 ] && psabi_level=3; apt update -y >/dev/null 2>&1; for prefix in linux-xanmod linux-xanmod-lts; do local l="$psabi_level"; while [ "$l" -ge 1 ]; do local p="${prefix}-x64v${l}"; if apt-cache policy "$p" 2>/dev/null | grep -q 'Candidate: [^ ]'; then printf '%s\n' "$p"; return 0; fi; l=$((l-1)); done; done; return 1; }
+bbrv3() { root_use; if [ "$(uname -m)" = "aarch64" ]; then bash <(curl -sL jhb.ovh/jb/bbrv3arm.sh); return 0; fi; if [ -r /etc/os-release ]; then . /etc/os-release; if [ "$ID" != "debian" ] && [ "$ID" != "ubuntu" ]; then echo "仅支持Debian/Ubuntu"; return 0; fi; else return 0; fi; if dpkg-query -W -f='${Package}\n' 'linux-*xanmod*' 2>/dev/null | grep -q '^linux-.*xanmod'; then while true; do clear; echo "当前: $(uname -r)\n1.更新 2.卸载 0.返回"; read -e -p "选择: " c; case $c in 1) check_disk_space 3 && check_swap && xanmod_add_repo && apt update -y && apt install -y --only-upgrade $(xanmod_detect_package) && bbr_on && server_reboot ;; 2) apt purge -y 'linux-*xanmod*' && apt autoremove -y && update-grub && rm -f /etc/apt/sources.list.d/xanmod-release.list && server_reboot ;; *) break ;; esac; done; else clear; echo "设置BBR3 (仅Debian/Ubuntu)"; read -e -p "继续？: " c; [[ "$c" =~ ^[Yy]$ ]] && check_disk_space 3 && check_swap && xanmod_add_repo && apt update -y && apt install -y $(xanmod_detect_package) && bbr_on && server_reboot; fi; }
+restore_defaults() { echo -e "${gl_lv}还原中...${gl_bai}"; rm -f /etc/sysctl.d/99-yw-optimize.conf /etc/sysctl.d/99-network-optimize.conf; sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf 2>/dev/null; sysctl --system >/dev/null 2>&1; [ -f /sys/kernel/mm/transparent_hugepage/enabled ] && echo always > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null; sed -i '/# YW-optimize/,+4d' /etc/security/limits.conf 2>/dev/null; if [ -f /sys/module/zswap/parameters/enabled ]; then echo N > /sys/module/zswap/parameters/enabled 2>/dev/null; fi; sed -i '/vm.zswap.enabled/d' /etc/sysctl.conf 2>/dev/null; if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled zramswap >/dev/null 2>&1; then echo -e "${gl_huang}检测到由脚本部署的 zram，正在停止并取消开机自启...${gl_bai}"; systemctl stop zramswap >/dev/null 2>&1; systemctl disable zramswap >/dev/null 2>&1; fi; echo -e "${gl_lv}已还原所有设置（包括禁用 zram）${gl_bai}"; }
+verify_network_status() { clear; local rmem=$(sysctl -n net.core.rmem_max 2>/dev/null) mode="未知"; case $rmem in 8388608) if sysctl -n net.ipv4.tcp_keepalive_time 2>/dev/null | grep -q "300"; then mode="中转网关模式 (8MB 防止卡顿+保隧道)"; else mode="电竞级游戏模式 (8MB 绝杀缓冲)"; fi ;; 16777216) mode="通用游戏/中等内存 (16MB)" ;; 4194304) mode="极限低内存保护 (4MB)" ;; 67108864|134217728) if sysctl -n net.core.netdev_budget 2>/dev/null | grep -q "1200"; then mode="直播推流模式 (64MB + 软中断加速)"; elif sysctl -n vm.dirty_ratio 2>/dev/null | grep -q "40"; then mode="高性能下载模式 (64MB + IO聚簇)"; else mode="高并发网站模式 (64MB + 极限TW池)"; fi ;; esac; echo -e "${gl_huang}========================================\n       智能模式识别验证\n========================================${gl_bai}"; echo -e "算法: $(sysctl -n net.ipv4.tcp_congestion_control) | 队列: $(sysctl -n net.core.default_qdisc)"; echo -e "防抖(ECN): $(sysctl -n net.ipv4.tcp_ecn) | 慢启动: $(sysctl -n net.ipv4.tcp_slow_start_after_idle)"; echo -e "最大TCP缓冲: $((rmem/1024/1024))MB"; echo -e ">>> 智能鉴定结果: ${gl_lv}${mode}${gl_bai}"; echo -e "${gl_huang}========================================${gl_bai}"; }
+show_sys_info() { while true; do send_stats "系统信息查询"; local cpu_info=$(lscpu 2>/dev/null | awk -F':' '/Model name:/ {print $2}' | sed 's/^[ \t]*//'); local cpu_usage_percent=$(awk '{u=$2+$4; t=$2+$4+$5; if (NR==1){u1=u; t1=t;} else printf "%.0f\n", (($2+$4-u1) * 100 / (t-t1))}' <(grep 'cpu ' /proc/stat) <(sleep 1; grep 'cpu ' /proc/stat)); local cpu_cores=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo); local cpu_freq=$(grep "MHz" /proc/cpuinfo 2>/dev/null | head -n 1 | awk '{printf "%.1f GHz\n", $4/1000}'); local mem_total_mb=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo); local mem_avail_mb=$(awk '/MemAvailable/{printf "%d", $2/1024}' /proc/meminfo); local mem_used_mb=$((mem_total_mb - mem_avail_mb)); local mem_percent=$(awk "BEGIN{printf \"%.1f\", ${mem_used_mb}*100/${mem_total_mb}}"); local mem_info="${mem_avail_mb}M/${mem_total_mb}M (${mem_percent}%)"; local disk_info=$(df -h / | awk 'NR==2{printf "%s/%s (%s)", $3, $2, $5}'); echo -ne "${gl_hui}正在获取外网IP信息(超时3秒自动跳过)...${gl_bai}\r"; local ipinfo=$(curl -s --connect-timeout 2 --max-time 3 ipinfo.io 2>/dev/null || echo "{}"); local country=$(echo "$ipinfo" | awk -F'"' '/country/{print $4}'); local city=$(echo "$ipinfo" | awk -F'"' '/city/{print $4}'); local isp_info=$(echo "$ipinfo" | awk -F'"' '/org/{print $4}'); local load=$(uptime | awk '{print $(NF-2), $(NF-1), $NF}'); local dns_addresses=$(awk '/^nameserver/{printf "%s ", $2 } END {print ""}' /etc/resolv.conf); local cpu_arch=$(uname -m); local hostname_val=$(uname -n); local kernel_version=$(uname -r); local congestion_algorithm=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null); local queue_algorithm=$(sysctl -n net.core.default_qdisc 2>/dev/null); local os_info=$(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d '=' -f2 | tr -d '"'); local current_time=$(date "+%Y-%m-%d %I:%M %p"); local swap_total_mb=$(awk '/SwapTotal/{printf "%d", $2/1024}' /proc/meminfo); local swap_avail_mb=$(awk '/SwapFree/{printf "%d", $2/1024}' /proc/meminfo); local swap_used_mb=$((swap_total_mb - swap_avail_mb)); local swap_percent="0%"; [ "$swap_total_mb" -gt 0 ] && swap_percent=$(awk "BEGIN{printf \"%d%%\", ${swap_used_mb}*100/${swap_total_mb}}"); local swap_info="${swap_used_mb}M/${swap_total_mb}M (${swap_percent}%)"; local runtime=$(cat /proc/uptime 2>/dev/null | awk -F. '{run_days=int($1 / 86400);run_hours=int(($1 % 86400) / 3600);run_minutes=int(($1 % 3600) / 60); if (run_days > 0) printf("%d天 ", run_days); if (run_hours > 0) printf("%d时 ", run_hours); printf("%d分\n", run_minutes)}'); local timezone=$(cat /etc/timezone 2>/dev/null || echo "Unknown"); local tcp_count=$(ss -t state established 2>/dev/null | wc -l); local udp_count=$(ss -u state established 2>/dev/null | wc -l); local rx=$(awk 'NR>2 && $1 !~ /^lo:/ && $1 !~ /^sit/ {gsub(/:/,""); a+=$2} END{print a+0}' /proc/net/dev); local tx=$(awk 'NR>2 && $1 !~ /^lo:/ && $1 !~ /^sit/ {gsub(/:/,""); a+=$10} END{print a+0}' /proc/net/dev); local rx_gb=$(awk "BEGIN{printf \"%.2f\", ${rx}/1024/1024/1024/1024}"); local tx_gb=$(awk "BEGIN{printf \"%.2f\", ${tx}/1024/1024/1024/1024}"); local ipv4_addr=$(ip -4 addr 2>/dev/null | grep inet | grep -v "127.0.0.1" | awk '{print $2}' | head -1); local ipv6_addr=$(ip -6 addr 2>/dev/null | grep inet6 | grep -v "::1" | awk '{print $2}' | head -1); clear; echo -e "${gl_kjlan}系统信息查询${gl_bai}"; echo -e "${gl_kjlan}=============="; echo -e "${gl_kjlan}主机名:         ${gl_bai}${hostname_val}"; echo -e "${gl_kjlan}系统版本:       ${gl_bai}${os_info}"; echo -e "${gl_kjlan}Linux版本:      ${gl_bai}${kernel_version}"; echo -e "${gl_kjlan}=============="; echo -e "${gl_kjlan}CPU架构:        ${gl_bai}${cpu_arch}"; echo -e "${gl_kjlan}CPU型号:        ${gl_bai}${cpu_info}"; echo -e "${gl_kjlan}CPU核心数:      ${gl_bai}${cpu_cores}"; echo -e "${gl_kjlan}CPU频率:        ${gl_bai}${cpu_freq}"; echo -e "${gl_kjlan}=============="; echo -e "${gl_kjlan}CPU占用:        ${gl_bai}${cpu_usage_percent}%"; echo -e "${gl_kjlan}系统负载:       ${gl_bai}${load}"; echo -e "${gl_kjlan}TCP|UDP连接数:  ${gl_bai}${tcp_count}|${udp_count}"; echo -e "${gl_kjlan}物理内存:       ${gl_bai}${mem_info}"; echo -e "${gl_kjlan}虚拟内存:       ${gl_bai}${swap_info}"; echo -e "${gl_kjlan}硬盘占用:       ${gl_bai}${disk_info}"; echo -e "${gl_kjlan}=============="; echo -e "${gl_kjlan}总接收:         ${gl_bai}${rx_gb}G"; echo -e "${gl_kjlan}总发送:         ${gl_bai}${tx_gb}G"; echo -e "${gl_kjlan}=============="; echo -e "${gl_kjlan}网络算法:       ${gl_bai}${congestion_algorithm:-N/A} ${queue_algorithm:-N/A}"; echo -e "${gl_kjlan}=============="; echo -e "${gl_kjlan}运营商:         ${gl_bai}${isp_info}"; [ -n "${ipv4_addr}" ] && echo -e "${gl_kjlan}IPv4地址:       ${gl_bai}${ipv4_addr}"; [ -n "${ipv6_addr}" ] && echo -e "${gl_kjlan}IPv6地址:       ${gl_bai}${ipv6_addr}"; echo -e "${gl_kjlan}DNS地址:        ${gl_bai}${dns_addresses}"; echo -e "${gl_kjlan}地理位置:       ${gl_bai}${country} ${city}"; echo -e "${gl_kjlan}系统时间:       ${gl_bai}${timezone} ${current_time}"; echo -e "${gl_kjlan}=============="; echo -e "${gl_kjlan}运行时长:       ${gl_bai}${runtime}"; echo -e "${gl_kjlan}=============="; echo -e "${gl_huang}0. 返回主菜单"; echo -e "${gl_huang}=============="; read -e -p "请输入选择: " menu_choice; case "$menu_choice" in 0|"") break ;; *) break ;; esac; done; return 0; }
+Kernel_optimize() { root_use; while true; do clear; local cur="未优化"; [ -f /etc/sysctl.d/99-yw-optimize.conf ] && cur=$(grep "^# 模式:" /etc/sysctl.d/99-yw-optimize.conf 2>/dev/null | sed 's/^# 模式: //' | awk -F'|' '{print $1}' | xargs); echo -e "${gl_lv}Linux系统内核参数优化${gl_bai}"; echo "------------------------------------------------"; echo -e "当前模式: ${gl_huang}${cur:-系统优化已启用}${gl_bai}"; echo -e "提供多种系统参数调优模式，用户可以根据自身使用场景进行选择切换。"; echo -e "${gl_huang}提示: ${gl_bai}生产环境请谨慎使用！"; echo -e "--------------------"; echo -e "1. 高性能优化模式：     极限IO聚簇写回，吞吐拉满"; echo -e "2. 均衡优化模式：       稳定至上，内存安全锁"; echo -e "3. 网站优化模式：       极限TW池，抗大促并发"; echo -e "4. 直播优化模式：       UDP极限拉爆+网卡软中断狂暴"; echo -e "5. 游戏服优化模式：     8MB电竞级TCP防Bufferbloat"; echo -e "6. 中转网关模式：       专精V2Ray/SS加密中转防卡顿 ${gl_huang}★${gl_bai}"; echo -e "7. 还原默认设置：       将系统设置还原为默认配置。"; echo -e "8. 自动调优：           根据测试数据自动调优内核参数。${gl_huang}★${gl_bai}"; echo -e "9. 释放内存缓存：      强制清理系统 Cache (谨慎使用)"; echo -e "10. 验证当前网络状态：  查看内核参数是否生效 ${gl_huang}★${gl_bai}"; echo "--------------------"; echo "0. 返回主菜单"; echo "--------------------"; read -e -p "请输入你的选择: " sub_choice; case $sub_choice in 1) cd ~; clear; tiaoyou_moshi="高性能优化模式"; _kernel_optimize_core "$tiaoyou_moshi" "high" ;; 2) cd ~; clear; _kernel_optimize_core "均衡优化模式" "balanced" ;; 3) cd ~; clear; tiaoyou_moshi="网站优化模式"; _kernel_optimize_core "$tiaoyou_moshi" "web" ;; 4) cd ~; clear; tiaoyou_moshi="直播优化模式"; _kernel_optimize_core "$tiaoyou_moshi" "stream" ;; 5) cd ~; clear; tiaoyou_moshi="游戏服优化模式"; _kernel_optimize_core "$tiaoyou_moshi" "game" ;; 6) cd ~; clear; tiaoyou_moshi="中转网关模式"; _kernel_optimize_core "$tiaoyou_moshi" "gateway" ;; 7) cd ~; clear; restore_defaults ;; 8) echo -e "${gl_huang}即将拉取并执行远程网络优化脚本..."; read -e -p "按回车键继续，或按 Ctrl+C 取消: "; curl -sS ${gh_proxy}raw.githubusercontent.com/YW/sh/refs/heads/main/network-optimize.sh | bash ;; 9) echo -e "${gl_red}警告：强制释放内存缓存可能导致短暂 IO 抖动，生产环境请谨慎！${gl_bai}"; read -e -p "确定要执行 echo 3 > /proc/sys/vm/drop_caches 吗？: " drop_choice; if [[ "$drop_choice" =~ ^[Yy]$ ]]; then sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null && echo -e "${gl_lv}✅ 内存缓存已释放${gl_bai}"; else echo "已取消"; fi; read -rs -n 1 -p "按任意键继续..." ;; 10) verify_network_status; read -rs -n 1 -p "按任意键返回菜单..." ;; 0|"") break ;; *) echo -e "${gl_red}无效的选择${gl_bai}" ; read -rs -n 1 -p "按任意键继续..." ;; esac; done; }
 
 # ============================================================================
 # 模块 5：落地机节点管理面板
@@ -656,189 +380,36 @@ get_my_ip() {
     echo "${ip:-未知IP}"
 }
 
-_test_tls_once() {
-    local host="$1"
-    local t1 t2 ms
-    t1=$(date +%s%3N 2>/dev/null)
-    if timeout 2 openssl s_client -connect "${host}:443" -servername "${host}" </dev/null &>/dev/null; then
-        t2=$(date +%s%3N 2>/dev/null)
-        ms=$((t2 - t1))
-        if [ "$ms" -ge 0 ] 2>/dev/null; then echo "$ms"; else echo "9999"; fi
-    else
-        echo "9999"
-    fi
+# 【新增】URL 编码函数，彻底解决客户端导入报错问题
+url_encode() {
+    local str="$1"
+    printf '%s' "$str" | sed 's/+/%2B/g; s/\//%2F/g; s/=/%3D/g; s/ /%20/g; s/#/%23/g; s/?/%3F/g; s/&/%26/g; s/@/%40/g'
 }
 
-select_sni() {
-    echo -e "${Y}--- 伪装域名 (SNI) 设置 ---${R}" >&2
-    echo -e "${G}1. 使用默认伪装域名${R}" >&2
-    echo -e "${G}2. 自动优选最佳域名 (串行精确测速+二轮筛选)${R}" >&2
-    echo -e "${G}3. 手动输入域名${R}" >&2
-    read -e -p "请选择 (1默认 / 2优选 / 3手动): " c
-    case $c in
-        1) echo "www.microsoft.com" ;;
-        2)
-            local d=("azure.microsoft.com" "bing.com" "www.icloud.com" "statici.icloud.com" "www.microsoft.com" "xp.apple.com" "vs.aws.amazon.com" "www.xbox.com" "snap.licdn.com" "www.oracle.com" "www.xilinx.com" "ts2.tc.mm.bing.net" "images.nvidia.com" "speed.cloudflare.com" "workers.cloudflare.com" "www.lovelive-anime.jp")
-            local f="/tmp/sb_sni_test.$$"; : > "$f"
-            echo -e "${Y}[第1轮] 串行测速 16 个域名，约需 16-20 秒...${R}" >&2
-            local idx=1
-            for i in "${d[@]}"; do
-                local ms; ms=$(_test_tls_once "$i")
-                echo "${ms} ${i}" >> "$f"
-                if [ "$ms" -lt 9999 ] 2>/dev/null; then echo -ne "  ${gl_hui}[${idx}/${#d[@]}]${R} ${i}: ${G}${ms}ms${R}\r" >&2
-                else echo -ne "  ${gl_hui}[${idx}/${#d[@]}]${R} ${i}: ${RED}超时${R}\r" >&2; fi
-                idx=$((idx + 1))
-            done
-            echo "" >&2
-            local top5; top5=$(sort -n "$f" | head -5)
-            echo -e "${Y}[第2轮] 对前 5 名各测 3 轮取最小值...${R}" >&2
-            local f2="/tmp/sb_sni_test2.$$"; : > "$f2"
-            while IFS=' ' read -r ms dom; do
-                local best=9999 r
-                for r in 1 2 3; do local m; m=$(_test_tls_once "$dom"); if [ "$m" -lt "$best" ] 2>/dev/null; then best=$m; fi; done
-                echo "${best} ${dom}" >> "$f2"
-                if [ "$best" -lt 9999 ] 2>/dev/null; then echo -e "  ${dom}: ${G}${best}ms${R} (第1轮 ${ms}ms)" >&2
-                else echo -e "  ${dom}: ${RED}超时${R}" >&2; fi
-            done <<< "$top5"
-            local b_d="www.microsoft.com" b_t=9999
-            while IFS=' ' read -r t dom; do
-                if [ -n "$t" ] && [ "$t" -lt "$b_t" ] 2>/dev/null; then b_t=$t; b_d="$dom"; fi
-            done < "$f2"
-            rm -f "$f" "$f2"
-            echo "" >&2
-            echo -e "${G}✅ 优选结果: ${b_d} (最低 ${b_t}ms)${R}" >&2
-            echo "$b_d"
-            ;;
-        3) read -e -p "输入域名: " s; echo "${s:-www.microsoft.com}" ;;
-        *) echo "www.microsoft.com" ;;
-    esac
-}
+_test_tls_once() { local host="$1" t1 t2 ms; t1=$(date +%s%3N 2>/dev/null); if timeout 2 openssl s_client -connect "${host}:443" -servername "${host}" </dev/null &>/dev/null; then t2=$(date +%s%3N 2>/dev/null); ms=$((t2 - t1)); if [ "$ms" -ge 0 ] 2>/dev/null; then echo "$ms"; else echo "9999"; fi; else echo "9999"; fi; }
+select_sni() { echo -e "${Y}--- 伪装域名 (SNI) 设置 ---${R}" >&2; echo -e "${G}1. 使用默认伪装域名${R}" >&2; echo -e "${G}2. 自动优选最佳域名 (串行精确测速+二轮筛选)${R}" >&2; echo -e "${G}3. 手动输入域名${R}" >&2; read -e -p "请选择 (1默认 / 2优选 / 3手动): " c; case $c in 1) echo "www.microsoft.com" ;; 2) local d=("azure.microsoft.com" "bing.com" "www.icloud.com" "statici.icloud.com" "www.microsoft.com" "xp.apple.com" "vs.aws.amazon.com" "www.xbox.com" "snap.licdn.com" "www.oracle.com" "www.xilinx.com" "ts2.tc.mm.bing.net" "images.nvidia.com" "speed.cloudflare.com" "workers.cloudflare.com" "www.lovelive-anime.jp"); local f="/tmp/sb_sni_test.$$"; : > "$f"; echo -e "${Y}[第1轮] 串行测速 16 个域名，约需 16-20 秒...${R}" >&2; local idx=1; for i in "${d[@]}"; do local ms; ms=$(_test_tls_once "$i"); echo "${ms} ${i}" >> "$f"; if [ "$ms" -lt 9999 ] 2>/dev/null; then echo -ne "  ${gl_hui}[${idx}/${#d[@]}]${R} ${i}: ${G}${ms}ms${R}\r" >&2; else echo -ne "  ${gl_hui}[${idx}/${#d[@]}]${R} ${i}: ${RED}超时${R}\r" >&2; fi; idx=$((idx + 1)); done; echo "" >&2; local top5; top5=$(sort -n "$f" | head -5); echo -e "${Y}[第2轮] 对前 5 名各测 3 轮取最小值...${R}" >&2; local f2="/tmp/sb_sni_test2.$$"; : > "$f2"; while IFS=' ' read -r ms dom; do local best=9999 r; for r in 1 2 3; do local m; m=$(_test_tls_once "$dom"); if [ "$m" -lt "$best" ] 2>/dev/null; then best=$m; fi; done; echo "${best} ${dom}" >> "$f2"; if [ "$best" -lt 9999 ] 2>/dev/null; then echo -e "  ${dom}: ${G}${best}ms${R} (第1轮 ${ms}ms)" >&2; else echo -e "  ${dom}: ${RED}超时${R}" >&2; fi; done <<< "$top5"; local b_d="www.microsoft.com" b_t=9999; while IFS=' ' read -r t dom; do if [ -n "$t" ] && [ "$t" -lt "$b_t" ] 2>/dev/null; then b_t=$t; b_d="$dom"; fi; done < "$f2"; rm -f "$f" "$f2"; echo "" >&2; echo -e "${G}✅ 优选结果: ${b_d} (最低 ${b_t}ms)${R}" >&2; echo "$b_d" ;; 3) read -e -p "输入域名: " s; echo "${s:-www.microsoft.com}" ;; *) echo "www.microsoft.com" ;; esac; }
 
-sb_check() {
-    if ! command -v sing-box >/dev/null 2>&1; then echo -e "${RED}请先安装 Sing-Box 核心！${R}"; return 1; fi
-    if ! command -v jq >/dev/null 2>&1; then echo -e "${RED}请先安装 jq (apt install jq -y)！${R}"; return 1; fi
-    return 0
-}
-
-sb_init_conf() {
-    local conf="/etc/sing-box/config.json"
-    if [ ! -f "$conf" ] || ! jq -e . "$conf" >/dev/null 2>&1; then
-        mkdir -p /etc/sing-box
-        echo '{"log":{"level":"error"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct"}}' > "$conf"
-    fi
-}
+sb_check() { if ! command -v sing-box >/dev/null 2>&1; then echo -e "${RED}请先安装 Sing-Box 核心！${R}"; return 1; fi; if ! command -v jq >/dev/null 2>&1; then echo -e "${RED}请先安装 jq (apt install jq -y)！${R}"; return 1; fi; return 0; }
+sb_init_conf() { local conf="/etc/sing-box/config.json"; if [ ! -f "$conf" ] || ! jq -e . "$conf" >/dev/null 2>&1; then mkdir -p /etc/sing-box; echo '{"log":{"level":"error"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct"}}' > "$conf"; fi; }
 
 META_FILE="/etc/sing-box/.nodes_meta"
 OLD_META_FILE="/etc/sing-box/nodes_meta.json"
 
-_init_meta_file() {
-    # 自动修复：如果之前版本遗留了旧文件，自动把数据迁移过来防丢失
-    if [ -f "$OLD_META_FILE" ]; then
-        if [ ! -f "$META_FILE" ] && jq -e . "$OLD_META_FILE" >/dev/null 2>&1; then
-            mv "$OLD_META_FILE" "$META_FILE"
-        else
-            rm -f "$OLD_META_FILE"
-        fi
-    fi
-    if [ ! -f "$META_FILE" ] || ! jq -e . "$META_FILE" >/dev/null 2>&1; then
-        mkdir -p /etc/sing-box; echo '{}' > "$META_FILE"
-    fi
-}
+_init_meta_file() { if [ -f "$OLD_META_FILE" ]; then if [ ! -f "$META_FILE" ] && jq -e . "$OLD_META_FILE" >/dev/null 2>&1; then mv "$OLD_META_FILE" "$META_FILE"; else rm -f "$OLD_META_FILE"; fi; fi; if [ ! -f "$META_FILE" ] || ! jq -e . "$META_FILE" >/dev/null 2>&1; then mkdir -p /etc/sing-box; echo '{}' > "$META_FILE"; fi; }
+_save_node_meta() { local port="$1" name="$2" type="$3" pub_key="${4:-}"; _init_meta_file; if [ -n "$pub_key" ]; then jq --arg p "$port" --arg n "$name" --arg t "$type" --arg pk "$pub_key" '.[$p] = {"name": $n, "type": $t, "pub_key": $pk}' "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"; else jq --arg p "$port" --arg n "$name" --arg t "$type" '.[$p] = {"name": $n, "type": $t}' "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"; fi; }
+_del_node_meta() { local port="$1"; [ ! -f "$META_FILE" ] && return; jq --arg p "$port" 'del(.[$p])' "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"; }
+_get_node_meta() { local port="$1" field="$2"; [ ! -f "$META_FILE" ] && return; jq -r --arg p "$port" --arg field "$field" '.[$p][$field] // empty' "$META_FILE"; }
 
-_save_node_meta() {
-    local port="$1" name="$2" type="$3" pub_key="${4:-}"
-    _init_meta_file
-    if [ -n "$pub_key" ]; then
-        jq --arg p "$port" --arg n "$name" --arg t "$type" --arg pk "$pub_key" '.[$p] = {"name": $n, "type": $t, "pub_key": $pk}' "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"
-    else
-        jq --arg p "$port" --arg n "$name" --arg t "$type" '.[$p] = {"name": $n, "type": $t}' "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"
-    fi
-}
+open_port() { local port=$1 proto="${2:-tcp}" opened=0; if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then ufw allow ${port}/${proto} >/dev/null 2>&1 && opened=1; elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then firewall-cmd --permanent --add-port=${port}/${proto} >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 && opened=1; elif command -v iptables >/dev/null 2>&1; then if iptables -C INPUT -p ${proto} --dport ${port} -j ACCEPT >/dev/null 2>&1; then opened=1; elif iptables -I INPUT -p ${proto} --dport ${port} -j ACCEPT >/dev/null 2>&1; then opened=1; fi; fi; if [ "$opened" -eq 1 ]; then echo -e "${G}  ✅ 已放行 ${proto^^} ${port}${R}"; else echo -e "${Y}  ⚠ 无法自动放行 ${proto^^} ${port}，请手动检查云安全组${R}"; fi; }
 
-_del_node_meta() {
-    local port="$1"
-    [ ! -f "$META_FILE" ] && return
-    jq --arg p "$port" 'del(.[$p])' "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"
-}
-
-_get_node_meta() {
-    local port="$1" field="$2"
-    [ ! -f "$META_FILE" ] && return
-    # 【已修复】补上缺失的 --arg field "$field"
-    jq -r --arg p "$port" --arg field "$field" '.[$p][$field] // empty' "$META_FILE"
-}
-
-open_port() {
-    local port=$1 proto="${2:-tcp}" opened=0
-    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
-        ufw allow ${port}/${proto} >/dev/null 2>&1 && opened=1
-    elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
-        firewall-cmd --permanent --add-port=${port}/${proto} >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 && opened=1
-    elif command -v iptables >/dev/null 2>&1; then
-        if iptables -C INPUT -p ${proto} --dport ${port} -j ACCEPT >/dev/null 2>&1; then opened=1
-        elif iptables -I INPUT -p ${proto} --dport ${port} -j ACCEPT >/dev/null 2>&1; then opened=1; fi
-    fi
-    if [ "$opened" -eq 1 ]; then echo -e "${G}  ✅ 已放行 ${proto^^} ${port}${R}"
-    else echo -e "${Y}  ⚠ 无法自动放行 ${proto^^} ${port}，请手动检查云安全组${R}"; fi
-}
-
-sb_manage_menu() {
-    local conf="/etc/sing-box/config.json"
-    if [ ! -f "$conf" ] || [ ! -s "$conf" ] || ! jq -e . "$conf" >/dev/null 2>&1; then
-        mkdir -p /etc/sing-box
-        echo '{"log":{"level":"error"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct"}}' > "$conf"
-        systemctl stop sing-box >/dev/null 2>&1
-    fi
-
-    while true; do
-        clear
-        local sb_status="${RED}未安装${R}"
-        if command -v sing-box >/dev/null 2>&1; then
-            if [ -f "/etc/sing-box/config.json" ] && jq -e '.inbounds | length > 0' "/etc/sing-box/config.json" >/dev/null 2>&1; then
-                if systemctl is-active --quiet sing-box 2>/dev/null; then sb_status="${G}运行中 ✅${R}"
-                else sb_status="${Y}已停止${R}"; fi
-            else sb_status="${Y}待配置 (无节点)${R}"; fi
-        fi
-
-        echo -e "${G}========================================${R}"
-        echo -e "${G}       Sing-Box 落地节点管理          ${R}"
-        echo -e "${G}========================================${R}"
-        echo -e "核心状态: ${sb_status}${R}"
-        echo -e "${G}========================================${R}"
-        echo -e "${C}1.${R} 安装/更新 Sing-Box 核心"
-        echo -e "${G}2.${R} 添加 VLESS Reality 节点 (含优选SNI)"
-        echo -e "${G}3.${R} 添加 Hysteria2 节点 (含优选SNI)"
-        echo -e "${H}4.${R} 查看节点与链接"
-        echo -e "${RED}5.${R} 删除节点 (按端口)"
-        echo -e "${H}6.${R} 重启/停止/查看日志"
-        echo -e "${Y}7.${R} 手动开放端口 (防火墙放行)"
-        echo -e "${G}========================================${R}"
-        echo -e "${H}0.${R} 返回主菜单"
-        echo -e "${G}========================================${R}"
-        
-        read -e -p "请输入选择: " c
-        case $c in
-            1) echo -e "${C}正在连接官方源安装...${R}"; if command -v apt >/dev/null 2>&1; then curl -fsSL https://sing-box.app/deb-install.sh | bash; elif command -v yum >/dev/null 2>&1; then curl -fsSL https://sing-box.app/rpm-install.sh | bash; else echo -e "${RED}不支持该系统${R}"; fi; read -rs -n 1 -p "按任意键继续..." ;;
-            2) sb_add_reality ;;
-            3) sb_add_hy2 ;;
-            4) sb_view_nodes ;;
-            5) sb_del_node ;;
-            6) echo -e "${C}1.重启 2.停止 3.日志 (回车取消):${R}"; read -e -p "选择: " act; case $act in 1) systemctl restart sing-box && echo -e "${G}已重启${R}" ;; 2) systemctl stop sing-box && echo -e "${Y}已停止${R}" ;; 3) systemctl stop sing-box >/dev/null 2>&1; journalctl -u sing-box -n 30 --no-pager ;; esac; read -rs -n 1 -p "按任意键继续..." ;;
-            7) echo -e "${C}--- 手动开放端口 ---${R}"; read -e -p "请输入要放行的端口号: " m_port; if [[ ! "$m_port" =~ ^[0-9]{1,5}$ ]] || (( ${m_port#0} < 1 || ${m_port#0} > 65535 )); then echo -e "${RED}端口无效，需为 1-65535 的数字${R}"; else echo -e "${Y}选择协议:${R}"; echo -e "${G}1.${R} TCP"; echo -e "${G}2.${R} UDP"; echo -e "${G}3.${R} TCP + UDP"; read -e -p "选择 (回车默认TCP): " m_proto; case "$m_proto" in 2) open_port "$m_port" "udp" ;; 3) open_port "$m_port" "tcp"; open_port "$m_port" "udp" ;; *) open_port "$m_port" "tcp" ;; esac; fi; read -rs -n 1 -p "按任意键继续..." ;;
-            0|"") break ;;
-            *) echo -e "${RED}输入无效${R}"; sleep 1 ;;
-        esac
-    done
-}
+sb_manage_menu() { local conf="/etc/sing-box/config.json"; if [ ! -f "$conf" ] || [ ! -s "$conf" ] || ! jq -e . "$conf" >/dev/null 2>&1; then mkdir -p /etc/sing-box; echo '{"log":{"level":"error"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct"}}' > "$conf"; systemctl stop sing-box >/dev/null 2>&1; fi; while true; do clear; local sb_status="${RED}未安装${R}"; if command -v sing-box >/dev/null 2>&1; then if [ -f "/etc/sing-box/config.json" ] && jq -e '.inbounds | length > 0' "/etc/sing-box/config.json" >/dev/null 2>&1; then if systemctl is-active --quiet sing-box 2>/dev/null; then sb_status="${G}运行中 ✅${R}"; else sb_status="${Y}已停止${R}"; fi; else sb_status="${Y}待配置 (无节点)${R}"; fi; fi; echo -e "${G}========================================${R}"; echo -e "${G}       Sing-Box 落地节点管理          ${R}"; echo -e "${G}========================================${R}"; echo -e "核心状态: ${sb_status}${R}"; echo -e "${G}========================================${R}"; echo -e "${C}1.${R} 安装/更新 Sing-Box 核心"; echo -e "${G}2.${R} 添加 VLESS Reality 节点 (含优选SNI)"; echo -e "${G}3.${R} 添加 Hysteria2 节点 (含优选SNI)"; echo -e "${H}4.${R} 查看节点与链接"; echo -e "${RED}5.${R} 删除节点 (按端口)"; echo -e "${H}6.${R} 重启/停止/查看日志"; echo -e "${Y}7.${R} 手动开放端口 (防火墙放行)"; echo -e "${G}========================================${R}"; echo -e "${H}0.${R} 返回主菜单"; echo -e "${G}========================================${R}"; read -e -p "请输入选择: " c; case $c in 1) echo -e "${C}正在连接官方源安装...${R}"; if command -v apt >/dev/null 2>&1; then curl -fsSL https://sing-box.app/deb-install.sh | bash; elif command -v yum >/dev/null 2>&1; then curl -fsSL https://sing-box.app/rpm-install.sh | bash; else echo -e "${RED}不支持该系统${R}"; fi; read -rs -n 1 -p "按任意键继续..." ;; 2) sb_add_reality ;; 3) sb_add_hy2 ;; 4) sb_view_nodes ;; 5) sb_del_node ;; 6) echo -e "${C}1.重启 2.停止 3.日志 (回车取消):${R}"; read -e -p "选择: " act; case $act in 1) systemctl restart sing-box && echo -e "${G}已重启${R}" ;; 2) systemctl stop sing-box && echo -e "${Y}已停止${R}" ;; 3) systemctl stop sing-box >/dev/null 2>&1; journalctl -u sing-box -n 30 --no-pager ;; esac; read -rs -n 1 -p "按任意键继续..." ;; 7) echo -e "${C}--- 手动开放端口 ---${R}"; read -e -p "请输入要放行的端口号: " m_port; if [[ ! "$m_port" =~ ^[0-9]{1,5}$ ]] || (( ${m_port#0} < 1 || ${m_port#0} > 65535 )); then echo -e "${RED}端口无效，需为 1-65535 的数字${R}"; else echo -e "${Y}选择协议:${R}"; echo -e "${G}1.${R} TCP"; echo -e "${G}2.${R} UDP"; echo -e "${G}3.${R} TCP + UDP"; read -e -p "选择 (回车默认TCP): " m_proto; case "$m_proto" in 2) open_port "$m_port" "udp" ;; 3) open_port "$m_port" "tcp"; open_port "$m_port" "udp" ;; *) open_port "$m_port" "tcp" ;; esac; fi; read -rs -n 1 -p "按任意键继续..." ;; 0|"") break ;; *) echo -e "${RED}输入无效${R}"; sleep 1 ;; esac; done; }
 
 sb_add_reality() {
     sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
     echo -e "${C}--- 添加 VLESS Reality 落地节点 ---${R}"
     read -e -p "端口: " port
     if [[ ! "$port" =~ ^[0-9]+$ ]]; then echo -e "${RED}端口错误${R}"; read -rs -n 1 -p "按任意键返回..."; return; fi
-
     local sni; sni=$(select_sni)
-
     echo -e "${Y}正在生成 UUID 和密钥对...${R}"
     local uuid priv_key pub_key keys
     uuid=$(cat /proc/sys/kernel/random/uuid)
@@ -846,7 +417,6 @@ sb_add_reality() {
     priv_key=$(echo "$keys" | grep PrivateKey | awk '{print $2}')
     pub_key=$(echo "$keys" | grep PublicKey | awk '{print $2}')
     if [ -z "$pub_key" ]; then echo -e "${RED}密钥生成失败！${R}"; read -rs -n 1 -p "按任意键返回..."; return; fi
-
     local default_name="Reality-${port}"
     read -e -p "输入自定义名称 (回车跳过，默认: ${default_name}): " node_name
     [ -z "$node_name" ] && node_name="$default_name"
@@ -877,7 +447,10 @@ sb_add_reality() {
             return
         fi
         local my_ip; my_ip=$(get_my_ip)
-        local link="vless://${uuid}@${my_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&type=tcp#${node_name}"
+        # 【已修复】对公钥和节点名进行 URL 编码
+        local enc_pub_key=$(url_encode "$pub_key")
+        local enc_name=$(url_encode "$node_name")
+        local link="vless://${uuid}@${my_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${enc_pub_key}&type=tcp#${enc_name}"
         echo -e "${G}✅ VLESS Reality 添加成功并已启动！${R}"
         echo -e "${Y}客户端链接:${R}"
         echo -e "${B}${link}${R}"
@@ -896,17 +469,12 @@ sb_add_hy2() {
     echo -e "${C}--- 添加 Hysteria2 落地节点 ---${R}"
     read -e -p "端口: " port
     if [[ ! "$port" =~ ^[0-9]+$ ]]; then echo -e "${RED}端口错误${R}"; read -rs -n 1 -p "按任意键返回..."; return; fi
-
     local sni; sni=$(select_sni)
-
     echo -e "${Y}正在生成密码和自签证书...${R}"
     local pass; pass=$(openssl rand -base64 16)
     local crt="/etc/sing-box/hy2_${port}.crt" key="/etc/sing-box/hy2_${port}.key"
-    if [ ! -f "$crt" ] || [ ! -f "$key" ]; then
-        openssl req -x509 -nodes -newkey rsa:2048 -keyout "$key" -out "$crt" -subj "/CN=$sni" -days 3650 2>/dev/null
-    fi
+    if [ ! -f "$crt" ] || [ ! -f "$key" ]; then openssl req -x509 -nodes -newkey rsa:2048 -keyout "$key" -out "$crt" -subj "/CN=$sni" -days 3650 2>/dev/null; fi
     chmod 600 "$key" 2>/dev/null; chmod 644 "$crt" 2>/dev/null
-
     local default_name="Hy2-${port}"
     read -e -p "输入自定义名称 (回车跳过，默认: ${default_name}): " node_name
     [ -z "$node_name" ] && node_name="$default_name"
@@ -938,7 +506,10 @@ sb_add_hy2() {
             return
         fi
         local my_ip; my_ip=$(get_my_ip)
-        local link="hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}#${node_name}"
+        # 【已修复】对密码和节点名进行 URL 编码
+        local enc_pass=$(url_encode "$pass")
+        local enc_name=$(url_encode "$node_name")
+        local link="hysteria2://${enc_pass}@${my_ip}:${port}?insecure=1&sni=${sni}#${enc_name}"
         echo -e "${G}✅ Hysteria2 添加成功并已启动！${R}"
         echo -e "${Y}客户端链接:${R}"
         echo -e "${B}${link}${R}"
@@ -968,17 +539,23 @@ sb_view_nodes() {
         local type=$(echo "$inbound" | jq -r '.type')
         local name=$(_get_node_meta "$port" "name")
         [ -z "$name" ] && name="未命名节点"
+        
+        # 【已修复】查看节点时生成的链接也加上 URL 编码
+        local enc_name=$(url_encode "$name")
+        
         if [ "$type" = "vless" ]; then
             local uuid=$(echo "$inbound" | jq -r '.users[0].uuid')
             local sni=$(echo "$inbound" | jq -r '.tls.server_name')
             local pub_key=$(_get_node_meta "$port" "pub_key")
+            local enc_pub_key=$(url_encode "$pub_key")
             echo -e "${Y}[$type] $name (端口: $port)${R}"
-            echo -e "${B}vless://${uuid}@${my_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&type=tcp#${name}${R}"
+            echo -e "${B}vless://${uuid}@${my_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${enc_pub_key}&type=tcp#${enc_name}${R}"
         elif [ "$type" = "hysteria2" ]; then
             local pass=$(echo "$inbound" | jq -r '.users[0].password')
             local sni=$(echo "$inbound" | jq -r '.tls.server_name')
+            local enc_pass=$(url_encode "$pass")
             echo -e "${Y}[$type] $name (端口: $port)${R}"
-            echo -e "${B}hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}#${name}${R}"
+            echo -e "${B}hysteria2://${enc_pass}@${my_ip}:${port}?insecure=1&sni=${sni}#${enc_name}${R}"
         fi
         echo "----------------------------------------"
     done <<< "$inbounds"
@@ -1013,7 +590,6 @@ sb_del_node() {
 # ============================================================================
 # YW 系统优化与管理面板 - 主入口
 # ============================================================================
-
 main_menu() {
     while true; do
         clear
@@ -1041,6 +617,5 @@ main_menu() {
     done
 }
 
-# 脚本执行入口
 root_use
 main_menu
