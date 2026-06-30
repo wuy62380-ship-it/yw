@@ -660,12 +660,10 @@ get_my_ip() {
 _test_tls_once() {
     local host="$1"
     local t1 t2 ms
-    # %s%3N 在 GNU date 上返回毫秒级时间戳，兼容性最好
     t1=$(date +%s%3N 2>/dev/null)
     if timeout 2 openssl s_client -connect "${host}:443" -servername "${host}" </dev/null &>/dev/null; then
         t2=$(date +%s%3N 2>/dev/null)
         ms=$((t2 - t1))
-        # 防止异常负数
         if [ "$ms" -ge 0 ] 2>/dev/null; then
             echo "$ms"
         else
@@ -708,14 +706,12 @@ select_sni() {
             local f="/tmp/sb_sni_test.$$"
             : > "$f"
 
-            # ===== 第一轮：串行逐个测一遍，找出前5名 =====
             echo -e "${Y}[第1轮] 串行测速 16 个域名，约需 16-20 秒...${R}" >&2
             local idx=1
             for i in "${d[@]}"; do
                 local ms
                 ms=$(_test_tls_once "$i")
                 echo "${ms} ${i}" >> "$f"
-                # 显示实时进度
                 if [ "$ms" -lt 9999 ] 2>/dev/null; then
                     echo -ne "  ${gl_hui}[${idx}/${#d[@]}]${R} ${i}: ${G}${ms}ms${R}\r" >&2
                 else
@@ -725,7 +721,6 @@ select_sni() {
             done
             echo "" >&2
 
-            # 取前5名进入第二轮
             local top5
             top5=$(sort -n "$f" | head -5)
 
@@ -751,7 +746,6 @@ select_sni() {
                 fi
             done <<< "$top5"
 
-            # 最终结果
             local b_d="www.microsoft.com"
             local b_t=9999
             while IFS=' ' read -r t dom; do
@@ -794,12 +788,10 @@ sb_init_conf() {
     fi
 }
 
-# 【关键修复】改为隐藏文件且不带 .json 后缀，防止被 sing-box 当作配置文件解析报错
 META_FILE="/etc/sing-box/.nodes_meta"
 OLD_META_FILE="/etc/sing-box/nodes_meta.json"
 
 _init_meta_file() {
-    # 自动清理以前遗留的会被 sing-box 误读的毒瘤文件
     if [ -f "$OLD_META_FILE" ]; then
         rm -f "$OLD_META_FILE"
     fi
@@ -964,8 +956,9 @@ sb_add_reality() {
     local conf="/etc/sing-box/config.json"
     cp "$conf" "${conf}.bak.$(date +%s)"
 
+    # 【已修复】将 "tag":"vless-in-$p" 改为了 "tag":"vless-in-\($p)"
     jq --argjson p "$port" --arg u "$uuid" --arg pk "$priv_key" --arg s "$sni" \
-       '.inbounds += [{"type":"vless","tag":"vless-in-$p","listen":"::","listen_port":$p,"users":[{"uuid":$u,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$s,"reality":{"enabled":true,"handshake":{"server":$s,"server_port":443},"private_key":$pk}}}]' \
+       '.inbounds += [{"type":"vless","tag":"vless-in-\($p)","listen":"::","listen_port":$p,"users":[{"uuid":$u,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$s,"reality":{"enabled":true,"handshake":{"server":$s,"server_port":443},"private_key":$pk}}}]' \
        "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
 
     if sing-box check -c "$conf" >/dev/null 2>&1; then
@@ -1024,8 +1017,9 @@ sb_add_hy2() {
     local conf="/etc/sing-box/config.json"
     cp "$conf" "${conf}.bak.$(date +%s)"
 
+    # 【已修复】将 "tag":"hy2-in-$p" 改为了 "tag":"hy2-in-\($p)"
     jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" --arg crt "$crt" --arg key "$key" \
-       '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificate_path":$crt,"key_path":$key}}]' \
+       '.inbounds += [{"type":"hysteria2","tag":"hy2-in-\($p)","listen":"::","listen_port":$p,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificate_path":$crt,"key_path":$key}}]' \
        "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
        
     if sing-box check -c "$conf" >/dev/null 2>&1; then
@@ -1056,147 +1050,101 @@ sb_add_hy2() {
         echo -e "${RED}配置校验失败！已自动回滚到备份配置。${R}"
         local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
         if [ -n "$latest_bak" ]; then mv "$latest_bak" "$conf"; echo -e "${Y}已从备份恢复原配置。${R}"; fi
-        rm -f "$crt" "$key"
         sing-box check -c "$conf" 2>&1 | head -5
+        rm -f "$crt" "$key"
     fi
     read -rs -n 1 -p "按任意键继续..."
 }
 
-_show_nodes_list() {
-    local conf="/etc/sing-box/config.json" my_ip; my_ip=$(get_my_ip)
-    local inbounds; inbounds=$(jq -c '.inbounds[]' "$conf" 2>/dev/null)
-    if [ -z "$inbounds" ]; then echo -e "${H}暂无节点${R}"; return 1; fi
-    
-    local meta_json; meta_json=$(cat "$META_FILE" 2>/dev/null || echo '{}')
-    local idx=1
-
-    echo "$inbounds" | while IFS= read -r in; do
-        local type port node_name link
-        type=$(echo "$in" | jq -r '.type')
-        port=$(echo "$in" | jq -r '.listen_port')
-        node_name=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].name // "未命名"')
-
-        case "$type" in
-            vless)
-                local uuid sni pub_key
-                uuid=$(echo "$in" | jq -r '.users[0].uuid')
-                sni=$(echo "$in" | jq -r '.tls.server_name')
-                pub_key=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].pub_key // ""')
-                link="vless://${uuid}@${my_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&type=tcp#${node_name}"
-                ;;
-            hysteria2)
-                local pass sni
-                pass=$(echo "$in" | jq -r '.users[0].password')
-                sni=$(echo "$in" | jq -r '.tls.server_name')
-                link="hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}#${node_name}"
-                ;;
-            *) link="${H}[不支持的协议类型: ${type}]${R}" ;;
-        esac
-
-        echo -e "${G}─────────────────────────────────────${R}"
-        echo -e "${C}[${idx}]${R} ${Y}${node_name}${R}"
-        echo -e "  协议: ${type} | 端口: ${port}"
-        echo -e "  链接:"
-        echo -e "  ${B}${link}${R}"
-        idx=$((idx + 1))
-    done
-    echo -e "${G}─────────────────────────────────────${R}"
-}
-
+# --- 补全缺失的查看与删除节点逻辑 ---
 sb_view_nodes() {
-    sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
-    clear
+    local conf="/etc/sing-box/config.json"
+    if [ ! -f "$conf" ] || ! jq -e '.inbounds | length > 0' "$conf" >/dev/null 2>&1; then
+        echo -e "${Y}当前没有任何节点。${R}"; read -rs -n 1 -p "按任意键继续..."; return
+    fi
+    local my_ip; my_ip=$(get_my_ip)
     echo -e "${G}========================================${R}"
-    echo -e "${G}       节点列表与客户端链接          ${R}"
+    echo -e "${G}           当前节点列表              ${R}"
     echo -e "${G}========================================${R}"
-    _show_nodes_list
-    echo -e "${G}========================================${R}"
-    read -rs -n 1 -p "按任意键返回..."
+    
+    local inbounds=$(jq -c '.inbounds[]' "$conf")
+    while IFS= read -r inbound; do
+        local port=$(echo "$inbound" | jq -r '.listen_port')
+        local type=$(echo "$inbound" | jq -r '.type')
+        local name=$(_get_node_meta "$port" "name")
+        [ -z "$name" ] && name="未命名节点"
+        
+        if [ "$type" = "vless" ]; then
+            local uuid=$(echo "$inbound" | jq -r '.users[0].uuid')
+            local sni=$(echo "$inbound" | jq -r '.tls.server_name')
+            local pub_key=$(_get_node_meta "$port" "pub_key")
+            echo -e "${Y}[$type] $name (端口: $port)${R}"
+            echo -e "${B}vless://${uuid}@${my_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&type=tcp#${name}${R}"
+        elif [ "$type" = "hysteria2" ]; then
+            local pass=$(echo "$inbound" | jq -r '.users[0].password')
+            local sni=$(echo "$inbound" | jq -r '.tls.server_name')
+            echo -e "${Y}[$type] $name (端口: $port)${R}"
+            echo -e "${B}hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}#${name}${R}"
+        fi
+        echo "----------------------------------------"
+    done <<< "$inbounds"
+    read -rs -n 1 -p "按任意键继续..."
 }
 
 sb_del_node() {
     sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
     local conf="/etc/sing-box/config.json"
-    local inbounds; inbounds=$(jq -c '.inbounds[]' "$conf" 2>/dev/null)
-    if [ -z "$inbounds" ]; then echo -e "${H}暂无节点可删除${R}"; read -rs -n 1 -p "按任意键返回..."; return; fi
+    local ports=$(jq -r '.inbounds[].listen_port' "$conf" 2>/dev/null)
+    if [ -z "$ports" ]; then echo -e "${Y}没有可删除的节点${R}"; read -rs -n 1 -p "按任意键继续..."; return; fi
     
-    clear
-    echo -e "${RED}========================================${R}"
-    echo -e "${RED}       删除节点                       ${R}"
-    echo -e "${RED}========================================${R}"
-    
-    local meta_json; meta_json=$(cat "$META_FILE" 2>/dev/null || echo '{}')
-    
-    echo "$inbounds" | while IFS= read -r in; do
-        local type port node_name
-        type=$(echo "$in" | jq -r '.type')
-        port=$(echo "$in" | jq -r '.listen_port')
-        node_name=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].name // "未命名"')
-        echo -e "  ${Y}端口 ${port}${R} - ${node_name} (${type})"
-    done
-    
-    echo -e "${RED}========================================${R}"
+    echo -e "${Y}当前节点端口:${R}"
+    echo "$ports" | awk '{print " - "$0}'
     read -e -p "请输入要删除的端口号: " del_port
+    if ! echo "$ports" | grep -qw "$del_port"; then echo -e "${RED}端口不存在${R}"; read -rs -n 1 -p "按任意键继续..."; return; fi
     
-    if [[ ! "$del_port" =~ ^[0-9]+$ ]]; then
-        echo -e "${RED}端口无效${R}"
-    else
-        local node_name; node_name=$(_get_node_meta "$del_port" "name")
-        cp "$conf" "${conf}.bak.$(date +%s)"
-        
-        jq --argjson p "$del_port" 'del(.inbounds[] | select(.listen_port == $p))' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
-        
-        if sing-box check -c "$conf" >/dev/null 2>&1; then
-            _del_node_meta "$del_port"
-            if jq -e '.inbounds | length > 0' "$conf" >/dev/null 2>&1; then
-                systemctl restart sing-box
-            else
-                systemctl stop sing-box
-                echo -e "${Y}所有节点已移除，服务已停止${R}"
-            fi
-            echo -e "${G}✅ 已删除节点: ${node_name:-端口$del_port}${R}"
-        else
-            local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
-            if [ -n "$latest_bak" ]; then mv "$latest_bak" "$conf"; fi
-            echo -e "${RED}删除失败，已回滚配置${R}"
+    local node_type=$(_get_node_meta "$del_port" "type")
+    
+    cp "$conf" "${conf}.bak.$(date +%s)"
+    jq --argjson p "$del_port" 'del(.inbounds[] | select(.listen_port == $p))' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
+    
+    if sing-box check -c "$conf" >/dev/null 2>&1; then
+        if [ "$node_type" = "hysteria2" ]; then
+            rm -f "/etc/sing-box/hy2_${del_port}.crt" "/etc/sing-box/hy2_${del_port}.key"
         fi
+        _del_node_meta "$del_port"
+        systemctl restart sing-box
+        echo -e "${G}✅ 端口 ${del_port} 节点已删除并重启${R}"
+    else
+        echo -e "${RED}删除后配置校验失败，回滚中...${R}"
+        local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
+        [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"
     fi
-    read -rs -n 1 -p "按任意键返回..."
+    read -rs -n 1 -p "按任意键继续..."
 }
 
 # ============================================================================
-# 独立运行时的主菜单入口 (被 source 引入时不会自动弹出)
+# 主入口
 # ============================================================================
+main_menu() {
+    while true; do
+        clear
+        echo -e "${G}========================================${R}"
+        echo -e "${G}       YW 综合管理面板               ${R}"
+        echo -e "${G}========================================${R}"
+        echo -e "${C}1.${R} Linux 系统内核参数优化"
+        echo -e "${C}2.${R} Sing-Box 落地节点管理"
+        echo -e "${G}========================================${R}"
+        echo -e "${H}0.${R} 退出脚本"
+        echo -e "${G}========================================${R}"
+        read -e -p "请输入选择: " main_choice
+        case $main_choice in
+            1) Kernel_optimize ;;
+            2) sb_manage_menu ;;
+            0|"") exit 0 ;;
+            *) echo -e "${RED}输入无效${R}"; sleep 1 ;;
+        esac
+    done
+}
 
-# 判断是否是被主脚本引入的，如果是则不执行主菜单
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    main_menu() {
-        while true; do
-            clear
-            echo -e "${gl_lv}========================================${gl_bai}"
-            echo -e "${gl_lv}       YW 服务器综合管理工具          ${gl_bai}"
-            echo -e "${gl_lv}========================================${gl_bai}"
-            echo -e "${gl_huang}1.${gl_bai} Linux 内核参数优化"
-            echo -e "${gl_huang}2.${gl_bai} 安装 BBRv3 (XanMod内核)"
-            echo -e "${gl_huang}3.${gl_bai} Sing-Box 落地节点管理"
-            echo -e "${gl_huang}4.${gl_bai} 系统信息查询"
-            echo -e "${gl_huang}5.${gl_bai} Swap 虚拟内存管理"
-            echo -e "----------------------------------------"
-            echo -e "${gl_hui}0.${gl_bai} 退出脚本"
-            echo -e "${gl_lv}========================================${gl_bai}"
-            read -e -p "请输入选择: " main_choice
-            case $main_choice in
-                1) Kernel_optimize ;;
-                2) bbrv3 ;;
-                3) sb_manage_menu ;;
-                4) show_sys_info ;;
-                5) change_swap_size ;;
-                0|"") exit 0 ;;
-                *) echo -e "${gl_red}无效的选择${gl_bai}"; sleep 1 ;;
-            esac
-        done
-    }
-
-    # 启动主菜单
-    main_menu
-fi
+root_use
+main_menu
