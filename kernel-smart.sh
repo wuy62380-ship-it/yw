@@ -1060,41 +1060,58 @@ sb_add_hy2() {
 }
 
 _show_nodes_list() {
-    local conf="/etc/sing-box/config.json" my_ip; my_ip=$(get_my_ip)
+    local conf="/etc/sing-box/config.json"
+    local my_ip; my_ip=$(get_my_ip)
     local count
     count=$(jq '.inbounds | length' "$conf" 2>/dev/null)
     if [ -z "$count" ] || [ "$count" -eq 0 ] 2>/dev/null; then
         echo -e "${H}暂无节点${R}"
         return 1
     fi
-    local meta_json; meta_json=$(cat "$META_FILE" 2>/dev/null || echo '{}')
+
+    local meta_json
+    meta_json=$(cat "$META_FILE" 2>/dev/null || echo '{}')
+
+    # ★ 统一在函数头声明所有变量，绝不在 while/case 内用 local
     local idx=1
+    local in type port node_name link
+    local uuid sni pub_key pass
+
     while [ "$idx" -le "$count" ]; do
-        local in
         in=$(jq -c ".inbounds[$((idx - 1))]" "$conf" 2>/dev/null)
         [ -z "$in" ] && { idx=$((idx + 1)); continue; }
-        local type port node_name link
+
         type=$(echo "$in" | jq -r '.type')
         port=$(echo "$in" | jq -r '.listen_port')
         node_name=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].name // "未命名"')
+        link=""
+        uuid=""; sni=""; pub_key=""; pass=""
+
         case "$type" in
             vless)
-                local uuid sni pub_key
                 uuid=$(echo "$in" | jq -r '.users[0].uuid')
                 sni=$(echo "$in" | jq -r '.tls.server_name')
                 pub_key=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].pub_key // ""')
-                link="vless://${uuid}@${my_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&type=tcp#${node_name}"
+                if [ -n "$uuid" ] && [ -n "$sni" ] && [ -n "$pub_key" ]; then
+                    link="vless://${uuid}@${my_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&type=tcp#${node_name}"
+                else
+                    link="${RED}[数据不完整，缺少 uuid/sni/pbk]${R}"
+                fi
                 ;;
             hysteria2)
-                local pass sni
                 pass=$(echo "$in" | jq -r '.users[0].password')
                 sni=$(echo "$in" | jq -r '.tls.server_name')
-                link="hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}#${node_name}"
+                if [ -n "$pass" ] && [ -n "$sni" ]; then
+                    link="hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}#${node_name}"
+                else
+                    link="${RED}[数据不完整，缺少 password/sni]${R}"
+                fi
                 ;;
             *)
                 link="${H}[不支持的协议类型: ${type}]${R}"
                 ;;
         esac
+
         echo -e "${G}─────────────────────────────────────${R}"
         echo -e "${C}[${idx}]${R} ${Y}${node_name}${R}"
         echo -e "  协议: ${type} | 端口: ${port}"
@@ -1184,13 +1201,11 @@ main_menu() {
     root_use
     while true; do
         clear
-        # 读取当前优化模式
         local cur_mode="未优化"
         if [ -f /etc/sysctl.d/99-yw-optimize.conf ]; then
             cur_mode=$(grep "^# 场景:" /etc/sysctl.d/99-yw-optimize.conf 2>/dev/null | sed 's/^# 场景: //' | xargs)
         fi
 
-        # 读取 Sing-Box 状态
         local sb_st="${gl_red}未安装${gl_bai}"
         if command -v sing-box >/dev/null 2>&1; then
             if systemctl is-active --quiet sing-box 2>/dev/null; then
