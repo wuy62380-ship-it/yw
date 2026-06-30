@@ -57,7 +57,7 @@ auto_setup_zram() {
     fi
     echo -e "${gl_lv}正在尝试自动配置 zram 替代 zswap...${gl_bai}"
     if command -v apt >/dev/null 2>&1; then
-        if ! command -v zramctl >/dev/null 2>&1; then
+        if ! command -v zramctl >/dev/null 2>/dev/null; then
             apt-get install -y zram-tools >/dev/null 2>&1 || return 1
         fi
         sed -i 's/^ALGO=.*/ALGO=zstd/' /etc/default/zramswap 2>/dev/null
@@ -414,7 +414,7 @@ restore_defaults() {
     sed -i '/# YW-optimize/,+4d' /etc/security/limits.conf 2>/dev/null
     [ -f /sys/module/zswap/parameters/enabled ] && echo N > /sys/module/zswap/parameters/enabled 2>/dev/null
     sed -i '/vm.zswap.enabled/d' /etc/sysctl.conf 2>/dev/null
-    if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled zramswap >/dev/null 2>&1; then systemctl stop zramswap >/dev/null 2>&1; systemctl disable zramswap >/dev/null 2>&1; fi
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled zramswap >/dev/null 2>/dev/null; then systemctl stop zramswap >/dev/null 2>&1; systemctl disable zramswap >/dev/null 2>/dev/null; fi
     echo -e "${gl_lv}已还原所有设置${gl_bai}"
 }
 verify_network_status() {
@@ -572,18 +572,18 @@ sb_init_conf() {
 META_FILE="/etc/sing-box/.nodes_meta"
 _init_meta_file() {
     [ -f "/etc/sing-box/nodes_meta.json" ] && rm -f "/etc/sing-box/nodes_meta.json"
-    if [ ! -f "$META_FILE" ] || ! jq -e . "$META_FILE" >/dev/null 2>&1; then mkdir -p /etc/sing-box; echo '{}' > "$META_FILE"; fi
+    if [ ! -f "$META_FILE" ] || ! jq -e . "$META_FILE" >/dev/null 2>/dev/null; then mkdir -p /etc/sing-box; echo '{}' > "$META_FILE"; fi
 }
 _save_node_meta() {
     local port="$1" name="$2" type="$3" pub_key="${4:-}" hop_ports="${5:-}"
     _init_meta_file
-    jq --arg p "$port" --arg n "$name" --arg t "$type" --arg pk "$pub_key" --arg hp "$hop_ports" \
+    jq --argjson p "$port" --arg n "$name" --arg t "$type" --arg pk "$pub_key" --arg hp "$hop_ports" \
        '.[$p] = {name: $n, type: $t, pub_key: (if $pk != "" then $pk else null end), hop_ports: (if $hp != "" then $hp else null end)} | .[$p] |= del(.[] | select(. == null))' \
        "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"
 }
 _del_node_meta() {
     local port="$1"; [ ! -f "$META_FILE" ] && return
-    jq --arg p "$port" 'del(.[$p])' "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"
+    jq --argjson p "$port" 'del(.[$p])' "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"
 }
 
 # ============================================================================
@@ -598,7 +598,7 @@ open_port() {
         elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
             firewall-cmd --permanent --add-port="${fc_port}/${proto}" >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 && opened=1
         elif command -v iptables >/dev/null 2>&1; then
-            iptables -C INPUT -p "$proto" --dport "$port" -j ACCEPT >/dev/null 2>&1 && opened=1 || iptables -I INPUT -p "$proto" --dport "$port" -j ACCEPT >/dev/null 2>&1 && opened=1
+            iptables -C INPUT -p "$proto" --dport "$port" -j ACCEPT >/dev/null 2>/dev/null && opened=1 || iptables -I INPUT -p "$proto" --dport "$port" -j ACCEPT >/dev/null 2>/dev/null && opened=1
         fi
         [ "$opened" -eq 1 ] && echo -e "${G}  ✅ 已放行 ${proto^^} ${port}${R}" || echo -e "${Y}  ⚠ 无法自动放行 ${proto^^} ${port}，请手动检查云安全组${R}"
     else
@@ -607,7 +607,7 @@ open_port() {
         elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
             firewall-cmd --permanent --remove-port="${fc_port}/${proto}" >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 && opened=1
         elif command -v iptables >/dev/null 2>&1; then
-            iptables -D INPUT -p "$proto" --dport "$port" -j ACCEPT >/dev/null 2>&1 && opened=1
+            iptables -D INPUT -p "$proto" --dport "$port" -j ACCEPT >/dev/null 2>/dev/null && opened=1
         fi
         [ "$opened" -eq 1 ] && echo -e "${Y}  ⚠ 已关闭 ${proto^^} ${port}${R}"
     fi
@@ -692,7 +692,7 @@ sb_add_reality() {
 }
 
 # ============================================================================
-# 添加 Hysteria2 (修复: hop_ports 必须放在 tls 内部，否则sing-box直接报错回滚)
+# 添加 Hysteria2 (核心修复: hop_ports 必须放在 tls 内部，否则sing-box直接报错回滚)
 # ============================================================================
 sb_add_hy2() {
     sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
@@ -725,7 +725,7 @@ sb_add_hy2() {
     chmod 600 "$key" 2>/dev/null; chmod 644 "$crt" 2>/dev/null
 
     local default_name="Hy2-${port}"; read -e -p "名称 (回车默认 ${default_name}): " node_name; [ -z "$node_name" ] && node_name="$default_name"
-    sb_init_conf; local conf="/etc/sing-box/config.json"; cp "$conf" "${conf}.bak.$(date +%s)"
+    sb_init_conf; local conf="/etc/sing-box.json"; cp "$conf" "${conf}.bak.$(date +%s)"
 
     # 核心修复：先写入标准结构，如果有跳跃端口再追加到 .tls 内部
     jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" --arg crt "$crt" --arg key "$key" --arg hp "$hop_ports" \
@@ -818,7 +818,7 @@ sb_add_anytls() {
 }
 
 # ============================================================================
-# 查看节点列表 (修复管道变量丢失问题)
+# 查看节点列表 (修复: --arg 改 --argjson 解决老版本bash下jq崩溃无输出)
 # ============================================================================
 _show_nodes_list() {
     local conf="/etc/sing-box/config.json" my_ip; my_ip=$(get_my_ip)
@@ -826,12 +826,12 @@ _show_nodes_list() {
     if [ "${cnt:-0}" -eq 0 ] 2>/dev/null; then echo -e "${H}暂无节点${R}"; return 1; fi
     local meta; meta=$(cat "$META_FILE" 2>/dev/null || echo '{}')
     local idx=1
-    # 关键修复：使用进程替换 < <(...) 替代管道 | ，解决 idx 在子shell中无法自增BUG
     while IFS= read -r in; do
         local type port node_name link
         type=$(echo "$in" | jq -r '.type')
         port=$(echo "$in" | jq -r '.listen_port')
-        node_name=$(echo "$meta" | jq -r --arg p "$port" '.[$p].name // "未命名"')
+        # 修复：--arg 换 --argjson
+        node_name=$(echo "$meta" | jq -r --argjson p "$port" '.[$p].name // "未命名"')
         
         case "$type" in
             vless)
@@ -839,7 +839,7 @@ _show_nodes_list() {
                 uuid=$(echo "$in" | jq -r '.users[0].uuid')
                 sni=$(echo "$in" | jq -r '.tls.server_name')
                 flow=$(echo "$in" | jq -r '.users[0].flow // empty')
-                pub_key=$(echo "$meta" | jq -r --arg p "$port" '.[$p].pub_key // ""')
+                pub_key=$(echo "$meta" | jq -r --argjson p "$port" '.[$p].pub_key // ""')
                 [ -n "$flow" ] && flow_param="&flow=${flow}"
                 link="vless://${uuid}@${my_ip}:${port}?encryption=none${flow_param}&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&type=tcp#${node_name}"
                 ;;
@@ -859,7 +859,7 @@ _show_nodes_list() {
                 local pass sni hop_meta hop_param=""
                 pass=$(echo "$in" | jq -r '.users[0].password')
                 sni=$(echo "$in" | jq -r '.tls.server_name')
-                hop_meta=$(echo "$meta" | jq -r --arg p "$port" '.[$p].hop_ports // empty')
+                hop_meta=$(echo "$meta" | jq -r --argjson p "$port" '.[$p].hop_ports // empty')
                 [ -n "$hop_meta" ] && hop_param="&hop=${hop_meta}"
                 link="hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}${hop_param}#${node_name}"
                 [ -n "$hop_meta" ] && node_name="${node_name} (跳跃:${hop_meta})"
@@ -876,6 +876,7 @@ _show_nodes_list() {
     done < <(jq -c '.inbounds[]' "$conf" 2>/dev/null)
     echo -e "${G}─────────────────────────────────────${R}"
 }
+}
 sb_view_nodes() {
     sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
     clear
@@ -888,7 +889,7 @@ sb_view_nodes() {
 }
 
 # ============================================================================
-# 删除节点 (完美联动清理跳跃端口)
+# 删除节点 (修复 --arg 和校验语法)
 # ============================================================================
 sb_del_node() {
     sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
@@ -903,7 +904,7 @@ sb_del_node() {
     
     local node_type hop_del
     node_type=$(jq -r --argjson p "$del_port" '.inbounds[] | select(.listen_port == $p) | .type' "$conf")
-    hop_del=$(jq -r --arg p "$del_port" '.[$p].hop_ports // empty' "$META_FILE" 2>/dev/null)
+    hop_del=$(jq -r --argjson p "$del_port" '.[$p].hop_ports // empty' "$META_FILE" 2>/dev/null)
 
     cp "$conf" "${conf}.bak.$(date +%s)"
     jq --argjson p "$del_port" 'del(.inbounds[] | select(.listen_port == $p))' \
@@ -932,7 +933,7 @@ sb_del_node() {
 }
 
 # ============================================================================
-# 内核菜单 & 主菜单 (彻底修复 echo -e 漏写导致不换行的问题)
+# 内核菜单 & 主菜单 (修复全部 echo -e 漏写)
 # ============================================================================
 Kernel_optimize() {
     root_use
