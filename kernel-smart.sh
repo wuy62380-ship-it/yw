@@ -1126,7 +1126,6 @@ sb_del_node() {
     echo -e "${RED}========================================${R}"
     
     local meta_json; meta_json=$(cat "$META_FILE" 2>/dev/null || echo '{}')
-    local ports=()
     
     echo "$inbounds" | while IFS= read -r in; do
         local type port node_name
@@ -1164,3 +1163,35 @@ sb_del_node() {
     fi
     read -rs -n 1 -p "按任意键返回..."
 }
+
+# ============================================================================
+# 主菜单入口
+# ============================================================================
+
+main_menu() {
+    while true; do
+        clear
+        echo -e "${gl_lv}========================================${gl_bai}"
+        echo -e "${gl_lv}       YW 服务器综合管理工具          ${gl_bai}"
+        echo -e "${gl_lv}========================================${gl_bai}"
+        echo -e "${gl_huang}1.${gl_bai} Linux 内核参数优化"
+        echo -e "${gl_huang}2.${gl_bai} Sing-Box 落地节点管理"
+        echo -e "${gl_huang}3.${gl_bai} 系统信息查询"
+        echo -e "${gl_huang}4.${gl_bai} Swap 虚拟内存管理"
+        echo -e "----------------------------------------"
+        echo -e "${gl_hui}0.${gl_bai} 退出脚本"
+        echo -e "${gl_lv}========================================${gl_bai}"
+        read -e -p "请输入选择: " main_choice
+        case $main_choice in
+            1) Kernel_optimize ;;
+            2) sb_manage_menu ;;
+            3) show_sys_info ;;
+            4) change_swap_size ;;
+            0|"") exit 0 ;;
+            *) echo -e "${gl_red}无效的选择${gl_bai}"; sleep 1 ;;
+        esac
+    done
+}
+
+# 执行主菜单
+main_menu
