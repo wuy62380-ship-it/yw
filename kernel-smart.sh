@@ -231,16 +231,19 @@ _kernel_optimize_core() {
             MIN_FREE_KB=131072; RMEM_MAX=8388608; WMEM_MAX=8388608
             TCP_RMEM="4096 16384 8388608"; TCP_WMEM="4096 16384 8388608"
             SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"
-            SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=15
+            SCHED_AUTOGROUP=0; THP="never"; NUMA=0
+            FIN_TIMEOUT=15
             KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5; UDP_RMEM_MIN=131072
             GAME_EXTRA=$'net.ipv4.udp_rmem_min = 131072\nnet.ipv4.udp_wmem_min = 131072\nnet.core.optmem_max = 20480'
             ;;
         gateway)
             SWAPPINESS=10; DIRTY_RATIO=20; DIRTY_BG_RATIO=10; OVERCOMMIT=1; VFS_PRESSURE=50
-            MIN_FREE_KB=32768; RMEM_MAX=8388608; WMEM_MAX=8388608
+            MIN_FREE_KB=32768
+            RMEM_MAX=8388608; WMEM_MAX=8388608
             TCP_RMEM="4096 16384 8388608"; TCP_WMEM="4096 16384 8388608"
             SOMAXCONN=65535; BACKLOG=100000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"
-            SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=30
+            SCHED_AUTOGROUP=0; THP="never"; NUMA=0
+            FIN_TIMEOUT=30
             KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5; UDP_RMEM_MIN=16384
             GATEWAY_EXTRA=$'# ── 中转网关专属：保 CPU 算加密，不抢软中断 ──\nnet.core.optmem_max = 20480'
             ;;
@@ -277,14 +280,19 @@ _kernel_optimize_core() {
         RMEM_MAX=4194304; WMEM_MAX=4194304; SOMAXCONN=1024; BACKLOG=1000
         TCP_RMEM="4096 32768 4194304"; TCP_WMEM="4096 32768 4194304"
         HIGH_EXTRA=""; WEB_EXTRA=""; STREAM_EXTRA=""; GAME_EXTRA=""; BALANCED_EXTRA=""; GATEWAY_EXTRA=""
-        if [ -f /sys/module/zswap/parameters/enabled ]; then echo N > /sys/module/zswap/parameters/enabled 2>/dev/null; fi
+        if [ -f /sys/module/zswap/parameters/enabled ]; then
+            echo N > /sys/module/zswap/parameters/enabled 2>/dev/null
+        fi
         if [ "$HAS_SWAP" -gt 0 ]; then
             SWAPPINESS=60
             echo -e "${gl_huang}检测极小内存(${MEM_MB_VAL}MB)，已自动禁用 zswap 防卡死。${gl_bai}"
+            echo -e "${gl_lv}建议: 自动为您部署 zram 内存压缩盘...${gl_bai}"
             auto_setup_zram
         else
             echo -e "${gl_red}检测极小内存(${MEM_MB_VAL}MB)无Swap！已强制降级防死机。${gl_bai}"
-            check_swap; auto_setup_zram
+            echo -e "${gl_lv}建议: 自动为您创建基础 Swap 并部署 zram...${gl_bai}"
+            check_swap
+            auto_setup_zram
         fi
     fi
 
@@ -418,17 +426,20 @@ EOF
 
     flock -u 200; exec 200>&-
     echo -e "${gl_lv}正在加载配置...${gl_bai}"
+
     local sysctl_err=$(sysctl -p "$CONF" 2>&1 | grep -v "Invalid argument" | grep -v "No such file or directory" | grep -v "unknown key")
     if [ -n "$sysctl_err" ]; then
         echo -e "${gl_huang}Sysctl 加载时有以下异常(通常不影响核心功能):${gl_bai}"
         echo "$sysctl_err" | head -n 3
     fi
+
     if ! grep -q "# YW-optimize" /etc/security/limits.conf 2>/dev/null; then
         echo -e "\n# YW-optimize" >> /etc/security/limits.conf
         echo -e "* soft nofile 1048576\n* hard nofile 1048576\nroot soft nofile 1048576\nroot hard nofile 1048576" >> /etc/security/limits.conf
     fi
     ulimit -n 1048576 2>/dev/null
     check_swap; bbr_on
+
     echo -e "${gl_lv}✅ 验证结果:${gl_bai}"
     echo -e "   - 核心: \e[32m$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)\e[0m | 缓冲: \e[32m$((RMEM_MAX/1024/1024))MB\e[0m | Swap策略: \e[32m$SWAPPINESS\e[0m"
     echo -e "${gl_lv}✅ ${mode_name} 优化完成！${gl_bai}"
@@ -478,11 +489,14 @@ restore_defaults() {
     sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf 2>/dev/null; sysctl --system >/dev/null 2>&1
     [ -f /sys/kernel/mm/transparent_hugepage/enabled ] && echo always > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null
     sed -i '/# YW-optimize/,+4d' /etc/security/limits.conf 2>/dev/null
-    if [ -f /sys/module/zswap/parameters/enabled ]; then echo N > /sys/module/zswap/parameters/enabled 2>/dev/null; fi
+    if [ -f /sys/module/zswap/parameters/enabled ]; then
+        echo N > /sys/module/zswap/parameters/enabled 2>/dev/null
+    fi
     sed -i '/vm.zswap.enabled/d' /etc/sysctl.conf 2>/dev/null
     if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled zramswap >/dev/null 2>&1; then
         echo -e "${gl_huang}检测到由脚本部署的 zram，正在停止并取消开机自启...${gl_bai}"
-        systemctl stop zramswap >/dev/null 2>&1; systemctl disable zramswap >/dev/null 2>&1
+        systemctl stop zramswap >/dev/null 2>&1
+        systemctl disable zramswap >/dev/null 2>&1
     fi
     echo -e "${gl_lv}已还原所有设置（包括禁用 zram）${gl_bai}"
 }
@@ -672,7 +686,11 @@ _test_tls_once() {
     if timeout 2 openssl s_client -connect "${host}:443" -servername "${host}" </dev/null &>/dev/null; then
         t2=$(date +%s%3N 2>/dev/null)
         ms=$((t2 - t1))
-        if [ "$ms" -ge 0 ] 2>/dev/null; then echo "$ms"; else echo "9999"; fi
+        if [ "$ms" -ge 0 ] 2>/dev/null; then
+            echo "$ms"
+        else
+            echo "9999"
+        fi
     else
         echo "9999"
     fi
@@ -685,49 +703,102 @@ select_sni() {
     echo -e "${G}3. 手动输入域名${R}" >&2
     read -e -p "请选择 (1默认 / 2优选 / 3手动): " c
     case $c in
-        1) echo "www.microsoft.com" ;;
+        1)
+            echo "www.microsoft.com"
+            ;;
         2)
-            local d=("azure.microsoft.com" "bing.com" "www.icloud.com" "statici.icloud.com" "www.microsoft.com" "xp.apple.com" "vs.aws.amazon.com" "www.xbox.com" "snap.licdn.com" "www.oracle.com" "www.xilinx.com" "ts2.tc.mm.bing.net" "images.nvidia.com" "speed.cloudflare.com" "workers.cloudflare.com" "www.lovelive-anime.jp")
+            local d=(
+                "azure.microsoft.com"
+                "bing.com"
+                "www.icloud.com"
+                "statici.icloud.com"
+                "www.microsoft.com"
+                "xp.apple.com"
+                "vs.aws.amazon.com"
+                "www.xbox.com"
+                "snap.licdn.com"
+                "www.oracle.com"
+                "www.xilinx.com"
+                "ts2.tc.mm.bing.net"
+                "images.nvidia.com"
+                "speed.cloudflare.com"
+                "workers.cloudflare.com"
+                "www.lovelive-anime.jp"
+            )
             local f="/tmp/sb_sni_test.$$"
             : > "$f"
+
             echo -e "${Y}[第1轮] 串行测速 ${#d[@]} 个域名，约需 $(( ${#d[@]} * 2 ))-$((${#d[@]} * 3)) 秒...${R}" >&2
             local idx=1
             for i in "${d[@]}"; do
-                local ms; ms=$(_test_tls_once "$i")
+                local ms
+                ms=$(_test_tls_once "$i")
                 echo "${ms} ${i}" >> "$f"
-                if [ "$ms" -lt 9999 ] 2>/dev/null; then echo -ne "  ${H}[${idx}/${#d[@]}]${R} ${i}: ${G}${ms}ms${R}    \r" >&2
-                else echo -ne "  ${H}[${idx}/${#d[@]}]${R} ${i}: ${RED}超时${R}    \r" >&2; fi
+                if [ "$ms" -lt 9999 ] 2>/dev/null; then
+                    echo -ne "  ${H}[${idx}/${#d[@]}]${R} ${i}: ${G}${ms}ms${R}    \r" >&2
+                else
+                    echo -ne "  ${H}[${idx}/${#d[@]}]${R} ${i}: ${RED}超时${R}    \r" >&2
+                fi
                 idx=$((idx + 1))
             done
             echo "" >&2
-            local top5; top5=$(sort -n "$f" | head -5)
+
+            local top5
+            top5=$(sort -n "$f" | head -5)
+
             echo -e "${Y}[第2轮] 对前 5 名各测 3 轮取最小值...${R}" >&2
             local f2="/tmp/sb_sni_test2.$$"
             : > "$f2"
+
             while IFS=' ' read -r ms dom; do
-                local best=9999 r
-                for r in 1 2 3; do local m; m=$(_test_tls_once "$dom"); if [ "$m" -lt "$best" ] 2>/dev/null; then best=$m; fi; done
+                local best=9999
+                local r
+                for r in 1 2 3; do
+                    local m
+                    m=$(_test_tls_once "$dom")
+                    if [ "$m" -lt "$best" ] 2>/dev/null; then
+                        best=$m
+                    fi
+                done
                 echo "${best} ${dom}" >> "$f2"
-                if [ "$best" -lt 9999 ] 2>/dev/null; then echo -e "  ${dom}: ${G}${best}ms${R} (第1轮 ${ms}ms)" >&2
-                else echo -e "  ${dom}: ${RED}超时${R}" >&2; fi
+                if [ "$best" -lt 9999 ] 2>/dev/null; then
+                    echo -e "  ${dom}: ${G}${best}ms${R} (第1轮 ${ms}ms)" >&2
+                else
+                    echo -e "  ${dom}: ${RED}超时${R}" >&2
+                fi
             done <<< "$top5"
-            local b_d="www.microsoft.com" b_t=9999
+
+            local b_d="www.microsoft.com"
+            local b_t=9999
             while IFS=' ' read -r t dom; do
-                if [ -n "$t" ] && [ "$t" -lt "$b_t" ] 2>/dev/null; then b_t=$t; b_d="$dom"; fi
+                if [ -n "$t" ] && [ "$t" -lt "$b_t" ] 2>/dev/null; then
+                    b_t=$t
+                    b_d="$dom"
+                fi
             done < "$f2"
+
             rm -f "$f" "$f2"
             echo "" >&2
             echo -e "${G}✅ 优选结果: ${b_d} (最低 ${b_t}ms)${R}" >&2
             echo "$b_d"
             ;;
-        3) read -e -p "输入域名: " s; echo "${s:-www.microsoft.com}" ;;
-        *) echo "www.microsoft.com" ;;
+        3)
+            read -e -p "输入域名: " s
+            echo "${s:-www.microsoft.com}"
+            ;;
+        *)
+            echo "www.microsoft.com"
+            ;;
     esac
 }
 
 sb_check() {
-    if ! command -v sing-box >/dev/null 2>&1; then echo -e "${RED}请先安装 Sing-Box 核心！${R}"; return 1; fi
-    if ! command -v jq >/dev/null 2>&1; then echo -e "${RED}请先安装 jq (apt install jq -y)！${R}"; return 1; fi
+    if ! command -v sing-box >/dev/null 2>&1; then
+        echo -e "${RED}请先安装 Sing-Box 核心！${R}"; return 1
+    fi
+    if ! command -v jq >/dev/null 2>&1; then
+        echo -e "${RED}请先安装 jq (apt install jq -y)！${R}"; return 1
+    fi
     return 0
 }
 
@@ -743,9 +814,12 @@ META_FILE="/etc/sing-box/.nodes_meta"
 OLD_META_FILE="/etc/sing-box/nodes_meta.json"
 
 _init_meta_file() {
-    if [ -f "$OLD_META_FILE" ]; then rm -f "$OLD_META_FILE"; fi
+    if [ -f "$OLD_META_FILE" ]; then
+        rm -f "$OLD_META_FILE"
+    fi
     if [ ! -f "$META_FILE" ] || ! jq -e . "$META_FILE" >/dev/null 2>&1; then
-        mkdir -p /etc/sing-box; echo '{}' > "$META_FILE"
+        mkdir -p /etc/sing-box
+        echo '{}' > "$META_FILE"
     fi
 }
 
@@ -753,9 +827,13 @@ _save_node_meta() {
     local port="$1" name="$2" type="$3" pub_key="${4:-}"
     _init_meta_file
     if [ -n "$pub_key" ]; then
-        jq --arg p "$port" --arg n "$name" --arg t "$type" --arg pk "$pub_key" '.[$p] = {"name": $n, "type": $t, "pub_key": $pk}' "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"
+        jq --arg p "$port" --arg n "$name" --arg t "$type" --arg pk "$pub_key" \
+           '.[$p] = {"name": $n, "type": $t, "pub_key": $pk}' \
+           "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"
     else
-        jq --arg p "$port" --arg n "$name" --arg t "$type" '.[$p] = {"name": $n, "type": $t}' "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"
+        jq --arg p "$port" --arg n "$name" --arg t "$type" \
+           '.[$p] = {"name": $n, "type": $t}' \
+           "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"
     fi
 }
 
@@ -776,13 +854,20 @@ open_port() {
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
         ufw allow ${port}/${proto} >/dev/null 2>&1 && opened=1
     elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
-        firewall-cmd --permanent --add-port=${port}/${proto} >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 && opened=1
+        firewall-cmd --permanent --add-port=${port}/${proto} >/dev/null 2>&1
+        firewall-cmd --reload >/dev/null 2>&1 && opened=1
     elif command -v iptables >/dev/null 2>&1; then
-        if iptables -C INPUT -p ${proto} --dport ${port} -j ACCEPT >/dev/null 2>&1; then opened=1
-        elif iptables -I INPUT -p ${proto} --dport ${port} -j ACCEPT >/dev/null 2>&1; then opened=1; fi
+        if iptables -C INPUT -p ${proto} --dport ${port} -j ACCEPT >/dev/null 2>&1; then
+            opened=1
+        elif iptables -I INPUT -p ${proto} --dport ${port} -j ACCEPT >/dev/null 2>&1; then
+            opened=1
+        fi
     fi
-    if [ "$opened" -eq 1 ]; then echo -e "${G}  ✅ 已放行 ${proto^^} ${port}${R}"
-    else echo -e "${Y}  ⚠ 无法自动放行 ${proto^^} ${port}，请手动检查云安全组${R}"; fi
+    if [ "$opened" -eq 1 ]; then
+        echo -e "${G}  ✅ 已放行 ${proto^^} ${port}${R}"
+    else
+        echo -e "${Y}  ⚠ 无法自动放行 ${proto^^} ${port}，请手动检查云安全组${R}"
+    fi
 }
 
 sb_manage_menu() {
@@ -797,9 +882,14 @@ sb_manage_menu() {
         local sb_status="${RED}未安装${R}"
         if command -v sing-box >/dev/null 2>&1; then
             if [ -f "/etc/sing-box/config.json" ] && jq -e '.inbounds | length > 0' "/etc/sing-box/config.json" >/dev/null 2>&1; then
-                if systemctl is-active --quiet sing-box 2>/dev/null; then sb_status="${G}运行中 ✅${R}"
-                else sb_status="${Y}已停止${R}"; fi
-            else sb_status="${Y}待配置 (无节点)${R}"; fi
+                if systemctl is-active --quiet sing-box 2>/dev/null; then
+                    sb_status="${G}运行中 ✅${R}"
+                else
+                    sb_status="${Y}已停止${R}"
+                fi
+            else
+                sb_status="${Y}待配置 (无节点)${R}"
+            fi
         fi
         echo -e "${G}========================================${R}"
         echo -e "${G}       Sing-Box 落地节点管理          ${R}"
@@ -818,13 +908,41 @@ sb_manage_menu() {
         echo -e "${G}========================================${R}"
         read -e -p "请输入选择: " c
         case $c in
-            1) echo -e "${C}正在连接官方源安装...${R}"; if command -v apt >/dev/null 2>&1; then curl -fsSL https://sing-box.app/deb-install.sh | bash; elif command -v yum >/dev/null 2>&1; then curl -fsSL https://sing-box.app/rpm-install.sh | bash; else echo -e "${RED}不支持该系统${R}"; fi; read -rs -n 1 -p "按任意键继续..." ;;
+            1)
+                echo -e "${C}正在连接官方源安装...${R}"
+                if command -v apt >/dev/null 2>&1; then curl -fsSL https://sing-box.app/deb-install.sh | bash
+                elif command -v yum >/dev/null 2>&1; then curl -fsSL https://sing-box.app/rpm-install.sh | bash
+                else echo -e "${RED}不支持该系统${R}"; fi
+                read -rs -n 1 -p "按任意键继续..." ;;
             2) sb_add_reality ;;
             3) sb_add_hy2 ;;
             4) sb_view_nodes ;;
             5) sb_del_node ;;
-            6) echo -e "${C}1.重启 2.停止 3.日志 (回车取消):${R}"; read -e -p "选择: " act; case $act in 1) systemctl restart sing-box && echo -e "${G}已重启${R}" ;; 2) systemctl stop sing-box && echo -e "${Y}已停止${R}" ;; 3) journalctl -u sing-box -n 30 --no-pager ;; esac; read -rs -n 1 -p "按任意键继续..." ;;
-            7) echo -e "${C}--- 手动开放端口 ---${R}"; read -e -p "请输入要放行的端口号: " m_port; if [[ ! "$m_port" =~ ^[0-9]{1,5}$ ]] || (( ${m_port#0} < 1 || ${m_port#0} > 65535 )); then echo -e "${RED}端口无效，需为 1-65535 的数字${R}"; else echo -e "${Y}选择协议:${R}"; echo -e "${G}1.${R} TCP"; echo -e "${G}2.${R} UDP"; echo -e "${G}3.${R} TCP + UDP"; read -e -p "选择 (回车默认TCP): " m_proto; case "$m_proto" in 2) open_port "$m_port" "udp" ;; 3) open_port "$m_port" "tcp"; open_port "$m_port" "udp" ;; *) open_port "$m_port" "tcp" ;; esac; fi; read -rs -n 1 -p "按任意键继续..." ;;
+            6)
+                echo -e "${C}1.重启 2.停止 3.日志 (回车取消):${R}"
+                read -e -p "选择: " act
+                case $act in
+                    1) systemctl restart sing-box && echo -e "${G}已重启${R}" ;;
+                    2) systemctl stop sing-box && echo -e "${Y}已停止${R}" ;;
+                    3) journalctl -u sing-box -n 30 --no-pager ;;
+                esac
+                read -rs -n 1 -p "按任意键继续..." ;;
+            7)
+                echo -e "${C}--- 手动开放端口 ---${R}"
+                read -e -p "请输入要放行的端口号: " m_port
+                if [[ ! "$m_port" =~ ^[0-9]{1,5}$ ]] || (( ${m_port#0} < 1 || ${m_port#0} > 65535 )); then
+                    echo -e "${RED}端口无效，需为 1-65535 的数字${R}"
+                else
+                    echo -e "${Y}选择协议:${R}"
+                    echo -e "${G}1.${R} TCP"; echo -e "${G}2.${R} UDP"; echo -e "${G}3.${R} TCP + UDP"
+                    read -e -p "选择 (回车默认TCP): " m_proto
+                    case "$m_proto" in
+                        2) open_port "$m_port" "udp" ;;
+                        3) open_port "$m_port" "tcp"; open_port "$m_port" "udp" ;;
+                        *)  open_port "$m_port" "tcp" ;;
+                    esac
+                fi
+                read -rs -n 1 -p "按任意键继续..." ;;
             0|"") break ;;
             *) echo -e "${RED}输入无效${R}"; sleep 1 ;;
         esac
@@ -850,22 +968,34 @@ sb_add_reality() {
     sb_init_conf
     local conf="/etc/sing-box/config.json"
     cp "$conf" "${conf}.bak.$(date +%s)"
-    jq --argjson p "$port" --arg u "$uuid" --arg pk "$priv_key" --arg s "$sni" '.inbounds += [{"type":"vless","tag":"vless-in-$p","listen":"::","listen_port":$p,"users":[{"uuid":$u,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$s,"reality":{"enabled":true,"handshake":{"server":$s,"server_port":443},"private_key":$pk}}}]' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
+    jq --argjson p "$port" --arg u "$uuid" --arg pk "$priv_key" --arg s "$sni" \
+       '.inbounds += [{"type":"vless","tag":"vless-in-$p","listen":"::","listen_port":$p,"users":[{"uuid":$u,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$s,"reality":{"enabled":true,"handshake":{"server":$s,"server_port":443},"private_key":$pk}}}]' \
+       "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
     if sing-box check -c "$conf" >/dev/null 2>&1; then
-        echo -e "${Y}正在检查防火墙并放行端口...${R}"; open_port "$port" "tcp"
+        echo -e "${Y}正在检查防火墙并放行端口...${R}"
+        open_port "$port" "tcp"
         _save_node_meta "$port" "$node_name" "vless" "$pub_key"
-        systemctl enable sing-box >/dev/null 2>&1; systemctl restart sing-box; sleep 2
+        systemctl enable sing-box >/dev/null 2>&1
+        systemctl restart sing-box
+        sleep 2
         if ! systemctl is-active --quiet sing-box 2>/dev/null; then
-            echo -e "${RED}❌ 服务启动失败！错误日志如下：${R}"; journalctl -u sing-box -n 15 --no-pager 2>/dev/null
-            echo -e "${Y}正在回滚配置...${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
+            echo -e "${RED}❌ 服务启动失败！错误日志如下：${R}"
+            journalctl -u sing-box -n 15 --no-pager 2>/dev/null
+            echo -e "${Y}正在回滚配置...${R}"
+            local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
             if [ -n "$latest_bak" ]; then mv "$latest_bak" "$conf"; echo -e "${Y}已从备份恢复原配置。${R}"; fi
-            _del_node_meta "$port"; read -rs -n 1 -p "按任意键返回..."; return
+            _del_node_meta "$port"
+            read -rs -n 1 -p "按任意键返回..."
+            return
         fi
         local my_ip; my_ip=$(get_my_ip)
         local link="vless://${uuid}@${my_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&type=tcp#${node_name}"
-        echo -e "${G}✅ VLESS Reality 添加成功并已启动！${R}"; echo -e "${Y}客户端链接:${R}"; echo -e "${B}${link}${R}"
+        echo -e "${G}✅ VLESS Reality 添加成功并已启动！${R}"
+        echo -e "${Y}客户端链接:${R}"
+        echo -e "${B}${link}${R}"
     else
-        echo -e "${RED}配置校验失败！已自动回滚到备份配置。${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
+        echo -e "${RED}配置校验失败！已自动回滚到备份配置。${R}"
+        local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
         if [ -n "$latest_bak" ]; then mv "$latest_bak" "$conf"; echo -e "${Y}已从备份恢复原配置。${R}"; fi
         sing-box check -c "$conf" 2>&1 | head -5
     fi
@@ -882,7 +1012,9 @@ sb_add_hy2() {
     echo -e "${Y}正在生成密码和自签证书...${R}"
     local pass; pass=$(openssl rand -base64 16)
     local crt="/etc/sing-box/hy2_${port}.crt" key="/etc/sing-box/hy2_${port}.key"
-    if [ ! -f "$crt" ] || [ ! -f "$key" ]; then openssl req -x509 -nodes -newkey rsa:2048 -keyout "$key" -out "$crt" -subj "/CN=$sni" -days 3650 2>/dev/null; fi
+    if [ ! -f "$crt" ] || [ ! -f "$key" ]; then
+        openssl req -x509 -nodes -newkey rsa:2048 -keyout "$key" -out "$crt" -subj "/CN=$sni" -days 3650 2>/dev/null
+    fi
     chmod 600 "$key" 2>/dev/null; chmod 644 "$crt" 2>/dev/null
     local default_name="Hy2-${port}"
     read -e -p "输入自定义名称 (回车跳过，默认: ${default_name}): " node_name
@@ -890,25 +1022,39 @@ sb_add_hy2() {
     sb_init_conf
     local conf="/etc/sing-box/config.json"
     cp "$conf" "${conf}.bak.$(date +%s)"
-    jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" --arg crt "$crt" --arg key "$key" '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificate_path":$crt,"key_path":$key}}]' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
+    jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" --arg crt "$crt" --arg key "$key" \
+       '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificate_path":$crt,"key_path":$key}}]' \
+       "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
     if sing-box check -c "$conf" >/dev/null 2>&1; then
-        echo -e "${Y}正在检查防火墙并放行端口...${R}"; open_port "$port" "udp"
+        echo -e "${Y}正在检查防火墙并放行端口...${R}"
+        open_port "$port" "udp"
         _save_node_meta "$port" "$node_name" "hysteria2"
-        systemctl enable sing-box >/dev/null 2>&1; systemctl restart sing-box; sleep 2
+        systemctl enable sing-box >/dev/null 2>&1
+        systemctl restart sing-box
+        sleep 2
         if ! systemctl is-active --quiet sing-box 2>/dev/null; then
-            echo -e "${RED}❌ 服务启动失败！错误日志如下：${R}"; journalctl -u sing-box -n 15 --no-pager 2>/dev/null
-            echo -e "${Y}正在回滚配置...${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
+            echo -e "${RED}❌ 服务启动失败！错误日志如下：${R}"
+            journalctl -u sing-box -n 15 --no-pager 2>/dev/null
+            echo -e "${Y}正在回滚配置...${R}"
+            local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
             if [ -n "$latest_bak" ]; then mv "$latest_bak" "$conf"; echo -e "${Y}已从备份恢复原配置。${R}"; fi
-            rm -f "$crt" "$key"; _del_node_meta "$port"; read -rs -n 1 -p "按任意键返回..."; return
+            rm -f "$crt" "$key"
+            _del_node_meta "$port"
+            read -rs -n 1 -p "按任意键返回..."
+            return
         fi
         local my_ip; my_ip=$(get_my_ip)
         local link="hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}#${node_name}"
-        echo -e "${G}✅ Hysteria2 添加成功并已启动！${R}"; echo -e "${Y}客户端链接:${R}"; echo -e "${B}${link}${R}"
+        echo -e "${G}✅ Hysteria2 添加成功并已启动！${R}"
+        echo -e "${Y}客户端链接:${R}"
+        echo -e "${B}${link}${R}"
         echo -e "${H}注意: Hysteria2 是 UDP 协议，请确保云安全组也已放行 UDP ${port}${R}"
     else
-        echo -e "${RED}配置校验失败！已自动回滚到备份配置。${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
+        echo -e "${RED}配置校验失败！已自动回滚到备份配置。${R}"
+        local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
         if [ -n "$latest_bak" ]; then mv "$latest_bak" "$conf"; echo -e "${Y}已从备份恢复原配置。${R}"; fi
-        rm -f "$crt" "$key"; sing-box check -c "$conf" 2>&1 | head -5
+        rm -f "$crt" "$key"
+        sing-box check -c "$conf" 2>&1 | head -5
     fi
     read -rs -n 1 -p "按任意键继续..."
 }
@@ -919,18 +1065,28 @@ _show_nodes_list() {
     local count
     count=$(jq '.inbounds | length' "$conf" 2>/dev/null)
     if [ -z "$count" ] || [ "$count" -eq 0 ] 2>/dev/null; then
-        echo -e "${H}暂无节点${R}"; return 1
+        echo -e "${H}暂无节点${R}"
+        return 1
     fi
+
     local meta_json
     meta_json=$(cat "$META_FILE" 2>/dev/null || echo '{}')
-    local idx=1 in type port node_name link uuid sni pub_key pass
+
+    # ★ 统一在函数头声明所有变量，绝不在 while/case 内用 local
+    local idx=1
+    local in type port node_name link
+    local uuid sni pub_key pass
+
     while [ "$idx" -le "$count" ]; do
         in=$(jq -c ".inbounds[$((idx - 1))]" "$conf" 2>/dev/null)
         [ -z "$in" ] && { idx=$((idx + 1)); continue; }
+
         type=$(echo "$in" | jq -r '.type')
         port=$(echo "$in" | jq -r '.listen_port')
         node_name=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].name // "未命名"')
-        link=""; uuid=""; sni=""; pub_key=""; pass=""
+        link=""
+        uuid=""; sni=""; pub_key=""; pass=""
+
         case "$type" in
             vless)
                 uuid=$(echo "$in" | jq -r '.users[0].uuid')
@@ -938,24 +1094,33 @@ _show_nodes_list() {
                 pub_key=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].pub_key // ""')
                 if [ -n "$uuid" ] && [ -n "$sni" ] && [ -n "$pub_key" ]; then
                     link="vless://${uuid}@${my_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&type=tcp#${node_name}"
-                else link="${RED}[数据不完整]${R}"; fi
+                else
+                    link="${RED}[数据不完整，缺少 uuid/sni/pbk]${R}"
+                fi
                 ;;
             hysteria2)
                 pass=$(echo "$in" | jq -r '.users[0].password')
                 sni=$(echo "$in" | jq -r '.tls.server_name')
                 if [ -n "$pass" ] && [ -n "$sni" ]; then
                     link="hysteria2://${pass}@${my_ip}:${port}?insecure=1&sni=${sni}#${node_name}"
-                else link="${RED}[数据不完整]${R}"; fi
+                else
+                    link="${RED}[数据不完整，缺少 password/sni]${R}"
+                fi
                 ;;
-            *) link="${H}[不支持的协议: ${type}]${R}" ;;
+            *)
+                link="${H}[不支持的协议类型: ${type}]${R}"
+                ;;
         esac
-        echo -e "${G}─────────────────────────────────${R}"
+
+        echo -e "${G}─────────────────────────────────────${R}"
         echo -e "${C}[${idx}]${R} ${Y}${node_name}${R}"
         echo -e "  协议: ${type} | 端口: ${port}"
+        echo -e "  链接:"
         echo -e "  ${B}${link}${R}"
         idx=$((idx + 1))
     done
-    echo -e "${G}─────────────────────────────────${R}"
+    echo -e "${G}─────────────────────────────────────${R}"
+    return 0
 }
 
 sb_view_nodes() {
@@ -975,17 +1140,25 @@ sb_del_node() {
     local count
     count=$(jq '.inbounds | length' "$conf" 2>/dev/null)
     if [ -z "$count" ] || [ "$count" -eq 0 ] 2>/dev/null; then
-        echo -e "${H}暂无节点可删除${R}"; read -rs -n 1 -p "按任意键返回..."; return
+        echo -e "${H}暂无节点可删除${R}"
+        read -rs -n 1 -p "按任意键返回..."
+        return
     fi
     clear
     echo -e "${C}--- 删除节点 ---${R}"
     _show_nodes_list
     read -e -p "输入要删除的端口号: " del_port
-    if [[ ! "$del_port" =~ ^[0-9]+$ ]]; then echo -e "${RED}端口无效${R}"; read -rs -n 1 -p "按任意键返回..."; return; fi
+    if [[ ! "$del_port" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}端口无效${R}"
+        read -rs -n 1 -p "按任意键返回..."
+        return
+    fi
     local found
     found=$(jq --argjson p "$del_port" '[.inbounds[] | select(.listen_port == $p)] | length' "$conf" 2>/dev/null)
     if [ -z "$found" ] || [ "$found" -eq 0 ] 2>/dev/null; then
-        echo -e "${RED}未找到端口 ${del_port} 的节点${R}"; read -rs -n 1 -p "按任意键返回..."; return
+        echo -e "${RED}未找到端口 ${del_port} 的节点${R}"
+        read -rs -n 1 -p "按任意键返回..."
+        return
     fi
     local node_name
     node_name=$(_get_node_meta "$del_port" "name")
@@ -1001,14 +1174,22 @@ sb_del_node() {
             local remaining
             remaining=$(jq '.inbounds | length' "$conf" 2>/dev/null)
             if [ -z "$remaining" ] || [ "$remaining" -eq 0 ] 2>/dev/null; then
-                systemctl stop sing-box 2>/dev/null; echo -e "${Y}所有节点已清空，服务已停止。${R}"
-            else systemctl restart sing-box 2>/dev/null; fi
+                systemctl stop sing-box 2>/dev/null
+                echo -e "${Y}所有节点已清空，服务已停止。${R}"
+            else
+                systemctl restart sing-box 2>/dev/null
+            fi
             echo -e "${G}✅ 节点 [${node_name}] 端口 ${del_port} 已删除${R}"
         else
             local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
-            if [ -n "$latest_bak" ]; then mv "$latest_bak" "$conf"; echo -e "${Y}配置校验失败，已回滚到备份。${R}"; fi
+            if [ -n "$latest_bak" ]; then
+                mv "$latest_bak" "$conf"
+                echo -e "${Y}配置校验失败，已回滚到备份。${R}"
+            fi
         fi
-    else echo -e "${H}已取消${R}"; fi
+    else
+        echo -e "${H}已取消${R}"
+    fi
     read -rs -n 1 -p "按任意键返回..."
 }
 
@@ -1024,11 +1205,16 @@ main_menu() {
         if [ -f /etc/sysctl.d/99-yw-optimize.conf ]; then
             cur_mode=$(grep "^# 场景:" /etc/sysctl.d/99-yw-optimize.conf 2>/dev/null | sed 's/^# 场景: //' | xargs)
         fi
+
         local sb_st="${gl_red}未安装${gl_bai}"
         if command -v sing-box >/dev/null 2>&1; then
-            if systemctl is-active --quiet sing-box 2>/dev/null; then sb_st="${gl_lv}运行中 ✅${gl_bai}"
-            else sb_st="${gl_huang}已停止${gl_bai}"; fi
+            if systemctl is-active --quiet sing-box 2>/dev/null; then
+                sb_st="${gl_lv}运行中 ✅${gl_bai}"
+            else
+                sb_st="${gl_huang}已停止${gl_bai}"
+            fi
         fi
+
         echo -e "${gl_lv}╔══════════════════════════════════════════╗${gl_bai}"
         echo -e "${gl_lv}║        YW Linux 服务器优化工具箱         ║${gl_bai}"
         echo -e "${gl_lv}╚══════════════════════════════════════════╝${gl_bai}"
