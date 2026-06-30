@@ -660,12 +660,10 @@ get_my_ip() {
 _test_tls_once() {
     local host="$1"
     local t1 t2 ms
-    # %s%3N 在 GNU date 上返回毫秒级时间戳，兼容性最好
     t1=$(date +%s%3N 2>/dev/null)
     if timeout 2 openssl s_client -connect "${host}:443" -servername "${host}" </dev/null &>/dev/null; then
         t2=$(date +%s%3N 2>/dev/null)
         ms=$((t2 - t1))
-        # 防止异常负数
         if [ "$ms" -ge 0 ] 2>/dev/null; then
             echo "$ms"
         else
@@ -708,14 +706,12 @@ select_sni() {
             local f="/tmp/sb_sni_test.$$"
             : > "$f"
 
-            # ===== 第一轮：串行逐个测一遍，找出前5名 =====
             echo -e "${Y}[第1轮] 串行测速 16 个域名，约需 16-20 秒...${R}" >&2
             local idx=1
             for i in "${d[@]}"; do
                 local ms
                 ms=$(_test_tls_once "$i")
                 echo "${ms} ${i}" >> "$f"
-                # 显示实时进度
                 if [ "$ms" -lt 9999 ] 2>/dev/null; then
                     echo -ne "  ${gl_hui}[${idx}/${#d[@]}]${R} ${i}: ${G}${ms}ms${R}\r" >&2
                 else
@@ -725,7 +721,6 @@ select_sni() {
             done
             echo "" >&2
 
-            # 取前5名进入第二轮
             local top5
             top5=$(sort -n "$f" | head -5)
 
@@ -751,7 +746,6 @@ select_sni() {
                 fi
             done <<< "$top5"
 
-            # 最终结果
             local b_d="www.microsoft.com"
             local b_t=9999
             while IFS=' ' read -r t dom; do
@@ -794,12 +788,10 @@ sb_init_conf() {
     fi
 }
 
-# 【关键修复】改为隐藏文件且不带 .json 后缀，防止被 sing-box 当作配置文件解析报错
 META_FILE="/etc/sing-box/.nodes_meta"
 OLD_META_FILE="/etc/sing-box/nodes_meta.json"
 
 _init_meta_file() {
-    # 自动清理以前遗留的会被 sing-box 误读的毒瘤文件
     if [ -f "$OLD_META_FILE" ]; then
         rm -f "$OLD_META_FILE"
     fi
@@ -946,6 +938,12 @@ sb_add_reality() {
     read -e -p "端口: " port
     if [[ ! "$port" =~ ^[0-9]+$ ]]; then echo -e "${RED}端口错误${R}"; read -rs -n 1 -p "按任意键返回..."; return; fi
 
+    local conf="/etc/sing-box/config.json"
+    if [ -f "$conf" ] && jq -e ".inbounds[] | select(.listen_port == $port)" "$conf" >/dev/null 2>&1; then
+        echo -e "${RED}错误: 端口 $port 已被占用！请先删除该节点或换一个端口。${R}"
+        read -rs -n 1 -p "按任意键返回..."; return
+    fi
+
     local sni; sni=$(select_sni)
 
     echo -e "${Y}正在生成 UUID 和密钥对...${R}"
@@ -961,14 +959,14 @@ sb_add_reality() {
     [ -z "$node_name" ] && node_name="$default_name"
 
     sb_init_conf
-    local conf="/etc/sing-box/config.json"
     cp "$conf" "${conf}.bak.$(date +%s)"
 
     jq --argjson p "$port" --arg u "$uuid" --arg pk "$priv_key" --arg s "$sni" \
        '.inbounds += [{"type":"vless","tag":"vless-in-$p","listen":"::","listen_port":$p,"users":[{"uuid":$u,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$s,"reality":{"enabled":true,"handshake":{"server":$s,"server_port":443},"private_key":$pk}}}]' \
-       "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
+       "$conf" > /tmp/sb_cfg.json
 
-    if sing-box check -c "$conf" >/dev/null 2>&1; then
+    if sing-box check -c /tmp/sb_cfg.json >/dev/null 2>&1; then
+        mv /tmp/sb_cfg.json "$conf"
         echo -e "${Y}正在检查防火墙并放行端口...${R}"
         open_port "$port" "tcp"
         _save_node_meta "$port" "$node_name" "vless" "$pub_key"
@@ -991,10 +989,10 @@ sb_add_reality() {
         echo -e "${Y}客户端链接:${R}"
         echo -e "${B}${link}${R}"
     else
-        echo -e "${RED}配置校验失败！已自动回滚到备份配置。${R}"
-        local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
-        if [ -n "$latest_bak" ]; then mv "$latest_bak" "$conf"; echo -e "${Y}已从备份恢复原配置。${R}"; fi
-        sing-box check -c "$conf" 2>&1 | head -5
+        echo -e "${RED}配置校验失败！Sing-Box 拒绝的原因如下：${R}"
+        sing-box check -c /tmp/sb_cfg.json 2>&1
+        rm -f /tmp/sb_cfg.json
+        echo -e "${Y}已取消更改，原配置未受影响。${R}"
     fi
     read -rs -n 1 -p "按任意键继续..."
 }
@@ -1005,6 +1003,12 @@ sb_add_hy2() {
     echo -e "${C}--- 添加 Hysteria2 落地节点 ---${R}"
     read -e -p "端口: " port
     if [[ ! "$port" =~ ^[0-9]+$ ]]; then echo -e "${RED}端口错误${R}"; read -rs -n 1 -p "按任意键返回..."; return; fi
+
+    local conf="/etc/sing-box/config.json"
+    if [ -f "$conf" ] && jq -e ".inbounds[] | select(.listen_port == $port)" "$conf" >/dev/null 2>&1; then
+        echo -e "${RED}错误: 端口 $port 已被占用！请先删除该节点或换一个端口。${R}"
+        read -rs -n 1 -p "按任意键返回..."; return
+    fi
 
     local sni; sni=$(select_sni)
 
@@ -1021,14 +1025,14 @@ sb_add_hy2() {
     [ -z "$node_name" ] && node_name="$default_name"
 
     sb_init_conf
-    local conf="/etc/sing-box/config.json"
     cp "$conf" "${conf}.bak.$(date +%s)"
 
     jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" --arg crt "$crt" --arg key "$key" \
        '.inbounds += [{"type":"hysteria2","tag":"hy2-in-$p","listen":"::","listen_port":$p,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificate_path":$crt,"key_path":$key}}]' \
-       "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
+       "$conf" > /tmp/sb_cfg.json
        
-    if sing-box check -c "$conf" >/dev/null 2>&1; then
+    if sing-box check -c /tmp/sb_cfg.json >/dev/null 2>&1; then
+        mv /tmp/sb_cfg.json "$conf"
         echo -e "${Y}正在检查防火墙并放行端口...${R}"
         open_port "$port" "udp"
         _save_node_meta "$port" "$node_name" "hysteria2"
@@ -1053,11 +1057,10 @@ sb_add_hy2() {
         echo -e "${B}${link}${R}"
         echo -e "${H}注意: Hysteria2 是 UDP 协议，请确保云安全组也已放行 UDP ${port}${R}"
     else
-        echo -e "${RED}配置校验失败！已自动回滚到备份配置。${R}"
-        local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
-        if [ -n "$latest_bak" ]; then mv "$latest_bak" "$conf"; echo -e "${Y}已从备份恢复原配置。${R}"; fi
-        rm -f "$crt" "$key"
-        sing-box check -c "$conf" 2>&1 | head -5
+        echo -e "${RED}配置校验失败！Sing-Box 拒绝的原因如下：${R}"
+        sing-box check -c /tmp/sb_cfg.json 2>&1
+        rm -f /tmp/sb_cfg.json "$crt" "$key"
+        echo -e "${Y}已取消更改，原配置未受影响。${R}"
     fi
     read -rs -n 1 -p "按任意键继续..."
 }
@@ -1168,7 +1171,6 @@ sb_del_node() {
 # 独立运行时的主菜单入口 (被 source 引入时不会自动弹出)
 # ============================================================================
 
-# 判断是否是被主脚本引入的，如果是则不执行主菜单
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main_menu() {
         while true; do
@@ -1197,6 +1199,5 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         done
     }
 
-    # 启动主菜单
     main_menu
 fi
