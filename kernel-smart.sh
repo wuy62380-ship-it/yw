@@ -732,7 +732,14 @@ META_FILE="/etc/sing-box/.nodes_meta"
 OLD_META_FILE="/etc/sing-box/nodes_meta.json"
 
 _init_meta_file() {
-    if [ -f "$OLD_META_FILE" ]; then rm -f "$OLD_META_FILE"; fi
+    # 自动修复：如果之前版本遗留了旧文件，自动把数据迁移过来防丢失
+    if [ -f "$OLD_META_FILE" ]; then
+        if [ ! -f "$META_FILE" ] && jq -e . "$OLD_META_FILE" >/dev/null 2>&1; then
+            mv "$OLD_META_FILE" "$META_FILE"
+        else
+            rm -f "$OLD_META_FILE"
+        fi
+    fi
     if [ ! -f "$META_FILE" ] || ! jq -e . "$META_FILE" >/dev/null 2>&1; then
         mkdir -p /etc/sing-box; echo '{}' > "$META_FILE"
     fi
@@ -757,7 +764,8 @@ _del_node_meta() {
 _get_node_meta() {
     local port="$1" field="$2"
     [ ! -f "$META_FILE" ] && return
-    jq -r --arg p "$port" '.[$p][$field] // empty' "$META_FILE"
+    # 【已修复】补上缺失的 --arg field "$field"
+    jq -r --arg p "$port" --arg field "$field" '.[$p][$field] // empty' "$META_FILE"
 }
 
 open_port() {
@@ -847,7 +855,6 @@ sb_add_reality() {
     local conf="/etc/sing-box/config.json"
     cp "$conf" "${conf}.bak.$(date +%s)"
 
-    # 【已修复】将 "tag":"vless-in-$p" 改为了 "tag":"vless-in-\($p)"
     jq --argjson p "$port" --arg u "$uuid" --arg pk "$priv_key" --arg s "$sni" \
        '.inbounds += [{"type":"vless","tag":"vless-in-\($p)","listen":"::","listen_port":$p,"users":[{"uuid":$u,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$s,"reality":{"enabled":true,"handshake":{"server":$s,"server_port":443},"private_key":$pk}}}]' \
        "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
@@ -908,7 +915,6 @@ sb_add_hy2() {
     local conf="/etc/sing-box/config.json"
     cp "$conf" "${conf}.bak.$(date +%s)"
 
-    # 【已修复】将 "tag":"hy2-in-$p" 改为了 "tag":"hy2-in-\($p)"
     jq --argjson p "$port" --arg pass "$pass" --arg s "$sni" --arg crt "$crt" --arg key "$key" \
        '.inbounds += [{"type":"hysteria2","tag":"hy2-in-\($p)","listen":"::","listen_port":$p,"users":[{"password":$pass}],"tls":{"enabled":true,"server_name":$s,"certificate_path":$crt,"key_path":$key}}]' \
        "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
