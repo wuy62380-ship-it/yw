@@ -650,50 +650,129 @@ R="${gl_bai}"; G="${gl_lv}"; Y="${gl_huang}"; H="${gl_hui}"; RED="${gl_red}"; C=
 
 get_my_ip() {
     local ip
-    ip=$(curl -4 -s -f --connect-timeout 3 https://ifconfig.me 2>/dev/null || \
-         curl -4 -s -f --connect-timeout 3 https://checkip.amazonaws.com 2>/dev/null || \
-         curl -4 -s -f --connect-timeout 3 https://api.ipify.org 2>/dev/null)
+    ip=$(curl -4 -s -f --connect-timeout 3 https://ifconfig.me 2>/dev/null \
+      || curl -4 -s -f --connect-timeout 3 https://checkip.amazonaws.com 2>/dev/null \
+      || curl -4 -s -f --connect-timeout 3 https://api.ipify.org 2>/dev/null)
     echo "${ip:-未知IP}"
+}
+
+# 单次 TLS 握手测速，返回毫秒数
+_test_tls_once() {
+    local host="$1"
+    local t1 t2 ms
+    # %s%3N 在 GNU date 上返回毫秒级时间戳，兼容性最好
+    t1=$(date +%s%3N 2>/dev/null)
+    if timeout 2 openssl s_client -connect "${host}:443" -servername "${host}" </dev/null &>/dev/null; then
+        t2=$(date +%s%3N 2>/dev/null)
+        ms=$((t2 - t1))
+        # 防止异常负数
+        if [ "$ms" -ge 0 ] 2>/dev/null; then
+            echo "$ms"
+        else
+            echo "9999"
+        fi
+    else
+        echo "9999"
+    fi
 }
 
 select_sni() {
     echo -e "${Y}--- 伪装域名 (SNI) 设置 ---${R}" >&2
     echo -e "${G}1. 使用默认伪装域名${R}" >&2
-    echo -e "${G}2. 自动优选最佳域名 (并发TLS握手测速)${R}" >&2
+    echo -e "${G}2. 自动优选最佳域名 (串行精确测速+二轮筛选)${R}" >&2
     echo -e "${G}3. 手动输入域名${R}" >&2
     read -e -p "请选择 (1默认 / 2优选 / 3手动): " c
     case $c in
-        1) echo "www.microsoft.com" ;;
+        1)
+            echo "www.microsoft.com"
+            ;;
         2)
-            echo -e "${Y}[TLS 握手测速中，约需2秒]...${R}" >&2
-            local d=("azure.microsoft.com" "bing.com" "www.icloud.com" "statici.icloud.com" "www.microsoft.com" "xp.apple.com" "vs.aws.amazon.com" "www.xbox.com" "snap.licdn.com" "www.oracle.com" "www.xilinx.com" "ts2.tc.mm.bing.net" "images.nvidia.com")
+            local d=(
+                "azure.microsoft.com"
+                "bing.com"
+                "www.icloud.com"
+                "statici.icloud.com"
+                "www.microsoft.com"
+                "xp.apple.com"
+                "vs.aws.amazon.com"
+                "www.xbox.com"
+                "snap.licdn.com"
+                "www.oracle.com"
+                "www.xilinx.com"
+                "ts2.tc.mm.bing.net"
+                "images.nvidia.com"
+                "speed.cloudflare.com"
+                "workers.cloudflare.com"
+                "www.lovelive-anime.jp"
+            )
             local f="/tmp/sb_sni_test.$$"
-            > "$f"
+            : > "$f"
+
+            # ===== 第一轮：串行逐个测一遍，找出前5名 =====
+            echo -e "${Y}[第1轮] 串行测速 16 个域名，约需 16-20 秒...${R}" >&2
+            local idx=1
             for i in "${d[@]}"; do
-                t1=$(date +%s%3N)
-                if timeout 1 openssl s_client -connect "$i:443" -servername "$i" </dev/null &>/dev/null; then
-                    t2=$(date +%s%3N)
-                    echo "$((t2 - t1)) $i" >> "$f"
+                local ms
+                ms=$(_test_tls_once "$i")
+                echo "${ms} ${i}" >> "$f"
+                # 显示实时进度
+                if [ "$ms" -lt 9999 ] 2>/dev/null; then
+                    echo -ne "  ${gl_hui}[${idx}/${#d[@]}]${R} ${i}: ${G}${ms}ms${R}\r" >&2
                 else
-                    echo "9999 $i" >> "$f"
+                    echo -ne "  ${gl_hui}[${idx}/${#d[@]}]${R} ${i}: ${RED}超时${R}\r" >&2
                 fi
+                idx=$((idx + 1))
             done
+            echo "" >&2
+
+            # 取前5名进入第二轮
+            local top5
+            top5=$(sort -n "$f" | head -5)
+
+            echo -e "${Y}[第2轮] 对前 5 名各测 3 轮取最小值...${R}" >&2
+            local f2="/tmp/sb_sni_test2.$$"
+            : > "$f2"
+
+            while IFS=' ' read -r ms dom; do
+                local best=9999
+                local r
+                for r in 1 2 3; do
+                    local m
+                    m=$(_test_tls_once "$dom")
+                    if [ "$m" -lt "$best" ] 2>/dev/null; then
+                        best=$m
+                    fi
+                done
+                echo "${best} ${dom}" >> "$f2"
+                if [ "$best" -lt 9999 ] 2>/dev/null; then
+                    echo -e "  ${dom}: ${G}${best}ms${R} (第1轮 ${ms}ms)" >&2
+                else
+                    echo -e "  ${dom}: ${RED}超时${R}" >&2
+                fi
+            done <<< "$top5"
+
+            # 最终结果
             local b_d="www.microsoft.com"
             local b_t=9999
-            while read -r line; do
-                local t=${line%% *}
-                local dom=${line#* }
-                if [ "$t" -lt "$b_t" ] 2>/dev/null; then
+            while IFS=' ' read -r t dom; do
+                if [ -n "$t" ] && [ "$t" -lt "$b_t" ] 2>/dev/null; then
                     b_t=$t
-                    b_d=$dom
+                    b_d="$dom"
                 fi
-            done < "$f"
-            rm -f "$f"
-            echo -e "${G}选用: $b_d (${b_t}ms)${R}" >&2
+            done < "$f2"
+
+            rm -f "$f" "$f2"
+            echo "" >&2
+            echo -e "${G}✅ 优选结果: ${b_d} (最低 ${b_t}ms)${R}" >&2
             echo "$b_d"
             ;;
-        3) read -e -p "输入域名: " s; echo "${s:-www.apple.com}" ;;
-        *) echo "www.apple.com" ;;
+        3)
+            read -e -p "输入域名: " s
+            echo "${s:-www.microsoft.com}"
+            ;;
+        *)
+            echo "www.microsoft.com"
+            ;;
     esac
 }
 
@@ -1028,7 +1107,7 @@ sb_view_nodes() {
     sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
     clear
     echo -e "${G}========================================${R}"
-    echo -e "${G}         当前节点与客户端链接          ${R}"
+    echo -e "${G}       节点列表与客户端链接          ${R}"
     echo -e "${G}========================================${R}"
     _show_nodes_list
     echo -e "${G}========================================${R}"
@@ -1040,88 +1119,48 @@ sb_del_node() {
     local conf="/etc/sing-box/config.json"
     local inbounds; inbounds=$(jq -c '.inbounds[]' "$conf" 2>/dev/null)
     if [ -z "$inbounds" ]; then echo -e "${H}暂无节点可删除${R}"; read -rs -n 1 -p "按任意键返回..."; return; fi
-
+    
     clear
     echo -e "${RED}========================================${R}"
-    echo -e "${RED}         删除节点                       ${R}"
+    echo -e "${RED}       删除节点                       ${R}"
     echo -e "${RED}========================================${R}"
-
+    
     local meta_json; meta_json=$(cat "$META_FILE" 2>/dev/null || echo '{}')
-    local idx=1
+    local ports=()
+    
     echo "$inbounds" | while IFS= read -r in; do
         local type port node_name
         type=$(echo "$in" | jq -r '.type')
         port=$(echo "$in" | jq -r '.listen_port')
         node_name=$(echo "$meta_json" | jq -r --arg p "$port" '.[$p].name // "未命名"')
-        echo -e "${C}[${idx}]${R} ${Y}${node_name}${R} | 协议: ${type} | 端口: ${port}"
-        idx=$((idx + 1))
+        echo -e "  ${Y}端口 ${port}${R} - ${node_name} (${type})"
     done
+    
     echo -e "${RED}========================================${R}"
-    read -e -p "请输入要删除的节点端口号 (回车取消): " del_port
-    if [[ -z "$del_port" || ! "$del_port" =~ ^[0-9]+$ ]]; then
-        echo -e "${Y}已取消${R}"
+    read -e -p "请输入要删除的端口号: " del_port
+    
+    if [[ ! "$del_port" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}端口无效${R}"
     else
-        local target_idx=$(jq -r --arg p "$del_port" '.inbounds | to_entries[] | select(.value.listen_port == ($p|tonumber)) | .key' "$conf")
-        if [ -z "$target_idx" ]; then
-            echo -e "${RED}未找到端口为 ${del_port} 的节点${R}"
-        else
-            cp "$conf" "${conf}.bak.$(date +%s)"
-            local is_hy2=$(jq -r --argjson idx "$target_idx" '.inbounds[$idx].type' "$conf")
-            jq --argjson idx "$target_idx" 'del(.inbounds[$idx])' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
-            
-            if [ "$is_hy2" = "hysteria2" ]; then
-                rm -f "/etc/sing-box/hy2_${del_port}.crt" "/etc/sing-box/hy2_${del_port}.key"
-            fi
-            
+        local node_name; node_name=$(_get_node_meta "$del_port" "name")
+        cp "$conf" "${conf}.bak.$(date +%s)"
+        
+        jq --argjson p "$del_port" 'del(.inbounds[] | select(.listen_port == $p))' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
+        
+        if sing-box check -c "$conf" >/dev/null 2>&1; then
             _del_node_meta "$del_port"
-            
             if jq -e '.inbounds | length > 0' "$conf" >/dev/null 2>&1; then
                 systemctl restart sing-box
-                sleep 2
-                if systemctl is-active --quiet sing-box 2>/dev/null; then
-                    echo -e "${G}✅ 节点已删除，服务已重启运行${R}"
-                else
-                    echo -e "${Y}⚠ 节点已删除，但服务重启失败，日志如下：${R}"
-                    journalctl -u sing-box -n 10 --no-pager
-                fi
             else
-                systemctl stop sing-box >/dev/null 2>&1
-                echo -e "${Y}已删除最后一个节点，服务已停止。${R}"
+                systemctl stop sing-box
+                echo -e "${Y}所有节点已移除，服务已停止${R}"
             fi
+            echo -e "${G}✅ 已删除节点: ${node_name:-端口$del_port}${R}"
+        else
+            local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1)
+            if [ -n "$latest_bak" ]; then mv "$latest_bak" "$conf"; fi
+            echo -e "${RED}删除失败，已回滚配置${R}"
         fi
     fi
     read -rs -n 1 -p "按任意键返回..."
 }
-
-# ============================================================================
-# 主入口
-# ============================================================================
-
-main_menu() {
-    while true; do
-        clear
-        echo -e "${gl_lv}========================================${gl_bai}"
-        echo -e "${gl_lv}        YW 系统优化与管理面板           ${gl_bai}"
-        echo -e "${gl_lv}========================================${gl_bai}"
-        echo -e "${gl_kjlan}1.${gl_bai} 系统信息查询"
-        echo -e "${gl_kjlan}2.${gl_bai} 安装 BBRv3 内核"
-        echo -e "${gl_kjlan}3.${gl_bai} Linux系统内核参数优化"
-        echo -e "${gl_kjlan}4.${gl_bai} Sing-Box 落地节点管理"
-        echo -e "${gl_kjlan}5.${gl_bai} 管理虚拟内存"
-        echo -e "${gl_kjlan}========================================${gl_bai}"
-        echo -e "${gl_huang}0.${gl_bai} 退出脚本"
-        echo -e "${gl_lv}========================================${gl_bai}"
-        read -e -p "请输入选择: " main_choice
-        case $main_choice in
-            1) show_sys_info ;;
-            2) bbrv3 ;;
-            3) Kernel_optimize ;;
-            4) sb_manage_menu ;;
-            5) change_swap_size ;;
-            0|"") clear; exit 0 ;;
-            *) echo -e "${gl_red}无效选择${gl_bai}"; sleep 1 ;;
-        esac
-    done
-}
-
-main_menu
