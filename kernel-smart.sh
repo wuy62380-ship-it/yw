@@ -82,11 +82,20 @@ _kernel_optimize_core() {
         gateway) SWAPPINESS=10; DIRTY_RATIO=20; DIRTY_BG_RATIO=10; OVERCOMMIT=1; VFS_PRESSURE=50; MIN_FREE_KB=32768; RMEM_MAX=8388608; WMEM_MAX=8388608; TCP_RMEM="4096 16384 8388608"; TCP_WMEM="4096 16384 8388608"; SOMAXCONN=65535; BACKLOG=100000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"; SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=30; KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5; UDP_RMEM_MIN=16384; GATEWAY_EXTRA=$'net.core.optmem_max = 20480' ;;
         balanced) SWAPPINESS=30; DIRTY_RATIO=20; DIRTY_BG_RATIO=10; OVERCOMMIT=0; VFS_PRESSURE=75; MIN_FREE_KB=32768; RMEM_MAX=16777216; WMEM_MAX=16777216; TCP_RMEM="4096 87380 16777216"; TCP_WMEM="4096 65536 16777216"; SOMAXCONN=4096; BACKLOG=5000; SYN_BACKLOG=4096; PORT_RANGE="32768 60999"; SCHED_AUTOGROUP=0; THP="always"; NUMA=1; FIN_TIMEOUT=30; KEEPALIVE_TIME=600; KEEPALIVE_INTVL=60; KEEPALIVE_PROBES=5; TCP_SLOW_START_AFTER_IDLE=1; BALANCED_EXTRA="vm.overcommit_memory = 0" ;;
     esac
+    
     local MEM_MB_VAL=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
     if [ "$MEM_MB_VAL" -ge 4096 ]; then MIN_FREE_KB=131072; [ "$scene" != "balanced" ] && SWAPPINESS=5
     elif [ "$MEM_MB_VAL" -ge 2048 ]; then MIN_FREE_KB=65536; RMEM_MAX=33554432; WMEM_MAX=33554432; TCP_RMEM="4096 87380 33554432"; TCP_WMEM="4096 65536 33554432"; BACKLOG=50000; [ "$scene" = "stream_game" ] || [ "$scene" = "stream" ] && STREAM_GAME_EXTRA=$'net.ipv4.udp_rmem_min = 65536\nnet.ipv4.udp_wmem_min = 65536\nnet.ipv4.udp_rmem_max = 8388608\nnet.ipv4.udp_wmem_max = 8388608\nnet.core.netdev_budget = 800\nnet.core.netdev_max_backlog = 50000\nnet.core.optmem_max = 20480'
     elif [ "$MEM_MB_VAL" -ge 1024 ]; then MIN_FREE_KB=32768; RMEM_MAX=16777216; WMEM_MAX=16777216; TCP_RMEM="4096 87380 16777216"; TCP_WMEM="4096 65536 16777216"; BACKLOG=10000; [ "$scene" = "stream_game" ] || [ "$scene" = "stream" ] && STREAM_GAME_EXTRA=$'net.ipv4.udp_rmem_min = 16384\nnet.ipv4.udp_wmem_min = 16384\nnet.ipv4.udp_rmem_max = 4194304\nnet.ipv4.udp_wmem_max = 4194304\nnet.core.netdev_budget = 600\nnet.core.netdev_max_backlog = 10000\nnet.core.optmem_max = 20480'
-    else MIN_FREE_KB=16384; OVERCOMMIT=0; SWAPPINESS=10; RMEM_MAX=4194304; WMEM_MAX=4194304; SOMAXCONN=1024; BACKLOG=1000; TCP_RMEM="4096 32768 4194304"; TCP_WMEM="4096 32768 4194304"; HIGH_EXTRA=""; WEB_EXTRA=""; STREAM_EXTRA=""; GAME_EXTRA=""; BALANCED_EXTRA=""; GATEWAY_EXTRA=""; STREAM_GAME_EXTRA=""; [ -f /sys/module/zswap/parameters/enabled ] && echo N > /sys/module/zswap/parameters/enabled 2>/dev/null; check_swap; auto_setup_zram; fi
+    else 
+        # 针对 1C1G 小鸡极限优化
+        MIN_FREE_KB=16384; OVERCOMMIT=0; SWAPPINESS=10; VFS_PRESSURE=50; DIRTY_RATIO=20; DIRTY_BG_RATIO=5
+        RMEM_MAX=8388608; WMEM_MAX=8388608; SOMAXCONN=4096; BACKLOG=2000; SYN_BACKLOG=2048
+        TCP_RMEM="4096 32768 8388608"; TCP_WMEM="4096 32768 8388608"
+        HIGH_EXTRA=""; WEB_EXTRA=""; STREAM_EXTRA=""; GAME_EXTRA=""; BALANCED_EXTRA=""; GATEWAY_EXTRA=""
+        STREAM_GAME_EXTRA=$'net.ipv4.udp_rmem_min = 16384\nnet.ipv4.udp_wmem_min = 16384\nnet.ipv4.udp_rmem_max = 4194304\nnet.ipv4.udp_wmem_max = 4194304\nnet.core.netdev_budget = 600\nnet.core.netdev_max_backlog = 2000\nnet.core.optmem_max = 16384'
+        [ -f /sys/module/zswap/parameters/enabled ] && echo N > /sys/module/zswap/parameters/enabled 2>/dev/null; check_swap; auto_setup_zram; fi
+
     local KVER=$(uname -r | grep -oP '^\d+\.\d+'); CC="cubic"; QDISC="fq_codel"
     if [ -n "$KVER" ] && { [ "$KVER" \> "4.9" ] || [ "$KVER" = "4.9" ]; }; then modprobe tcp_bbr 2>/dev/null; sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q bbr && { CC="bbr"; QDISC="fq"; }; fi
     local TCP_MEM_MIN=$((MEM_MB_VAL * 256)) TCP_MEM_DEF=$((MEM_MB_VAL * 512)) TCP_MEM_MAX=$((MEM_MB_VAL * 1024))
@@ -166,7 +175,7 @@ EOF
     echo -e "${gl_lv}${mode_name} 完成！内存: ${MEM_MB_VAL}MB | 算法: ${CC}${gl_bai}"; read -rs -n 1 -p ""
 }
 
-# 专家级极速网卡优化
+# 专家级极速网卡优化 (针对单核/多核小鸡大幅降低CPU占用)
 nic_extreme_optimize() {
     root_use || return
     command -v ethtool >/dev/null 2>&1 || install_pkg ethtool || { echo -e "${RED}缺少 ethtool，无法优化${R}"; read -rs -n 1 -p ""; return; }
@@ -176,15 +185,18 @@ nic_extreme_optimize() {
     
     echo -e "${Y}正在对网卡 [${main_nic}] 进行极速满载优化...${R}"
     
-    # 1. Ring Buffer 拉满
+    # 1. Ring Buffer 网卡队列拉满
     local max_rx=$(ethtool -g "$main_nic" 2>/dev/null | grep -i "RX MAX" | awk '{print $3}')
     local max_tx=$(ethtool -g "$main_nic" 2>/dev/null | grep -i "TX MAX" | awk '{print $3}')
     if [ -n "$max_rx" ] && [ "$max_rx" -gt 0 ]; then ethtool -G "$main_nic" rx "$max_rx" tx "$max_tx" 2>/dev/null && echo -e "${G}✅ 网卡队列拉满 (RX: $max_rx, TX: $max_tx)${R}"; fi
     
-    # 2. 中断合并调优 (直播大吞吐+游戏低延迟折中)
+    # 2. 硬件卸载强制开启 (1核CPU减负神器)
+    ethtool -K "$main_nic" tso on gso on gro on 2>/dev/null && echo -e "${G}✅ 硬件卸载已开启 (TSO/GSO/GRO)${R}"
+    
+    # 3. 中断合并调优
     if ethtool -C "$main_nic" rx-usecs 50 tx-usecs 50 2>/dev/null; then echo -e "${G}✅ 中断合并优化 (50us)${R}"; fi
     
-    # 3. RPS/RFS 多核负载分发
+    # 4. RPS/RFS 多核负载分发 (单核也会设置掩码1，无副作用)
     local cpu_count=$(nproc)
     local hex_len=$(( (cpu_count + 3) / 4 ))
     local rps_mask=$(printf 'f%.0s' $(seq 1 $hex_len))
@@ -193,12 +205,13 @@ nic_extreme_optimize() {
     [ -f /proc/sys/net/core/rps_sock_flow_entries ] && echo "32768" > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null
     echo -e "${G}✅ 多核 RPS/RFS 负载分发已开启 ($cpu_count 核)${R}"
 
-    # 4. 持久化配置
+    # 5. 持久化配置
     cat > /usr/local/bin/yw-nic-optimize.sh << EOF
 #!/bin/bash
 NIC="\$(ip route | grep default | awk '{print \$5}' | head -1)"
 [ -z "\$NIC" ] && exit 0
 ethtool -G \$NIC rx $max_rx tx $max_tx 2>/dev/null
+ethtool -K \$NIC tso on gso on gro on 2>/dev/null
 ethtool -C \$NIC rx-usecs 50 tx-usecs 50 2>/dev/null
 for f in /sys/class/net/\$NIC/queues/rx-*/rps_cpus; do [ -f "\$f" ] && echo "$rps_mask" > "\$f" 2>/dev/null; done
 for f in /sys/class/net/\$NIC/queues/rx-*/rps_flow_cnt; do [ -f "\$f" ] && echo "32768" > "\$f" 2>/dev/null; done
