@@ -347,6 +347,13 @@ _save_node_meta() {
 }
 _del_node_meta() { [ -f "$META_FILE" ] && jq --arg p "$1" 'del(.[$p])' "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"; }
 _get_node_meta() { [ -f "$META_FILE" ] && jq -r --arg p "$1" --arg f "$2" '.[$p][$f] // empty' "$META_FILE"; }
+
+_iptables_legacy_usable() {
+    command -v iptables >/dev/null 2>&1 || return 1
+    iptables -L INPUT -n >/dev/null 2>&1 || return 1
+    return 0
+}
+
 _open_single_port() {
     local port=$1 proto="${2:-tcp}" opened=0
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
@@ -354,8 +361,11 @@ _open_single_port() {
         else ufw allow ${port}/${proto} >/dev/null 2>&1 && opened=1; fi
     elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
         firewall-cmd --permanent --add-port=${port}/${proto} >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 && opened=1
-    elif command -v iptables >/dev/null 2>&1; then
+    elif _iptables_legacy_usable; then
         iptables -C INPUT -p ${proto} --dport ${port} -j ACCEPT >/dev/null 2>&1 && opened=1 || iptables -I INPUT -p ${proto} --dport ${port} -j ACCEPT >/dev/null 2>&1 && opened=1
+    else
+        echo -e "${Y}  ⚠ 检测到 nftables 环境或 iptables 不可用，请直接在云控制台【安全组】放行 ${proto^^} ${port}${R}"
+        return 0
     fi
     [ "$opened" -eq 1 ] && echo -e "${G}  ✅ 放行 ${proto^^} ${port}${R}" || echo -e "${Y}  ⚠ 请在云控制台【安全组】放行 ${proto^^} ${port}${R}"
 }
@@ -369,8 +379,11 @@ open_port_range() {
         else ufw allow ${start_port}:${end_port}/${proto} >/dev/null 2>&1 && opened=1; fi
     elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
         firewall-cmd --permanent --add-port=${start_port}-${end_port}/${proto} >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 && opened=1
-    elif command -v iptables >/dev/null 2>&1; then
+    elif _iptables_legacy_usable; then
         iptables -C INPUT -p ${proto} --dport ${start_port}:${end_port} -j ACCEPT >/dev/null 2>&1 && opened=1 || iptables -I INPUT -p ${proto} --dport ${start_port}:${end_port} -j ACCEPT >/dev/null 2>&1 && opened=1
+    else
+        echo -e "${Y}  ⚠ 检测到 nftables 环境或 iptables 不可用，请直接在云控制台放行 ${proto^^} ${start_port}-${end_port}${R}"
+        return 0
     fi
     [ "$opened" -eq 1 ] && echo -e "${G}  ✅ 放行 ${proto^^} ${start_port}-${end_port}${R}" || echo -e "${Y}  ⚠ 请在云控制台放行 ${proto^^} ${start_port}-${end_port}${R}"
 }
@@ -500,10 +513,24 @@ sb_add_hysteria2() {
         if [ -n "$hop_range" ]; then
             local hop_start="${hop_range%-*}" hop_end="${hop_range#*-}" main_nic=$(ip route | grep default | awk '{print $5}' | head -1)
             open_port_range "$hop_start" "$hop_end" "udp"
-            if [ -n "$main_nic" ] && command -v iptables >/dev/null 2>&1; then
-                modprobe iptable_nat 2>/dev/null; iptables -t nat -A PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${port}
-                echo -e "${G}✅ NAT跳跃: UDP ${hop_start}-${hop_end} -> ${port}${R}"; _persist_iptables
-            else [ -n "$hop_range" ] && echo -e "${Y}  ⚠ 未检测到默认网卡或iptables，NAT未添加${R}"; fi
+            if [ -z "$main_nic" ]; then
+                echo -e "${Y}  ⚠ 未检测到默认网卡，NAT 跳跃未添加${R}"
+            elif ! command -v iptables >/dev/null 2>&1; then
+                echo -e "${Y}  ⚠ 系统未安装 iptables，NAT 跳跃未添加${R}"
+            elif ! iptables -t nat -L PREROUTING -n >/dev/null 2>&1; then
+                echo -e "${Y}  ⚠ iptables nat 表不可用（可能是 nftables-only 环境），NAT 跳跃未添加${R}"
+                echo -e "${Y}    建议改用 nftables 手动配置，或在云控制台做端口范围转发${R}"
+            else
+                modprobe iptable_nat 2>/dev/null
+                if iptables -t nat -C PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${port} 2>/dev/null; then
+                    echo -e "${G}  ✅ NAT 规则已存在${R}"
+                elif iptables -t nat -A PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${port} 2>/dev/null; then
+                    echo -e "${G}✅ NAT跳跃: UDP ${hop_start}-${hop_end} -> ${port}${R}"
+                    _persist_iptables
+                else
+                    echo -e "${RED}  ❌ NAT 规则添加失败，请检查 iptables 权限或后端${R}"
+                fi
+            fi
         fi
         _save_node_meta "$port" "$nn" "hysteria2" "" "password=${pwd};hop_range=${hop_range};tls_method=${tls_method}"
         systemctl enable sing-box >/dev/null 2>&1; systemctl restart sing-box; sleep 2
@@ -533,9 +560,14 @@ sb_show_nodes_and_links() {
         local obj; obj=$(echo "$b64_obj" | base64 -d 2>/dev/null); [ -z "$obj" ] && continue
         local port inb_type tag nn display link="" hop_info=""
         port=$(echo "$obj" | jq -r '.listen_port // empty' 2>/dev/null); [ -z "$port" ] && continue
+        
+        # 严格归属过滤：如果不在 meta 里，说明不是本脚本加的，直接跳过
+        local meta_name=$(_get_node_meta "$port" "name")
+        if [ -z "$meta_name" ]; then continue; fi
+
         inb_type=$(echo "$obj" | jq -r '.type // empty' 2>/dev/null)
         tag=$(echo "$obj" | jq -r '.tag // empty' 2>/dev/null)
-        nn=$(_get_node_meta "$port" "name"); [ -z "$nn" ] && nn="$tag"; [ -z "$nn" ] && nn="${inb_type}-${port}"
+        nn="$meta_name"
         case "$inb_type" in vless) display="VLESS" ;; hysteria2) display="Hysteria2" ;; vmess) display="VMess" ;; trojan) display="Trojan" ;; *) display="$inb_type" ;; esac
         local ex=$(_get_node_meta "$port" "extra")
         if [ -n "$ex" ] && echo "$ex" | grep -q "hop_range="; then local hr=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+'); [ -n "$hr" ] && hop_info=" | 跳跃: ${hr}"; fi
@@ -571,8 +603,13 @@ sb_del_node() {
         local obj; obj=$(echo "$b64_obj" | base64 -d 2>/dev/null); [ -z "$obj" ] && continue
         local port tag nn hop_info=""
         port=$(echo "$obj" | jq -r '.listen_port // empty' 2>/dev/null); [ -z "$port" ] && continue
+        
+        # 严格归属过滤：如果不在 meta 里，说明不是本脚本加的，直接跳过
+        local meta_name=$(_get_node_meta "$port" "name")
+        if [ -z "$meta_name" ]; then continue; fi
+
         tag=$(echo "$obj" | jq -r '.tag // empty' 2>/dev/null)
-        nn=$(_get_node_meta "$port" "name"); [ -z "$nn" ] && nn="$tag"; [ -z "$nn" ] && nn="未知节点"
+        nn="$meta_name"
         local ex=$(_get_node_meta "$port" "extra")
         if [ -n "$ex" ] && echo "$ex" | grep -q "hop_range="; then local hr=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+'); [ -n "$hr" ] && hop_info=" | 跳跃: ${hr}"; fi
         echo -e "${G}[${idx}] 端口: ${port}${hop_info} | ${nn}${R}"; idx=$((idx + 1)); has_any=1
