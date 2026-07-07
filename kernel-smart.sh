@@ -324,6 +324,32 @@ open_port() {
     [ "$opened" -eq 1 ] && echo -e "${G}  ✅ 放行 ${proto^^} ${port}${R}" || echo -e "${Y}  ⚠ 请在云控制台【安全组】放行 ${proto^^} ${port}${R}"
 }
 open_port_both() { open_port "$1" "tcp"; open_port "$1" "udp"; }
+
+# ★ 新增：端口范围放行函数
+open_port_range() {
+    local start_port=$1 end_port=$2 proto="${3:-udp}" opened=0
+    local port_count=$((end_port - start_port + 1))
+    if [ "$port_count" -le 0 ] || [ "$start_port" -lt 1 ] || [ "$end_port" -gt 65535 ]; then
+        echo -e "${RED}  ❌ 端口范围无效: ${start_port}-${end_port}${R}"
+        return 1
+    fi
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
+        ufw allow ${start_port}:${end_port}/${proto} >/dev/null 2>&1 && opened=1
+    elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+        firewall-cmd --permanent --add-port=${start_port}-${end_port}/${proto} >/dev/null 2>&1
+        firewall-cmd --reload >/dev/null 2>&1 && opened=1
+    elif command -v iptables >/dev/null 2>&1; then
+        iptables -C INPUT -p ${proto} --dport ${start_port}:${end_port} -j ACCEPT >/dev/null 2>&1 && opened=1 || \
+        iptables -I INPUT -p ${proto} --dport ${start_port}:${end_port} -j ACCEPT >/dev/null 2>&1 && opened=1
+    fi
+    if [ "$opened" -eq 1 ]; then
+        echo -e "${G}  ✅ 放行 ${proto^^} ${start_port}-${end_port} (共${port_count}个端口)${R}"
+    else
+        echo -e "${Y}  ⚠ 请在云控制台【安全组】放行 ${proto^^} ${start_port}-${end_port} (共${port_count}个端口)${R}"
+    fi
+    return 0
+}
+
 sb_add_reality() {
     sb_check || { read -rs -n 1 -p ""; return; }
     read -e -p "端口: " port; [[ ! "$port" =~ ^[0-9]+$ ]] && { echo -e "${RED}错误${R}"; return; }
@@ -363,12 +389,23 @@ sb_add_hysteria2() {
         if [ -n "$dup_port" ]; then echo -e "${RED}❌ 端口 ${port} 已被 [${dup_port}] 占用！${R}"; read -rs -n 1 -p ""; return; fi
     fi
     local hop_range=""; read -e -p "需要NAT端口跳跃吗？(y/n): " need_hop
-    if [[ "$need_hop" =~ ^[Yy]$ ]]; then read -e -p "跳跃范围(如20000-30000): " hop_range; [[ ! "$hop_range" =~ ^[0-9]+-[0-9]+$ ]] && { echo -e "${RED}格式错${R}"; hop_range=""; }; fi
+    if [[ "$need_hop" =~ ^[Yy]$ ]]; then
+        read -e -p "跳跃范围(如20000-21000): " hop_range
+        if [[ ! "$hop_range" =~ ^[0-9]+-[0-9]+$ ]]; then
+            echo -e "${RED}格式错误，应为 起始端口-结束端口，如 20000-21000${R}"
+            hop_range=""
+        else
+            local hop_start="${hop_range%-*}" hop_end="${hop_range#*-}"
+            if [ "$hop_start" -ge "$hop_end" ] || [ "$hop_end" -gt 65535 ]; then
+                echo -e "${RED}范围无效${R}"; hop_range=""
+            fi
+        fi
+    fi
     read -e -p "密码 (回车生成): " pwd; [ -z "$pwd" ] && pwd=$(openssl rand -base64 24 | tr -d '\n/=+' | head -c 32)
     read -e -p "名称 (回车默认): " nn; [ -z "$nn" ] && nn="Hysteria2-${port}"
     echo -e "${Y}1.Let's Encrypt 2.手动证书 3.自签${R}"; read -e -p "TLS选择: " tls_choice; local tls_obj="" domain="" tls_method=""
     case "$tls_choice" in
-        1) domain=$(read -e -p "域名: " d && echo "$d"); [ -z "$domain" ] && { echo -e "${RED}空${R}"; return; }; tls_obj=$(jq -n --arg d "$domain" '{"enabled":true,"server_name":$d,"acme":{"domain":$d,"directory":"/etc/sing-box/acme","email":"admin@\($d)"}}'); tls_method="acme" ;;
+        1) read -e -p "域名: " domain; [ -z "$domain" ] && { echo -e "${RED}空${R}"; return; }; tls_obj=$(jq -n --arg d "$domain" '{"enabled":true,"server_name":$d,"acme":{"domain":$d,"directory":"/etc/sing-box/acme","email":"admin@\($d)"}}'); tls_method="acme" ;;
         2) local c k; read -e -p "证书路径: " c; read -e -p "密钥路径: " k; [ ! -f "$c" ] || [ ! -f "$k" ] && { echo -e "${RED}不存在${R}"; return; }; tls_obj=$(jq -n --arg c "$c" --arg k "$k" '{"enabled":true,"certificate_path":$c,"key_path":$k}'); tls_method="manual" ;;
         3) local d="/etc/sing-box/certs/hy2-${port}"; mkdir -p "$d"; openssl req -x509 -nodes -days 3650 -newkey rsa:2048 -keyout "${d}/key.pem" -out "${d}/cert.pem" -subj "/CN=hysteria2" 2>/dev/null; if [ ! -f "${d}/cert.pem" ] || [ ! -f "${d}/key.pem" ]; then echo -e "${RED}证书生成失败${R}"; return; fi; tls_obj=$(jq -n --arg c "${d}/cert.pem" --arg k "${d}/key.pem" '{"enabled":true,"certificate_path":$c,"key_path":$k}'); tls_method="selfsign" ;;
         *) return ;;
@@ -377,14 +414,22 @@ sb_add_hysteria2() {
     local ij=$(jq -n --argjson p "$port" --arg pwd "$pwd" --argjson tls "$tls_obj" '{"type":"hysteria2","tag":("hysteria2-"+($p|tostring)),"listen":"::","listen_port":$p,"up_mbps":100,"down_mbps":100,"users":[{"password":$pwd}],"tls":$tls}')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
     if sing-box check -c "$conf" >/dev/null 2>&1; then
+        # 放行主端口
         open_port_both "$port"
+        # ★ 放行跳跃端口范围
         if [ -n "$hop_range" ]; then
             local hop_start="${hop_range%-*}" hop_end="${hop_range#*-}" main_nic=$(ip route | grep default | awk '{print $5}' | head -1)
+            # 自动放行整个跳跃范围的 UDP 端口
+            open_port_range "$hop_start" "$hop_end" "udp"
+            # 添加 NAT DNAT 规则
             if [ -n "$main_nic" ]; then
                 iptables -t nat -A PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${port}
-                echo -e "${G}✅ NAT跳跃: UDP ${hop_start}-${hop_end} -> ${port}${R}\n${Y}⚠ 请在安全组放行 UDP ${hop_start}-${hop_end}！${R}"
+                echo -e "${G}✅ NAT跳跃: UDP ${hop_start}-${hop_end} -> ${port}${R}"
                 command -v iptables-save >/dev/null 2>&1 && { iptables-save > /etc/iptables.rules 2>/dev/null; grep -q "iptables-restore" /etc/rc.local 2>/dev/null || sed -i '/^exit 0/i iptables-restore < /etc/iptables.rules' /etc/rc.local 2>/dev/null; }
-            else hop_range=""; fi
+            else
+                echo -e "${Y}⚠ 未检测到默认网卡，NAT 规则未添加${R}"
+                hop_range=""
+            fi
         fi
         _save_node_meta "$port" "$nn" "hysteria2" "" "password=${pwd};hop_range=${hop_range};tls_method=${tls_method}"; systemctl enable sing-box >/dev/null 2>&1; systemctl restart sing-box; sleep 2
         if ! systemctl is-active --quiet sing-box 2>/dev/null; then echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"; else echo -e "${G}✅ 成功 | 密码: ${pwd} | 跳跃: ${hop_range:-无}${R}"; fi
@@ -403,7 +448,14 @@ sb_list_nodes() {
         local display="$inb_type"
         case "$inb_type" in vless) display="VLESS" ;; hysteria2) display="Hysteria2" ;; vmess) display="VMess" ;; trojan) display="Trojan" ;; esac
         local nn=$(_get_node_meta "$port" "name"); [ -z "$nn" ] && nn="$tag"
-        echo -e "${G}[${idx}] ${display} | 端口: ${port} | ${nn}${R}"
+        # 显示跳跃端口信息
+        local hop_info=""
+        local ex=$(_get_node_meta "$port" "extra")
+        if [ -n "$ex" ] && echo "$ex" | grep -q "hop_range="; then
+            local hr=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+')
+            [ -n "$hr" ] && hop_info=" | 跳跃: ${hr}"
+        fi
+        echo -e "${G}[${idx}] ${display} | 端口: ${port}${hop_info} | ${nn}${R}"
         idx=$((idx + 1))
     done < <(jq -r '.inbounds[] | @base64' "$conf" 2>/dev/null)
     [ $idx -eq 1 ] && echo -e "${Y}无节点${R}"
@@ -464,9 +516,28 @@ sb_gen_links() {
                 if echo "$ex" | grep -q "tls_method=selfsign"; then
                     insecure="1"
                 fi
+                # ★ 获取跳跃端口范围，链接中使用范围端口
+                local link_port="$port"
+                local hop_hint=""
+                if [ -n "$ex" ] && echo "$ex" | grep -q "hop_range="; then
+                    local hr=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+')
+                    if [ -n "$hr" ] && [[ "$hr" =~ ^[0-9]+-[0-9]+$ ]]; then
+                        link_port="$hr"
+                        hop_hint=" (端口跳跃已启用)"
+                    fi
+                fi
                 local sni_param=""
                 [ -n "$sni" ] && sni_param="&sni=${sni}"
-                link="hysteria2://$(url_encode "$pwd")@${server_ip}:${port}?insecure=${insecure}${sni_param}#$(url_encode "$nn")"
+                link="hysteria2://$(url_encode "$pwd")@${server_ip}:${link_port}?insecure=${insecure}${sni_param}#$(url_encode "$nn")"
+                if [ -n "$hop_hint" ]; then
+                    echo -e "${G}[${idx}] ${nn}${Y}${hop_hint}${R}"
+                else
+                    echo -e "${G}[${idx}] ${nn}${R}"
+                fi
+                echo -e "${C}${link}${R}\n"
+                has_link=1
+                idx=$((idx + 1))
+                continue
                 ;;
         esac
 
@@ -491,7 +562,14 @@ sb_del_node() {
         local port; port=$(echo "$obj" | jq -r '.listen_port // empty' 2>/dev/null); [ -z "$port" ] && continue
         local tag; tag=$(echo "$obj" | jq -r '.tag // empty' 2>/dev/null)
         local nn=$(_get_node_meta "$port" "name"); [ -z "$nn" ] && nn="$tag"
-        echo -e "${G}[${idx}] 端口: ${port} | ${nn}${R}"
+        # 显示跳跃端口信息
+        local hop_info=""
+        local ex=$(_get_node_meta "$port" "extra")
+        if [ -n "$ex" ] && echo "$ex" | grep -q "hop_range="; then
+            local hr=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+')
+            [ -n "$hr" ] && hop_info=" | 跳跃: ${hr}"
+        fi
+        echo -e "${G}[${idx}] 端口: ${port}${hop_info} | ${nn}${R}"
         ports+=("$port")
         idx=$((idx + 1))
     done < <(jq -r '.inbounds[] | @base64' "$conf" 2>/dev/null)
@@ -509,12 +587,14 @@ sb_del_node() {
             if [ -n "$main_nic" ]; then
                 iptables -t nat -D PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${del_port} 2>/dev/null
                 echo -e "${Y}已清理 NAT 规则 (UDP ${hop_start}-${hop_end})${R}"
+                # ★ 同时尝试清理 iptables INPUT 范围放行规则
+                iptables -D INPUT -p udp --dport ${hop_start}:${hop_end} -j ACCEPT 2>/dev/null
                 command -v iptables-save >/dev/null 2>&1 && iptables-save > /etc/iptables.rules 2>/dev/null
             fi
         fi
     fi
 
-    # 用端口号精确匹配删除，避免 tag 隐藏字符问题
+    # 用端口号精确匹配删除
     if jq --argjson p "$del_port" '.inbounds = [.inbounds[] | select(.listen_port != $p)]' "$conf" > /tmp/sb_cfg.json 2>/dev/null; then
         mv -f /tmp/sb_cfg.json "$conf"
         _del_node_meta "$del_port"
