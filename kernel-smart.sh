@@ -387,6 +387,40 @@ open_port_range() {
     fi
     [ "$opened" -eq 1 ] && echo -e "${G}  ✅ 放行 ${proto^^} ${start_port}-${end_port}${R}" || echo -e "${Y}  ⚠ 请在云控制台放行 ${proto^^} ${start_port}-${end_port}${R}"
 }
+
+manual_open_port() {
+    root_use || return
+    while true; do
+        clear
+        echo -e "${Y}===== 手动开放端口 =====${R}"
+        echo -e "1. 放行单个端口 (TCP+UDP)"
+        echo -e "2. 放行端口范围 (TCP+UDP)"
+        echo -e "0. 返回"
+        read -e -p "选择: " c
+        case $c in
+            1) 
+                read -e -p "请输入端口号 (1-65535): " port
+                if [[ ! "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+                    echo -e "${RED}❌ 端口无效${R}"; read -rs -n 1 -p ""; return
+                fi
+                open_port_both "$port"
+                read -rs -n 1 -p ""
+                ;;
+            2)
+                read -e -p "请输入起始端口: " start_port
+                read -e -p "请输入结束端口: " end_port
+                if [[ ! "$start_port" =~ ^[0-9]+$ ]] || [[ ! "$end_port" =~ ^[0-9]+$ ]] || [ "$start_port" -ge "$end_port" ] || [ "$start_port" -lt 1 ] || [ "$end_port" -gt 65535 ]; then
+                    echo -e "${RED}❌ 端口范围无效${R}"; read -rs -n 1 -p ""; return
+                fi
+                open_port_range "$start_port" "$end_port" "tcp"
+                open_port_range "$start_port" "$end_port" "udp"
+                read -rs -n 1 -p ""
+                ;;
+            0|"") return ;;
+        esac
+    done
+}
+
 _ensure_rc_local() {
     if [ ! -f /etc/rc.local ]; then printf '#!/bin/bash\nexit 0\n' > /etc/rc.local; chmod +x /etc/rc.local; fi
     if ! grep -q "iptables-restore" /etc/rc.local 2>/dev/null; then sed -i '/^exit 0/i iptables-restore < /etc/iptables.rules' /etc/rc.local 2>/dev/null; fi
@@ -652,6 +686,7 @@ sb_menu() {
         echo -e "    ${H}[7] 更新 Sing-Box${R}"
         echo -e "    ${H}[8] 卸载 Sing-Box${R}"
         echo -e "    ${H}[9] 重启 Sing-Box${R}"
+        echo -e "    ${H}[10] 手动开放 TCP+UDP 端口${R}"
         echo ""
         echo -e "    ${H}[0] 返回主菜单${R}"
         echo ""
@@ -666,6 +701,7 @@ sb_menu() {
             7) clear; sb_update ;;
             8) clear; sb_uninstall ;;
             9) systemctl restart sing-box && echo -e "${G}✅ 已重启${R}" || echo -e "${RED}重启失败${R}"; read -rs -n 1 -p "" ;;
+            10) clear; manual_open_port ;;
             0|"") break ;;
         esac
     done
