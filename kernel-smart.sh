@@ -324,15 +324,11 @@ open_port() {
     [ "$opened" -eq 1 ] && echo -e "${G}  ✅ 放行 ${proto^^} ${port}${R}" || echo -e "${Y}  ⚠ 请在云控制台【安全组】放行 ${proto^^} ${port}${R}"
 }
 open_port_both() { open_port "$1" "tcp"; open_port "$1" "udp"; }
-
-# ★ 新增：端口范围放行函数
 open_port_range() {
     local start_port=$1 end_port=$2 proto="${3:-udp}" opened=0
     local port_count=$((end_port - start_port + 1))
     if [ "$port_count" -le 0 ] || [ "$start_port" -lt 1 ] || [ "$end_port" -gt 65535 ]; then
-        echo -e "${RED}  ❌ 端口范围无效: ${start_port}-${end_port}${R}"
-        return 1
-    fi
+        echo -e "${RED}  ❌ 端口范围无效: ${start_port}-${end_port}${R}"; return 1; fi
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
         ufw allow ${start_port}:${end_port}/${proto} >/dev/null 2>&1 && opened=1
     elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
@@ -349,7 +345,6 @@ open_port_range() {
     fi
     return 0
 }
-
 sb_add_reality() {
     sb_check || { read -rs -n 1 -p ""; return; }
     read -e -p "端口: " port; [[ ! "$port" =~ ^[0-9]+$ ]] && { echo -e "${RED}错误${R}"; return; }
@@ -392,13 +387,10 @@ sb_add_hysteria2() {
     if [[ "$need_hop" =~ ^[Yy]$ ]]; then
         read -e -p "跳跃范围(如20000-21000): " hop_range
         if [[ ! "$hop_range" =~ ^[0-9]+-[0-9]+$ ]]; then
-            echo -e "${RED}格式错误，应为 起始端口-结束端口，如 20000-21000${R}"
-            hop_range=""
+            echo -e "${RED}格式错误，应为 起始端口-结束端口，如 20000-21000${R}"; hop_range=""
         else
-            local hop_start="${hop_range%-*}" hop_end="${hop_range#*-}"
-            if [ "$hop_start" -ge "$hop_end" ] || [ "$hop_end" -gt 65535 ]; then
-                echo -e "${RED}范围无效${R}"; hop_range=""
-            fi
+            local _hs="${hop_range%-*}" _he="${hop_range#*-}"
+            if [ "$_hs" -ge "$_he" ] || [ "$_he" -gt 65535 ]; then echo -e "${RED}范围无效${R}"; hop_range=""; fi
         fi
     fi
     read -e -p "密码 (回车生成): " pwd; [ -z "$pwd" ] && pwd=$(openssl rand -base64 24 | tr -d '\n/=+' | head -c 32)
@@ -414,54 +406,49 @@ sb_add_hysteria2() {
     local ij=$(jq -n --argjson p "$port" --arg pwd "$pwd" --argjson tls "$tls_obj" '{"type":"hysteria2","tag":("hysteria2-"+($p|tostring)),"listen":"::","listen_port":$p,"up_mbps":100,"down_mbps":100,"users":[{"password":$pwd}],"tls":$tls}')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
     if sing-box check -c "$conf" >/dev/null 2>&1; then
-        # 放行主端口
         open_port_both "$port"
-        # ★ 放行跳跃端口范围
         if [ -n "$hop_range" ]; then
             local hop_start="${hop_range%-*}" hop_end="${hop_range#*-}" main_nic=$(ip route | grep default | awk '{print $5}' | head -1)
-            # 自动放行整个跳跃范围的 UDP 端口
             open_port_range "$hop_start" "$hop_end" "udp"
-            # 添加 NAT DNAT 规则
+            # ★ 修复：先检测 iptables 是否存在，不存在则安装或提示
             if [ -n "$main_nic" ]; then
-                iptables -t nat -A PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${port}
-                echo -e "${G}✅ NAT跳跃: UDP ${hop_start}-${hop_end} -> ${port}${R}"
-                command -v iptables-save >/dev/null 2>&1 && { iptables-save > /etc/iptables.rules 2>/dev/null; grep -q "iptables-restore" /etc/rc.local 2>/dev/null || sed -i '/^exit 0/i iptables-restore < /etc/iptables.rules' /etc/rc.local 2>/dev/null; }
+                if ! command -v iptables >/dev/null 2>&1; then
+                    echo -e "${Y}  ⚠ 未安装 iptables，正在自动安装...${R}"
+                    if install_pkg iptables; then
+                        echo -e "${G}  ✅ iptables 安装成功${R}"
+                    else
+                        echo -e "${RED}  ❌ iptables 安装失败，NAT 端口跳跃将不生效，请手动安装: apt install iptables${R}"
+                        hop_range=""
+                    fi
+                fi
+                if [ -n "$hop_range" ] && command -v iptables >/dev/null 2>&1; then
+                    # 加载 nat 表模块
+                    modprobe iptable_nat 2>/dev/null
+                    iptables -t nat -A PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${port}
+                    echo -e "${G}✅ NAT跳跃: UDP ${hop_start}-${hop_end} -> ${port}${R}"
+                    command -v iptables-save >/dev/null 2>&1 && { iptables-save > /etc/iptables.rules 2>/dev/null; grep -q "iptables-restore" /etc/rc.local 2>/dev/null || sed -i '/^exit 0/i iptables-restore < /etc/iptables.rules' /etc/rc.local 2>/dev/null; }
+                fi
             else
-                echo -e "${Y}⚠ 未检测到默认网卡，NAT 规则未添加${R}"
+                echo -e "${Y}  ⚠ 未检测到默认网卡，NAT 规则未添加${R}"
                 hop_range=""
             fi
         fi
-        _save_node_meta "$port" "$nn" "hysteria2" "" "password=${pwd};hop_range=${hop_range};tls_method=${tls_method}"; systemctl enable sing-box >/dev/null 2>&1; systemctl restart sing-box; sleep 2
-        if ! systemctl is-active --quiet sing-box 2>/dev/null; then echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"; else echo -e "${G}✅ 成功 | 密码: ${pwd} | 跳跃: ${hop_range:-无}${R}"; fi
-    else echo -e "${RED}❌ 校验失败，具体原因：${R}"; sing-box check -c "$conf" 2>&1; echo -e "${Y}正在回滚...${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"; fi; read -rs -n 1 -p "按任意键返回..."
-}
-sb_list_nodes() {
-    sb_check || { read -rs -n 1 -p ""; return; }
-    local conf="/etc/sing-box/config.json"
-    [ ! -f "$conf" ] || ! jq -e . "$conf" >/dev/null 2>&1 && { echo -e "${Y}无节点${R}"; read -rs -n 1 -p ""; return; }
-    echo -e "${Y}===== 节点列表 =====${R}"; local idx=1
-    while IFS= read -r b64_obj; do
-        local obj; obj=$(echo "$b64_obj" | base64 -d 2>/dev/null); [ -z "$obj" ] && continue
-        local port; port=$(echo "$obj" | jq -r '.listen_port // empty' 2>/dev/null); [ -z "$port" ] && continue
-        local tag; tag=$(echo "$obj" | jq -r '.tag // empty' 2>/dev/null)
-        local inb_type; inb_type=$(echo "$obj" | jq -r '.type // empty' 2>/dev/null)
-        local display="$inb_type"
-        case "$inb_type" in vless) display="VLESS" ;; hysteria2) display="Hysteria2" ;; vmess) display="VMess" ;; trojan) display="Trojan" ;; esac
-        local nn=$(_get_node_meta "$port" "name"); [ -z "$nn" ] && nn="$tag"
-        # 显示跳跃端口信息
-        local hop_info=""
-        local ex=$(_get_node_meta "$port" "extra")
-        if [ -n "$ex" ] && echo "$ex" | grep -q "hop_range="; then
-            local hr=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+')
-            [ -n "$hr" ] && hop_info=" | 跳跃: ${hr}"
+        _save_node_meta "$port" "$nn" "hysteria2" "" "password=${pwd};hop_range=${hop_range};tls_method=${tls_method}"
+        systemctl enable sing-box >/dev/null 2>&1; systemctl restart sing-box; sleep 2
+        if ! systemctl is-active --quiet sing-box 2>/dev/null; then
+            echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"
+        else
+            echo -e "${G}✅ 成功 | 密码: ${pwd} | 跳跃: ${hop_range:-无}${R}"
         fi
-        echo -e "${G}[${idx}] ${display} | 端口: ${port}${hop_info} | ${nn}${R}"
-        idx=$((idx + 1))
-    done < <(jq -r '.inbounds[] | @base64' "$conf" 2>/dev/null)
-    [ $idx -eq 1 ] && echo -e "${Y}无节点${R}"
-    read -rs -n 1 -p ""
+    else
+        echo -e "${RED}❌ 校验失败，具体原因：${R}"; sing-box check -c "$conf" 2>&1; echo -e "${Y}正在回滚...${R}"
+        local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"
+    fi
+    read -rs -n 1 -p "按任意键返回..."
 }
-sb_gen_links() {
+
+# ★ 合并：节点列表 + 链接生成 = 一个函数
+sb_show_nodes_and_links() {
     sb_check || { read -rs -n 1 -p ""; return; }
     local conf="/etc/sing-box/config.json"
     [ ! -f "$conf" ] || ! jq -e . "$conf" >/dev/null 2>&1 && { echo -e "${Y}无节点${R}"; read -rs -n 1 -p ""; return; }
@@ -472,86 +459,93 @@ sb_gen_links() {
         [ -z "$server_ip" ] && { echo -e "${RED}地址不能为空${R}"; read -rs -n 1 -p ""; return; }
     fi
 
-    echo -e "\n${Y}===== 节点链接 =====${R}"
+    echo -e "\n${Y}===== 节点列表与链接 =====${R}"
     echo -e "${H}服务器地址: ${server_ip}${R}\n"
 
-    local idx=1 has_link=0
+    local idx=1 has_any=0
     while IFS= read -r b64_obj; do
         local obj; obj=$(echo "$b64_obj" | base64 -d 2>/dev/null); [ -z "$obj" ] && continue
         local port; port=$(echo "$obj" | jq -r '.listen_port // empty' 2>/dev/null); [ -z "$port" ] && continue
         local inb_type; inb_type=$(echo "$obj" | jq -r '.type // empty' 2>/dev/null)
-        local nn=$(_get_node_meta "$port" "name")
-        [ -z "$nn" ] && nn=$(echo "$obj" | jq -r '.tag // empty' 2>/dev/null)
-        local link=""
+        local tag; tag=$(echo "$obj" | jq -r '.tag // empty' 2>/dev/null)
+        local nn=$(_get_node_meta "$port" "name"); [ -z "$nn" ] && nn="$tag"
 
+        local display="$inb_type"
+        case "$inb_type" in vless) display="VLESS" ;; hysteria2) display="Hysteria2" ;; vmess) display="VMess" ;; trojan) display="Trojan" ;; esac
+
+        # 跳跃端口信息
+        local ex=$(_get_node_meta "$port" "extra")
+        local hop_info=""
+        local hop_range_val=""
+        if [ -n "$ex" ] && echo "$ex" | grep -q "hop_range="; then
+            hop_range_val=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+')
+            [ -n "$hop_range_val" ] && hop_info=" | 跳跃: ${hop_range_val}"
+        fi
+
+        echo -e "${G}━━━ [${idx}] ${display} | 端口: ${port}${hop_info} | ${nn} ━━━${R}"
+        has_any=1
+
+        # 生成链接
+        local link=""
         case "$inb_type" in
             vless)
                 local uuid; uuid=$(echo "$obj" | jq -r '.users[0].uuid // empty' 2>/dev/null)
-                [ -z "$uuid" ] && { idx=$((idx + 1)); continue; }
-                local flow; flow=$(echo "$obj" | jq -r '.users[0].flow // empty' 2>/dev/null)
-                local tls_enabled; tls_enabled=$(echo "$obj" | jq -r '.tls.enabled // false' 2>/dev/null)
-
-                if [ "$tls_enabled" = "true" ] && echo "$obj" | jq -e '.tls.reality' >/dev/null 2>&1; then
-                    local sni; sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null)
-                    local pub_key; pub_key=$(_get_node_meta "$port" "pub_key")
-                    local short_id; short_id=$(echo "$obj" | jq -r '.tls.reality.short_id[0] // empty' 2>/dev/null)
-                    if [ -z "$short_id" ]; then
-                        local ex=$(_get_node_meta "$port" "extra")
-                        [ -n "$ex" ] && short_id=$(echo "$ex" | grep -oP 'short_id=\K[^;]+')
+                if [ -n "$uuid" ]; then
+                    local flow; flow=$(echo "$obj" | jq -r '.users[0].flow // empty' 2>/dev/null)
+                    local tls_enabled; tls_enabled=$(echo "$obj" | jq -r '.tls.enabled // false' 2>/dev/null)
+                    if [ "$tls_enabled" = "true" ] && echo "$obj" | jq -e '.tls.reality' >/dev/null 2>&1; then
+                        local sni; sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null)
+                        local pub_key; pub_key=$(_get_node_meta "$port" "pub_key")
+                        local short_id; short_id=$(echo "$obj" | jq -r '.tls.reality.short_id[0] // empty' 2>/dev/null)
+                        if [ -z "$short_id" ] && [ -n "$ex" ]; then short_id=$(echo "$ex" | grep -oP 'short_id=\K[^;]+'); fi
+                        local flow_param=""; [ -n "$flow" ] && flow_param="&flow=${flow}"
+                        link="vless://${uuid}@${server_ip}:${port}?encryption=none${flow_param}&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp#$(url_encode "$nn")"
+                    else
+                        local ws_path; ws_path=$(echo "$obj" | jq -r '.transport.path // empty' 2>/dev/null)
+                        link="vless://${uuid}@${server_ip}:${port}?encryption=none&security=none&type=ws&path=$(url_encode "${ws_path:-/}")#$(url_encode "$nn")"
                     fi
-                    local flow_param=""
-                    [ -n "$flow" ] && flow_param="&flow=${flow}"
-                    link="vless://${uuid}@${server_ip}:${port}?encryption=none${flow_param}&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp#$(url_encode "$nn")"
-                else
-                    local ws_path; ws_path=$(echo "$obj" | jq -r '.transport.path // empty' 2>/dev/null)
-                    link="vless://${uuid}@${server_ip}:${port}?encryption=none&security=none&type=ws&path=$(url_encode "${ws_path:-/}")#$(url_encode "$nn")"
                 fi
                 ;;
             hysteria2)
                 local pwd; pwd=$(echo "$obj" | jq -r '.users[0].password // empty' 2>/dev/null)
-                [ -z "$pwd" ] && { idx=$((idx + 1)); continue; }
-                local sni; sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null)
-                local insecure="0"
-                local ex=$(_get_node_meta "$port" "extra")
-                if echo "$ex" | grep -q "tls_method=selfsign"; then
-                    insecure="1"
+                if [ -n "$pwd" ]; then
+                    local sni; sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null)
+                    local insecure="0"
+                    if echo "$ex" | grep -q "tls_method=selfsign"; then insecure="1"; fi
+                    local sni_param=""; [ -n "$sni" ] && sni_param="&sni=${sni}"
+
+                    # ★ 主链接：始终用主端口，兼容 v2rayN / NekoBox 等所有客户端
+                    link="hysteria2://$(url_encode "$pwd")@${server_ip}:${port}?insecure=${insecure}${sni_param}#$(url_encode "$nn")"
                 fi
-                # ★ 获取跳跃端口范围，链接中使用范围端口
-                local link_port="$port"
-                local hop_hint=""
-                if [ -n "$ex" ] && echo "$ex" | grep -q "hop_range="; then
-                    local hr=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+')
-                    if [ -n "$hr" ] && [[ "$hr" =~ ^[0-9]+-[0-9]+$ ]]; then
-                        link_port="$hr"
-                        hop_hint=" (端口跳跃已启用)"
-                    fi
-                fi
-                local sni_param=""
-                [ -n "$sni" ] && sni_param="&sni=${sni}"
-                link="hysteria2://$(url_encode "$pwd")@${server_ip}:${link_port}?insecure=${insecure}${sni_param}#$(url_encode "$nn")"
-                if [ -n "$hop_hint" ]; then
-                    echo -e "${G}[${idx}] ${nn}${Y}${hop_hint}${R}"
-                else
-                    echo -e "${G}[${idx}] ${nn}${R}"
-                fi
-                echo -e "${C}${link}${R}\n"
-                has_link=1
-                idx=$((idx + 1))
-                continue
                 ;;
         esac
 
         if [ -n "$link" ]; then
-            echo -e "${G}[${idx}] ${nn}${R}"
-            echo -e "${C}${link}${R}\n"
-            has_link=1
+            echo -e "${C}${link}${R}"
         fi
+
+        # ★ 如果有跳跃端口，额外输出一条范围端口链接（仅原版 Hysteria2 客户端支持）
+        if [ -n "$hop_range_val" ] && [ "$inb_type" = "hysteria2" ]; then
+            local pwd; pwd=$(echo "$obj" | jq -r '.users[0].password // empty' 2>/dev/null)
+            if [ -n "$pwd" ]; then
+                local sni; sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null)
+                local insecure="0"
+                if echo "$ex" | grep -q "tls_method=selfsign"; then insecure="1"; fi
+                local sni_param=""; [ -n "$sni" ] && sni_param="&sni=${sni}"
+                local hop_link="hysteria2://$(url_encode "$pwd")@${server_ip}:${hop_range_val}?insecure=${insecure}${sni_param}#$(url_encode "${nn}-跳跃")"
+                echo -e "${H}  ↓ 跳跃链接(仅原版客户端)${R}"
+                echo -e "${H}${hop_link}${R}"
+            fi
+        fi
+
+        echo ""
         idx=$((idx + 1))
     done < <(jq -r '.inbounds[] | @base64' "$conf" 2>/dev/null)
 
-    [ "$has_link" -eq 0 ] && echo -e "${Y}无可用节点链接${R}"
+    [ "$has_any" -eq 0 ] && echo -e "${Y}无节点${R}"
     read -rs -n 1 -p ""
 }
+
 sb_del_node() {
     sb_check || { read -rs -n 1 -p ""; return; }
     local conf="/etc/sing-box/config.json"
@@ -562,7 +556,6 @@ sb_del_node() {
         local port; port=$(echo "$obj" | jq -r '.listen_port // empty' 2>/dev/null); [ -z "$port" ] && continue
         local tag; tag=$(echo "$obj" | jq -r '.tag // empty' 2>/dev/null)
         local nn=$(_get_node_meta "$port" "name"); [ -z "$nn" ] && nn="$tag"
-        # 显示跳跃端口信息
         local hop_info=""
         local ex=$(_get_node_meta "$port" "extra")
         if [ -n "$ex" ] && echo "$ex" | grep -q "hop_range="; then
@@ -584,11 +577,10 @@ sb_del_node() {
         local old_hop=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+')
         if [ -n "$old_hop" ] && [[ "$old_hop" =~ ^[0-9]+-[0-9]+$ ]]; then
             local hop_start="${old_hop%-*}" hop_end="${old_hop#*-}" main_nic=$(ip route | grep default | awk '{print $5}' | head -1)
-            if [ -n "$main_nic" ]; then
+            if [ -n "$main_nic" ] && command -v iptables >/dev/null 2>&1; then
                 iptables -t nat -D PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${del_port} 2>/dev/null
-                echo -e "${Y}已清理 NAT 规则 (UDP ${hop_start}-${hop_end})${R}"
-                # ★ 同时尝试清理 iptables INPUT 范围放行规则
                 iptables -D INPUT -p udp --dport ${hop_start}:${hop_end} -j ACCEPT 2>/dev/null
+                echo -e "${Y}已清理 NAT 规则 (UDP ${hop_start}-${hop_end})${R}"
                 command -v iptables-save >/dev/null 2>&1 && iptables-save > /etc/iptables.rules 2>/dev/null
             fi
         fi
@@ -613,9 +605,10 @@ sb_del_node() {
 singbox_manager() {
     root_use
     while true; do clear; local sb_s="${RED}未运行${R}"; systemctl is-active --quiet sing-box 2>/dev/null && sb_s="${G}运行中${R}"
-        echo -e "${C}===== Sing-Box 节点管理 =====\n状态: ${sb_s}\n1.VLESS Reality\n2.VLESS+WS\n3.Hysteria2\n4.节点列表\n5.节点与链接\n6.删除节点\n7.重启\n8.停止\n9.日志\n0.返回${R}"
+        # ★ 菜单精简：去掉重复的"节点列表"，只保留"节点与链接"
+        echo -e "${C}===== Sing-Box 节点管理 =====\n状态: ${sb_s}\n1.VLESS Reality\n2.VLESS+WS\n3.Hysteria2\n4.节点与链接\n5.删除节点\n6.重启\n7.停止\n8.日志\n0.返回${R}"
         read -e -p "选择: " c
-        case $c in 1) sb_add_reality ;; 2) sb_add_vless_ws ;; 3) sb_add_hysteria2 ;; 4) sb_list_nodes ;; 5) sb_list_nodes; sb_gen_links ;; 6) sb_del_node ;; 7) systemctl restart sing-box && echo -e "${G}已重启${R}" ;; 8) systemctl stop sing-box && echo -e "${Y}已停止${R}" ;; 9) journalctl -u sing-box -n 30 --no-pager ;; 0|"") break ;; esac; read -rs -n 1 -p ""; done
+        case $c in 1) sb_add_reality ;; 2) sb_add_vless_ws ;; 3) sb_add_hysteria2 ;; 4) sb_show_nodes_and_links ;; 5) sb_del_node ;; 6) systemctl restart sing-box && echo -e "${G}已重启${R}" ;; 7) systemctl stop sing-box && echo -e "${Y}已停止${R}" ;; 8) journalctl -u sing-box -n 30 --no-pager ;; 0|"") break ;; esac; read -rs -n 1 -p ""; done
 }
 main_menu() {
     while true; do clear; echo -e "${gl_lv}===== 服务器综合管理 =====\n1.系统信息\n2.内核优化\n3.BBRv3/XanMod\n4.Swap管理\n${gl_hong}5.Sing-Box节点管理${gl_bai}\n0.退出${gl_lv}\n========================${gl_bai}"
