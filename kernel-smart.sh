@@ -10,19 +10,38 @@ check_env() {
     if ! command -v jq >/dev/null 2>&1; then need_update=1; fi
     if ! command -v openssl >/dev/null 2>&1; then need_update=1; fi
     if ! command -v iptables >/dev/null 2>&1; then need_update=1; fi
+    if ! command -v ip >/dev/null 2>&1; then need_update=1; fi
     
     if [ "$need_update" -eq 1 ]; then
         echo -e "${gl_huang}正在准备基础环境...${gl_bai}"
         if command -v apt >/dev/null 2>&1; then 
             apt-get update -y >/dev/null 2>&1
-            apt-get install -y curl jq openssl iptables >/dev/null 2>&1
+            # 适配 Debian/Ubuntu，安装基础网络工具包
+            apt-get install -y curl jq openssl iptables iproute2 >/dev/null 2>&1
         elif command -v yum >/dev/null 2>&1; then 
-            yum install -y curl jq openssl iptables >/dev/null 2>&1
+            yum install -y curl jq openssl iptables iproute >/dev/null 2>&1
         elif command -v apk >/dev/null 2>&1; then 
             apk update >/dev/null 2>&1
-            apk add curl jq openssl iptables >/dev/null 2>&1
+            apk add curl jq openssl iptables iproute2 >/dev/null 2>&1
         fi
         echo -e "${gl_lv}✅ 基础环境准备完毕！${gl_bai}"
+    fi
+}
+
+# [FIX] 适配 Debian/Ubuntu 时间同步机制
+sync_time() {
+    # 优先尝试启用系统自带的 systemd-timesyncd
+    if command -v timedatectl >/dev/null 2>&1; then
+        timedatectl set-ntp true >/dev/null 2>&1
+        if ! timedatectl status 2>/dev/null | grep -q "NTP service: active"; then
+            # 如果自带服务不可用，降级安装 chrony
+            echo -e "${gl_huang}正在安装时间同步服务以防节点TLS握手失败...${gl_bai}"
+            if command -v apt >/dev/null 2>&1; then 
+                apt-get install -y chrony >/dev/null 2>&1; systemctl enable --now chrony >/dev/null 2>&1
+            elif command -v yum >/dev/null 2>&1; then 
+                yum install -y chrony >/dev/null 2>&1; systemctl enable --now chronyd >/dev/null 2>&1
+            fi
+        fi
     fi
 }
 
@@ -71,7 +90,7 @@ change_swap_size() {
 
 _kernel_optimize_core() {
     local mode_name="$1" scene="${2:-stream_game}" CONF="/etc/sysctl.d/99-yw-optimize.conf"
-    local SWAPPINESS DIRTY_RATIO DIRTY_BG_RATIO OVERCOMMIT MIN_FREE_KB VFS_PRESSURE RMEM_MAX WMEM_MAX TCP_RMEM TCP_WMEM SOMAXCONN BACKLOG SYN_BACKLOG PORT_RANGE SCHED_AUTOGROUP THP NUMA FIN_TIMEOUT KEEPALIVE_TIME KEEPALIVE_INTVL KEEPALIVE_PROBES CC="bbr" QDISC="fq" UDP_RMEM_MIN=131072 TCP_NOTSENT_LOWAT=16384 TCP_FASTOPEN=3 TCP_TW_REUSE=1 TCP_MTU_PROBING=1 HIGH_EXTRA="" STREAM_EXTRA="" GAME_EXTRA="" WEB_EXTRA="" BALANCED_EXTRA="" GATEWAY_EXTRA="" STREAM_GAME_EXTRA="" TCP_SLOW_START_AFTER_IDLE=0 TCP_ECN=0 CONNTRACK_MULT=32
+    local SWAPPINESS DIRTY_RATIO DIRTY_BG_RATIO OVERCOMMIT MIN_FREE_KB VFS_PRESSURE RMEM_MAX WMEM_MAX TCP_RMEM TCP_WMEM SOMAXCONN BACKLOG SYN_BACKLOG PORT_RANGE SCHED_AUTOGROUP THP NUMA FIN_TIMEOUT KEEPALIVE_TIME KEEPALIVE_INTVL KEEPALIVE_PROBES CC="bbr" QDISC="fq" UDP_RMEM_MIN=131072 TCP_NOTSENT_LOWAT=16384 TCP_FASTOPEN=3 TCP_TW_REUSE=1 TCP_MTU_PROBING=1 HIGH_EXTRA="" STREAM_EXTRA="" WEB_EXTRA="" BALANCED_EXTRA="" GATEWAY_EXTRA="" STREAM_GAME_EXTRA="" TCP_SLOW_START_AFTER_IDLE=0 TCP_ECN=0 CONNTRACK_MULT=32
     case "$scene" in
         stream_game) SWAPPINESS=10; DIRTY_RATIO=20; DIRTY_BG_RATIO=8; OVERCOMMIT=1; VFS_PRESSURE=50; MIN_FREE_KB=131072; RMEM_MAX=134217728; WMEM_MAX=134217728; TCP_RMEM="4096 87380 67108864"; TCP_WMEM="4096 65536 67108864"; SOMAXCONN=65535; BACKLOG=500000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"; SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=10; KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5; UDP_RMEM_MIN=131072; STREAM_GAME_EXTRA=$'net.ipv4.udp_rmem_min = 131072\nnet.ipv4.udp_wmem_min = 131072\nnet.ipv4.udp_rmem_max = 16777216\nnet.ipv4.udp_wmem_max = 16777216\nnet.core.netdev_budget = 1200\nnet.core.netdev_max_backlog = 500000\nnet.core.optmem_max = 40960' ;;
         high) SWAPPINESS=10; OVERCOMMIT=1; VFS_PRESSURE=50; DIRTY_RATIO=40; DIRTY_BG_RATIO=10; MIN_FREE_KB=131072; RMEM_MAX=134217728; WMEM_MAX=134217728; TCP_RMEM="4096 87380 67108864"; TCP_WMEM="4096 65536 67108864"; SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"; SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=10; KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5; HIGH_EXTRA=$'vm.dirty_ratio = 40\nvm.dirty_background_ratio = 10' ;;
@@ -81,16 +100,24 @@ _kernel_optimize_core() {
         gateway) SWAPPINESS=10; DIRTY_RATIO=20; DIRTY_BG_RATIO=10; OVERCOMMIT=1; VFS_PRESSURE=50; MIN_FREE_KB=32768; RMEM_MAX=8388608; WMEM_MAX=8388608; TCP_RMEM="4096 16384 8388608"; TCP_WMEM="4096 16384 8388608"; SOMAXCONN=65535; BACKLOG=100000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"; SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=30; KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5; UDP_RMEM_MIN=16384; GATEWAY_EXTRA=$'net.core.optmem_max = 20480' ;;
         balanced) SWAPPINESS=30; DIRTY_RATIO=20; DIRTY_BG_RATIO=10; OVERCOMMIT=0; VFS_PRESSURE=75; MIN_FREE_KB=32768; RMEM_MAX=16777216; WMEM_MAX=16777216; TCP_RMEM="4096 87380 16777216"; TCP_WMEM="4096 65536 16777216"; SOMAXCONN=4096; BACKLOG=5000; SYN_BACKLOG=4096; PORT_RANGE="32768 60999"; SCHED_AUTOGROUP=0; THP="always"; NUMA=1; FIN_TIMEOUT=30; KEEPALIVE_TIME=600; KEEPALIVE_INTVL=60; KEEPALIVE_PROBES=5; TCP_SLOW_START_AFTER_IDLE=1; BALANCED_EXTRA="vm.overcommit_memory = 0" ;;
     esac
+    
     local MEM_MB_VAL=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
     if [ "$MEM_MB_VAL" -ge 4096 ]; then MIN_FREE_KB=131072; [ "$scene" != "balanced" ] && SWAPPINESS=5
     elif [ "$MEM_MB_VAL" -ge 2048 ]; then MIN_FREE_KB=65536; RMEM_MAX=33554432; WMEM_MAX=33554432; TCP_RMEM="4096 87380 33554432"; TCP_WMEM="4096 65536 33554432"; BACKLOG=50000; [ "$scene" = "stream_game" ] || [ "$scene" = "stream" ] && STREAM_GAME_EXTRA=$'net.ipv4.udp_rmem_min = 65536\nnet.ipv4.udp_wmem_min = 65536\nnet.ipv4.udp_rmem_max = 8388608\nnet.ipv4.udp_wmem_max = 8388608\nnet.core.netdev_budget = 800\nnet.core.netdev_max_backlog = 50000\nnet.core.optmem_max = 20480'
     elif [ "$MEM_MB_VAL" -ge 1024 ]; then MIN_FREE_KB=32768; RMEM_MAX=16777216; WMEM_MAX=16777216; TCP_RMEM="4096 87380 16777216"; TCP_WMEM="4096 65536 16777216"; BACKLOG=10000; [ "$scene" = "stream_game" ] || [ "$scene" = "stream" ] && STREAM_GAME_EXTRA=$'net.ipv4.udp_rmem_min = 16384\nnet.ipv4.udp_wmem_min = 16384\nnet.ipv4.udp_rmem_max = 4194304\nnet.ipv4.udp_wmem_max = 4194304\nnet.core.netdev_budget = 600\nnet.core.netdev_max_backlog = 10000\nnet.core.optmem_max = 20480'
-    else MIN_FREE_KB=16384; OVERCOMMIT=0; SWAPPINESS=10; RMEM_MAX=4194304; WMEM_MAX=4194304; SOMAXCONN=1024; BACKLOG=1000; TCP_RMEM="4096 32768 4194304"; TCP_WMEM="4096 32768 4194304"; HIGH_EXTRA=""; WEB_EXTRA=""; STREAM_EXTRA=""; GAME_EXTRA=""; BALANCED_EXTRA=""; GATEWAY_EXTRA=""; STREAM_GAME_EXTRA=""; [ -f /sys/module/zswap/parameters/enabled ] && echo N > /sys/module/zswap/parameters/enabled 2>/dev/null; check_swap; auto_setup_zram; fi
+    else 
+        MIN_FREE_KB=16384; OVERCOMMIT=0; SWAPPINESS=10; VFS_PRESSURE=50; DIRTY_RATIO=20; DIRTY_BG_RATIO=5
+        RMEM_MAX=8388608; WMEM_MAX=8388608; SOMAXCONN=4096; BACKLOG=2000; SYN_BACKLOG=2048
+        TCP_RMEM="4096 32768 8388608"; TCP_WMEM="4096 32768 8388608"
+        HIGH_EXTRA=""; WEB_EXTRA=""; STREAM_EXTRA=""; GAME_EXTRA=""; BALANCED_EXTRA=""; GATEWAY_EXTRA=""
+        STREAM_GAME_EXTRA=$'net.ipv4.udp_rmem_min = 16384\nnet.ipv4.udp_wmem_min = 16384\nnet.ipv4.udp_rmem_max = 4194304\nnet.ipv4.udp_wmem_max = 4194304\nnet.core.netdev_budget = 600\nnet.core.netdev_max_backlog = 2000\nnet.core.optmem_max = 16384'
+        [ -f /sys/module/zswap/parameters/enabled ] && echo N > /sys/module/zswap/parameters/enabled 2>/dev/null; check_swap; auto_setup_zram; fi
+
     local KVER=$(uname -r | grep -oP '^\d+\.\d+'); CC="cubic"; QDISC="fq_codel"
     if [ -n "$KVER" ] && { [ "$KVER" \> "4.9" ] || [ "$KVER" = "4.9" ]; }; then modprobe tcp_bbr 2>/dev/null; sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q bbr && { CC="bbr"; QDISC="fq"; }; fi
     local TCP_MEM_MIN=$((MEM_MB_VAL * 256)) TCP_MEM_DEF=$((MEM_MB_VAL * 512)) TCP_MEM_MAX=$((MEM_MB_VAL * 1024))
     [ "$TCP_MEM_MIN" -lt 8192 ] && TCP_MEM_MIN=8192; [ "$TCP_MEM_DEF" -lt 16384 ] && TCP_MEM_DEF=16384; [ "$TCP_MEM_MAX" -lt 32768 ] && TCP_MEM_MAX=32768
-    [ "$scene" = "stream" ] || [ "$scene" = "stream_game" ] && [ "$MEM_MB_VAL" -ge 1024 ] && STREAM_GAME_EXTRA="${STREAM_GAME_EXTRA:-${STREAM_EXTRA}}"$'\nnet.ipv4.udp_mem = '"$((MEM_MB_VAL * 128)) $((MEM_MB_VAL * 256)) $((MEM_MB_VAL * 512))"
+    [ "$scene" = "stream" ] || [ "$scene" = "stream_game" ] && [ "$MEM_MB_VAL" -ge 1024 ] && STREAM_GAME_EXTRA="${STREAM_GAME_EXTRA:-${STREAM_EXTRA}}"$'\nnet.ipv4.udp_mem = '"$((MEM_MB_VAL * 128)) $((MEM_MB_VAL * 256)) $((MEM_MB_VAL * 512))"`
     local TW_BUCKETS=$((SOMAXCONN * 4)) MAX_ORPHANS=$((SOMAXCONN * 2))
     [ "$scene" = "web" ] && [ "$MEM_MB_VAL" -ge 2048 ] && TW_BUCKETS=524288; [ "$TW_BUCKETS" -gt 524288 ] && TW_BUCKETS=524288; [ "$MAX_ORPHANS" -gt 131072 ] && MAX_ORPHANS=131072
     [ -f "$CONF" ] && cp "$CONF" "${CONF}.bak.$(date +%s)"
@@ -137,8 +164,12 @@ vm.min_free_kbytes = $MIN_FREE_KB
 vm.vfs_cache_pressure = $VFS_PRESSURE
 kernel.sched_autogroup_enabled = $SCHED_AUTOGROUP
  $( [ -f /proc/sys/kernel/numa_balancing ] && echo "kernel.numa_balancing = $NUMA" || echo "# numa不支持" )
-net.ipv4.conf.all.rp_filter = 1
-net.ipv4.conf.default.rp_filter = 1
+# 修复 rp_filter 为松散模式，避免中转/代理丢包
+net.ipv4.conf.all.rp_filter = 2
+net.ipv4.conf.default.rp_filter = 2
+# 开启转发，支持 Hysteria2 端口跳跃 NAT 和中转网关
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 1
 net.ipv4.icmp_echo_ignore_broadcasts = 1
 net.ipv4.icmp_ignore_bogus_error_responses = 1
 net.ipv4.conf.all.accept_redirects = 0
@@ -165,12 +196,95 @@ EOF
     echo -e "${gl_lv}${mode_name} 完成！内存: ${MEM_MB_VAL}MB | 算法: ${CC}${gl_bai}"; read -rs -n 1 -p ""
 }
 
+estimate_stream_capacity() {
+    clear
+    echo -e "${gl_huang}===== 直播承载能力评估 =====${gl_bai}"
+    echo -e "1. 手动输入带宽"
+    echo -e "2. 自动实测带宽 (约10秒)"
+    read -e -p "请选择: " speed_choice
+    
+    local up_bw=0 down_bw=0
+    
+    if [ "$speed_choice" = "2" ]; then
+        echo -e "${gl_huang}正在测试下行带宽...${gl_bai}"
+        local down_speed_bps=$(curl -o /dev/null -s -w "%{speed_download}" --max-time 15 "https://speed.cloudflare.com/__down?bytes=10000000")
+        down_bw=$(awk "BEGIN{printf \"%.0f\", ${down_speed_bps:-0} * 8 / 1000000}")
+        
+        echo -e "${gl_huang}正在测试上行带宽...${gl_bai}"
+        local up_speed_bps=$(head -c 10000000 /dev/zero 2>/dev/null | curl -o /dev/null -s -w "%{speed_upload}" --max-time 15 -X POST -H "Content-Type: application/octet-stream" --data-binary @- "https://speed.cloudflare.com/__up")
+        up_bw=$(awk "BEGIN{printf \"%.0f\", ${up_speed_bps:-0} * 8 / 1000000}")
+        
+        if [ "$up_bw" -eq 0 ] || [ "$down_bw" -eq 0 ]; then
+            echo -e "${gl_red}自动测速失败 (可能被云商限制或接口拦截)，请改用手动输入。${gl_bai}"
+            speed_choice="1"
+        else
+            echo -e "${gl_lv}实测完成！ 上行: ${up_bw}Mbps | 下行: ${down_bw}Mbps${gl_bai}"
+        fi
+    fi
+    
+    if [ "$speed_choice" != "2" ]; then
+        read -e -p "服务器上行带宽 (Mbps, 如100): " up_bw
+        read -e -p "服务器下行带宽 (Mbps, 如100): " down_bw
+    fi
+    
+    if [[ ! "$up_bw" =~ ^[0-9]+$ ]] || [[ ! "$down_bw" =~ ^[0-9]+$ ]] || [ "$up_bw" -eq 0 ] || [ "$down_bw" -eq 0 ]; then
+        echo -e "${gl_red}输入或测速无效${gl_bai}"; read -rs -n 1 -p ""; return
+    fi
+
+    local cpu_cores=$(nproc)
+    local mem_mb=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo)
+    
+    local effective_up=$((up_bw * 8 / 10))
+    local effective_down=$((down_bw * 8 / 10))
+    
+    local bw_up_1080p=$((effective_up / 6))
+    local bw_down_1080p=$((effective_down / 2))
+    local bw_limit_1080=$bw_up_1080p
+    [ "$bw_down_1080p" -lt "$bw_limit_1080" ] && bw_limit_1080=$bw_down_1080p
+
+    local bw_up_720p=$((effective_up / 3))
+    local bw_down_720p=$((effective_down / 1))
+    local bw_limit_720=$bw_up_720p
+    [ "$bw_down_720p" -lt "$bw_limit_720" ] && bw_limit_720=$bw_down_720p
+
+    local cpu_limit=$((cpu_cores * 2))
+    local mem_limit=$(( (mem_mb - 512) / 100 ))
+    [ "$mem_limit" -lt 0 ] && mem_limit=0
+
+    local rec_1080=$bw_limit_1080
+    [ "$cpu_limit" -lt "$rec_1080" ] && rec_1080=$cpu_limit
+    [ "$mem_limit" -lt "$rec_1080" ] && rec_1080=$mem_limit
+
+    local rec_720=$bw_limit_720
+    [ "$cpu_limit" -lt "$rec_720" ] && rec_720=$cpu_limit
+    [ "$mem_limit" -lt "$rec_720" ] && rec_720=$mem_limit
+
+    echo -e "\n${gl_lv}===== 评估结果 =====${gl_bai}"
+    echo -e "硬件配置: ${gl_huang}${cpu_cores}核 CPU / ${mem_mb}MB 内存${gl_bai}"
+    echo -e "网络带宽: ${gl_huang}上行 ${up_bw}Mbps / 下行 ${down_bw}Mbps${gl_bai}"
+    echo -e "------------------------"
+    echo -e "${gl_kjlan}理论上限 (仅考虑带宽):${gl_bai}"
+    echo -e "  - 1080P直播: 约 ${gl_lv}${bw_limit_1080}${gl_bai} 路"
+    echo -e "  - 720P直播 : 约 ${gl_lv}${bw_limit_720}${gl_bai} 路"
+    echo -e "${gl_kjlan}硬件瓶颈 (CPU/内存):${gl_bai}"
+    echo -e "  - CPU瓶颈 : 约 ${gl_lv}${cpu_limit}${gl_bai} 路"
+    echo -e "  - 内存瓶颈: 约 ${gl_lv}${mem_limit}${gl_bai} 路"
+    echo -e "------------------------"
+    echo -e "${gl_huang}🌟 综合推荐带货量 (取最短板):${gl_bai}"
+    echo -e "  - 推荐 1080P 主播数: ${gl_lv}${rec_1080}${gl_bai} 个"
+    echo -e "  - 推荐 720P 主播数 : ${gl_lv}${rec_720}${gl_bai} 个"
+    echo -e "${gl_hui}注: 评估已预留20%带宽用于游戏/网页, 并考虑了加解密损耗。${gl_bai}"
+    read -rs -n 1 -p ""
+}
+
+# [FIX] 修复 XanMod 源对 Debian 12 / Ubuntu 22.04 的支持判断
 xanmod_add_repo() {
     local keyring="/usr/share/keyrings/xanmod-archive-keyring.gpg" list_file="/etc/apt/sources.list.d/xanmod-release.list" os_codename=""
     if command -v lsb_release >/dev/null 2>&1; then os_codename=$(lsb_release -sc); elif [ -r /etc/os-release ]; then os_codename=$(. /etc/os-release && echo "$VERSION_CODENAME"); fi
-    if ! echo "bookworm trixie forky sid noble plucky" | grep -qw "$os_codename"; then os_codename="releases"; fi
-    if echo "jammy focal bullseye buster releases" | grep -qw "$os_codename"; then echo -e "${gl_hong}XanMod 已停止支持${gl_bai}"; return 1; fi
-    [ -z "$os_codename" ] && { echo "无法获取代号"; return 1; }
+    # 兼容 Debian 12(bookworm), Debian 13(trixie), Ubuntu 22.04(jammy), Ubuntu 24.04(noble)
+    if ! echo "bookworm trixie forky sid noble plucky jammy" | grep -qw "$os_codename"; then 
+        os_codename="releases" # 对于未明确列出的版本，回退到通用 releases 仓库
+    fi
     install_pkg wget gnupg ca-certificates || return 1; mkdir -p /usr/share/keyrings /etc/apt/sources.list.d
     wget -qO - "https://dl.xanmod.org/archive.key" | gpg --dearmor -o "$keyring" --yes 2>/dev/null; chmod 644 "$keyring"
     echo "deb [signed-by=$keyring] http://deb.xanmod.org $os_codename main" > "$list_file"
@@ -197,6 +311,7 @@ restore_defaults() {
     [ -f /sys/kernel/mm/transparent_hugepage/enabled ] && echo always > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null; sed -i '/# YW-optimize/,+4d' /etc/security/limits.conf 2>/dev/null
     [ -f /sys/module/zswap/parameters/enabled ] && echo N > /sys/module/zswap/parameters/enabled 2>/dev/null; sed -i '/vm.zswap.enabled/d' /etc/sysctl.conf 2>/dev/null
     systemctl is-enabled zramswap >/dev/null 2>&1 && { systemctl stop zramswap >/dev/null 2>&1; systemctl disable zramswap >/dev/null 2>&1; }
+    systemctl is-enabled yw-nic-optimize.service >/dev/null 2>&1 && { systemctl stop yw-nic-optimize.service >/dev/null 2>&1; systemctl disable yw-nic-optimize.service >/dev/null 2>&1; rm -f /usr/local/bin/yw-nic-optimize.sh /etc/systemd/system/yw-nic-optimize.service; }
     echo -e "${gl_lv}已还原所有设置${gl_bai}"; read -rs -n 1 -p ""
 }
 
@@ -320,7 +435,8 @@ Kernel_optimize() {
         echo -e "    ${gl_hui}[0]  返回${gl_bai}"
         echo ""
         read -e -p "  选择: " c
-        case $c in
+        c=$(echo "$c" | tr -d '[:space:]')
+        case "$c" in
             1) clear; _kernel_optimize_core "直播+游戏" "stream_game" ;;
             2) clear; _kernel_optimize_core "高性能" "high" ;;
             3) clear; _kernel_optimize_core "均衡" "balanced" ;;
@@ -379,6 +495,17 @@ _save_node_meta() {
 _del_node_meta() { [ -f "$META_FILE" ] && jq --arg p "$1" 'del(.[$p])' "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"; }
 _get_node_meta() { [ -f "$META_FILE" ] && jq -r --arg p "$1" --arg f "$2" '.[$p][$f] // empty' "$META_FILE"; }
 
+_harden_singbox_service() {
+    mkdir -p /etc/systemd/system/sing-box.service.d
+    cat > /etc/systemd/system/sing-box.service.d/override.conf << EOF
+[Service]
+Restart=always
+RestartSec=3
+OOMScoreAdjust=-1000
+EOF
+    systemctl daemon-reload >/dev/null 2>&1
+}
+
 _open_single_port() {
     local port=$1 proto="${2:-tcp}" opened=0
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
@@ -401,7 +528,19 @@ _open_single_port() {
     fi
 }
 
+_del_single_port() {
+    local port=$1 proto="${2:-tcp}"
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
+        ufw delete allow ${port}/${proto} >/dev/null 2>&1
+    elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+        firewall-cmd --permanent --remove-port=${port}/${proto} >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1
+    elif command -v iptables >/dev/null 2>&1; then
+        iptables -D INPUT -p ${proto} --dport ${port} -j ACCEPT >/dev/null 2>&1
+    fi
+}
+
 open_port_both() { _open_single_port "$1" "tcp"; _open_single_port "$1" "udp"; }
+del_port_both() { _del_single_port "$1" "tcp"; _del_single_port "$1" "udp"; }
 
 open_port_range() {
     local start_port=$1 end_port=$2 proto="${3:-udp}" opened=0
@@ -424,6 +563,17 @@ open_port_range() {
         echo -e "${G}  ✅ 已放行 ${proto^^} ${start_port}-${end_port}${R}"
     else
         echo -e "${Y}  ⚠ 自动放行失败，请直接在云控制台放行 ${proto^^} ${start_port}-${end_port}${R}"
+    fi
+}
+
+_del_port_range() {
+    local start_port=$1 end_port=$2 proto="${3:-udp}"
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
+        ufw delete allow ${start_port}:${end_port}/${proto} >/dev/null 2>&1
+    elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+        firewall-cmd --permanent --remove-port=${start_port}-${end_port}/${proto} >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1
+    elif command -v iptables >/dev/null 2>&1; then
+        iptables -D INPUT -p ${proto} --dport ${start_port}:${end_port} -j ACCEPT >/dev/null 2>&1
     fi
 }
 
@@ -460,9 +610,12 @@ manual_open_port() {
     done
 }
 
+# 修复 rc-local 在现代系统未启用导致 NAT 持久化失败的问题
 _ensure_rc_local() {
     if [ ! -f /etc/rc.local ]; then printf '#!/bin/bash\nexit 0\n' > /etc/rc.local; chmod +x /etc/rc.local; fi
-    if ! grep -q "iptables-restore" /etc/rc.local 2>/dev/null; then sed -i '/^exit 0/i iptables-restore < /etc/iptables.rules' /etc/rc.local 2>/dev/null; fi
+    if ! grep -q "iptables-restore" /etc/rc.local 2>/dev/null; then sed -i '/^exit 0/i iptables-restore < /etc/iptables.rules 2>/dev/null' /etc/rc.local 2>/dev/null; fi
+    systemctl enable rc-local >/dev/null 2>&1
+    systemctl start rc-local >/dev/null 2>&1
 }
 _persist_iptables() {
     command -v iptables-save >/dev/null 2>&1 || return
@@ -487,6 +640,7 @@ sb_install() {
     apt-get update -y 2>&1 | tail -1; apt-get install -y sing-box 2>&1 | tail -3
     if ! command -v sing-box >/dev/null 2>&1; then echo -e "${RED}❌ 安装失败${R}"; read -rs -n 1 -p ""; return 1; fi
     mkdir -p /etc/sing-box; sb_init_conf; systemctl enable sing-box >/dev/null 2>&1
+    _harden_singbox_service
     echo -e "${G}✅ 安装成功 | 版本: $(sing-box version 2>/dev/null | head -1)${R}"; read -rs -n 1 -p ""
 }
 
@@ -508,6 +662,7 @@ sb_uninstall() {
     systemctl stop sing-box >/dev/null 2>&1; systemctl disable sing-box >/dev/null 2>&1
     apt-get purge -y sing-box >/dev/null 2>&1; apt-get autoremove -y >/dev/null 2>&1
     rm -rf /etc/sing-box; rm -f /etc/apt/sources.list.d/sagernet.list /etc/apt/keyrings/sagernet.asc
+    rm -rf /etc/systemd/system/sing-box.service.d
     echo -e "${G}✅ Sing-Box 已完全卸载${R}"; read -rs -n 1 -p ""
 }
 
@@ -523,11 +678,11 @@ sb_add_reality() {
     local short_ids=("aabbccdd" "11223344" "deadbeef" "12345678" "abcdef01"); short_id=${short_ids[$((RANDOM % ${#short_ids[@]}))]}
     read -e -p "名称 (回车默认): " nn; [ -z "$nn" ] && nn="VLESS-Reality-${port}"
     sb_init_conf; local conf="/etc/sing-box/config.json"; cp "$conf" "${conf}.bak.$(date +%s)"
-    local ij=$(jq -n --argjson p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" '{"type":"vless","tag":("vless-reality-"+($p|tostring)),"listen":"::","listen_port":$p,"users":[{"uuid":$u,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$s,"reality":{"enabled":true,"handshake":{"server":$s,"server_port":443},"private_key":$pk,"short_id":[$sid]}}}')
+    local ij=$(jq -n --argjson p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" '{"type":"vless","tag":("vless-reality-"+($p|tostring)),"listen":"::","listen_port":$p,"users":[{"uuid":$u,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$s,"reality":{"enabled":true,"handshake":{"server":$s,"server_port":443},"private_key":$pk,"short_id":[$sid]}}}'})
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
     if sing-box check -c "$conf" >/dev/null 2>&1; then
         open_port_both "$port"; _save_node_meta "$port" "$nn" "vless-reality" "$pub_key" "short_id=${short_id}"
-        systemctl enable sing-box >/dev/null 2>&1; systemctl restart sing-box; sleep 2
+        _harden_singbox_service; systemctl restart sing-box; sleep 2
         if ! systemctl is-active --quiet sing-box 2>/dev/null; then
             echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"
         else
@@ -550,7 +705,7 @@ sb_add_vless_ws() {
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
     if sing-box check -c "$conf" >/dev/null 2>&1; then
         open_port_both "$port"; _save_node_meta "$port" "$nn" "vless-ws" "" "path=${ws_path}"
-        systemctl enable sing-box >/dev/null 2>&1; systemctl restart sing-box; sleep 2
+        _harden_singbox_service; systemctl restart sing-box; sleep 2
         if ! systemctl is-active --quiet sing-box 2>/dev/null; then
             echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"
         else
@@ -585,7 +740,10 @@ sb_add_hysteria2() {
         *) return ;;
     esac
     sb_init_conf; local conf="/etc/sing-box/config.json"; cp "$conf" "${conf}.bak.$(date +%s)"
-    local ij=$(jq -n --argjson p "$port" --arg pwd "$pwd" --argjson tls "$tls_obj" '{"type":"hysteria2","tag":("hysteria2-"+($p|tostring)),"listen":"::","listen_port":$p,"up_mbps":100,"down_mbps":100,"users":[{"password":$pwd}],"tls":$tls}')
+    
+    # 修复 Hysteria2 带宽硬编码过高导致 UDP 丢包不通的问题，改为 0(自适应)
+    local ij=$(jq -n --argjson p "$port" --arg pwd "$pwd" --argjson tls "$tls_obj" '{"type":"hysteria2","tag":("hysteria2-"+($p|tostring)),"listen":"::","listen_port":$p,"up_mbps":0,"down_mbps":0,"users":[{"password":$pwd}],"tls":$tls}')
+    
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
     if sing-box check -c "$conf" >/dev/null 2>&1; then
         open_port_both "$port"
@@ -598,8 +756,8 @@ sb_add_hysteria2() {
                 echo -e "${Y}  ⚠ 系统未安装 iptables，NAT 跳跃未添加${R}"
             elif ! iptables -t nat -L PREROUTING -n >/dev/null 2>&1; then
                 echo -e "${Y}  ⚠ iptables nat 表不可用（可能是 nftables-only 环境），NAT 跳跃未添加${R}"
-                echo -e "${Y}    建议改用 nftables 手动配置，或在云控制台做端口范围转发${R}"
             else
+                # 兼容 Debian 12/Ubuntu 24.04，尝试加载 iptable_nat 模块
                 modprobe iptable_nat 2>/dev/null
                 if iptables -t nat -C PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${port} 2>/dev/null; then
                     echo -e "${G}  ✅ NAT 规则已存在${R}"
@@ -612,7 +770,7 @@ sb_add_hysteria2() {
             fi
         fi
         _save_node_meta "$port" "$nn" "hysteria2" "" "password=${pwd};hop_range=${hop_range};tls_method=${tls_method}"
-        systemctl enable sing-box >/dev/null 2>&1; systemctl restart sing-box; sleep 2
+        _harden_singbox_service; systemctl restart sing-box; sleep 2
         if ! systemctl is-active --quiet sing-box 2>/dev/null; then
             echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"
         else
@@ -698,8 +856,26 @@ sb_del_node() {
     read -e -p "请输入要删除的端口号: " del_input
     [ -z "$del_input" ] || [[ "$del_input" == "0" ]] && return
     if ! [[ "$del_input" =~ ^[0-9]+$ ]]; then echo -e "${RED}无效输入${R}"; read -rs -n 1 -p ""; return; fi
+    
+    local ex=$(_get_node_meta "$del_input" "extra")
+    local main_nic=$(ip route | grep default | awk '{print $5}' | head -1)
+    
     local found_tag=$(jq -r --argjson p "$del_input" '.inbounds[] | select(.listen_port == $p) | .tag' "$conf" 2>/dev/null | head -1)
     if [ -z "$found_tag" ]; then echo -e "${RED}未找到端口 ${del_input} 对应的节点${R}"; read -rs -n 1 -p ""; return; fi
+    
+    echo -e "${Y}正在清理相关防火墙规则...${R}"
+    if [ -n "$ex" ] && echo "$ex" | grep -q "hop_range="; then
+        local hop_range=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+')
+        if [ -n "$hop_range" ] && [ -n "$main_nic" ] && command -v iptables >/dev/null 2>&1; then
+            local hop_start="${hop_range%-*}" hop_end="${hop_range#*-}"
+            iptables -t nat -D PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${del_input} 2>/dev/null
+            _del_port_range "$hop_start" "$hop_end" "udp"
+            _persist_iptables
+            echo -e "${G}  ✅ 已清理 NAT 跳跃规则 ${hop_range}${R}"
+        fi
+    fi
+    del_port_both "$del_input"
+    
     cp "$conf" "${conf}.bak.$(date +%s)"
     jq --arg t "$found_tag" 'del(.inbounds[] | select(.tag == $t))' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
     if sing-box check -c "$conf" >/dev/null 2>&1; then
@@ -757,6 +933,7 @@ sb_menu() {
 
 main_menu() {
     check_env
+    sync_time # 启动时自动执行时间同步
     while true; do
         clear
         echo -e "${gl_lv}╔══════════════════════════════════════╗"
@@ -768,6 +945,7 @@ main_menu() {
         echo -e "    ${gl_huang}[3] Sing-Box 管理面板${gl_bai}"
         echo -e "    ${gl_huang}[4] Linux 内核网络优化${gl_bai}"
         echo -e "    ${gl_huang}[5] Swap 管理${gl_bai}"
+        echo -e "    ${gl_huang}[6] 直播承载能力评估${gl_bai}"
         echo ""
         echo -e "    ${gl_hui}[0] 退出${gl_bai}"
         echo ""
@@ -779,6 +957,7 @@ main_menu() {
             3) sb_menu ;;
             4) Kernel_optimize ;;
             5) change_swap_size ;;
+            6) clear; estimate_stream_capacity ;;
             0|"") echo -e "${gl_lv}再见！${gl_bai}"; exit 0 ;;
             *) echo -e "${gl_red}无效选择${gl_bai}"; sleep 1 ;;
         esac
