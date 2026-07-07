@@ -6,14 +6,24 @@ root_use() { [ "$(id -u)" -ne 0 ] && { echo -e "${gl_red}错误：请使用 root
 
 check_env() {
     local need_update=0
-    if ! command -v curl >/dev/null 2>&1; then echo -e "${gl_huang}安装 curl...${gl_bai}"; need_update=1; fi
-    if ! command -v jq >/dev/null 2>&1; then echo -e "${gl_huang}安装 jq...${gl_bai}"; need_update=1; fi
-    if ! command -v openssl >/dev/null 2>&1; then echo -e "${gl_huang}安装 openssl...${gl_bai}"; need_update=1; fi
+    if ! command -v curl >/dev/null 2>&1; then need_update=1; fi
+    if ! command -v jq >/dev/null 2>&1; then need_update=1; fi
+    if ! command -v openssl >/dev/null 2>&1; then need_update=1; fi
+    if ! command -v iptables >/dev/null 2>&1; then need_update=1; fi
+    
     if [ "$need_update" -eq 1 ]; then
-        if command -v apt >/dev/null 2>&1; then apt-get update -y >/dev/null 2>&1; apt-get install -y curl jq openssl >/dev/null 2>&1
-        elif command -v yum >/dev/null 2>&1; then yum install -y curl jq openssl >/dev/null 2>&1
-        elif command -v apk >/dev/null 2>&1; then apk update >/dev/null 2>&1; apk add curl jq openssl >/dev/null 2>&1; fi
-        echo -e "${gl_lv}✅ 依赖准备完毕！${gl_bai}"; fi
+        echo -e "${gl_huang}正在准备基础环境...${gl_bai}"
+        if command -v apt >/dev/null 2>&1; then 
+            apt-get update -y >/dev/null 2>&1
+            apt-get install -y curl jq openssl iptables >/dev/null 2>&1
+        elif command -v yum >/dev/null 2>&1; then 
+            yum install -y curl jq openssl iptables >/dev/null 2>&1
+        elif command -v apk >/dev/null 2>&1; then 
+            apk update >/dev/null 2>&1
+            apk add curl jq openssl iptables >/dev/null 2>&1
+        fi
+        echo -e "${gl_lv}✅ 基础环境准备完毕！${gl_bai}"
+    fi
 }
 
 check_swap() {
@@ -369,12 +379,6 @@ _save_node_meta() {
 _del_node_meta() { [ -f "$META_FILE" ] && jq --arg p "$1" 'del(.[$p])' "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"; }
 _get_node_meta() { [ -f "$META_FILE" ] && jq -r --arg p "$1" --arg f "$2" '.[$p][$f] // empty' "$META_FILE"; }
 
-_iptables_legacy_usable() {
-    command -v iptables >/dev/null 2>&1 || return 1
-    iptables -L INPUT -n >/dev/null 2>&1 || return 1
-    return 0
-}
-
 _open_single_port() {
     local port=$1 proto="${2:-tcp}" opened=0
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
@@ -382,13 +386,19 @@ _open_single_port() {
         else ufw allow ${port}/${proto} >/dev/null 2>&1 && opened=1; fi
     elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
         firewall-cmd --permanent --add-port=${port}/${proto} >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 && opened=1
-    elif _iptables_legacy_usable; then
-        iptables -C INPUT -p ${proto} --dport ${port} -j ACCEPT >/dev/null 2>&1 && opened=1 || iptables -I INPUT -p ${proto} --dport ${port} -j ACCEPT >/dev/null 2>&1 && opened=1
-    else
-        echo -e "${Y}  ⚠ 检测到 nftables 环境或 iptables 不可用，请直接在云控制台【安全组】放行 ${proto^^} ${port}${R}"
-        return 0
+    elif command -v iptables >/dev/null 2>&1; then
+        if iptables -C INPUT -p ${proto} --dport ${port} -j ACCEPT >/dev/null 2>&1; then
+            opened=1
+        elif iptables -I INPUT -p ${proto} --dport ${port} -j ACCEPT >/dev/null 2>&1; then
+            opened=1
+        fi
     fi
-    [ "$opened" -eq 1 ] && echo -e "${G}  ✅ 放行 ${proto^^} ${port}${R}" || echo -e "${Y}  ⚠ 请在云控制台【安全组】放行 ${proto^^} ${port}${R}"
+
+    if [ "$opened" -eq 1 ]; then
+        echo -e "${G}  ✅ 已放行 ${proto^^} ${port}${R}"
+    else
+        echo -e "${Y}  ⚠ 自动放行失败，请直接在云控制台【安全组】放行 ${proto^^} ${port}${R}"
+    fi
 }
 
 open_port_both() { _open_single_port "$1" "tcp"; _open_single_port "$1" "udp"; }
@@ -402,16 +412,23 @@ open_port_range() {
         else ufw allow ${start_port}:${end_port}/${proto} >/dev/null 2>&1 && opened=1; fi
     elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
         firewall-cmd --permanent --add-port=${start_port}-${end_port}/${proto} >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 && opened=1
-    elif _iptables_legacy_usable; then
-        iptables -C INPUT -p ${proto} --dport ${start_port}:${end_port} -j ACCEPT >/dev/null 2>&1 && opened=1 || iptables -I INPUT -p ${proto} --dport ${start_port}:${end_port} -j ACCEPT >/dev/null 2>&1 && opened=1
-    else
-        echo -e "${Y}  ⚠ 检测到 nftables 环境或 iptables 不可用，请直接在云控制台放行 ${proto^^} ${start_port}-${end_port}${R}"
-        return 0
+    elif command -v iptables >/dev/null 2>&1; then
+        if iptables -C INPUT -p ${proto} --dport ${start_port}:${end_port} -j ACCEPT >/dev/null 2>&1; then
+            opened=1
+        elif iptables -I INPUT -p ${proto} --dport ${start_port}:${end_port} -j ACCEPT >/dev/null 2>&1; then
+            opened=1
+        fi
     fi
-    [ "$opened" -eq 1 ] && echo -e "${G}  ✅ 放行 ${proto^^} ${start_port}-${end_port}${R}" || echo -e "${Y}  ⚠ 请在云控制台放行 ${proto^^} ${start_port}-${end_port}${R}"
+
+    if [ "$opened" -eq 1 ]; then
+        echo -e "${G}  ✅ 已放行 ${proto^^} ${start_port}-${end_port}${R}"
+    else
+        echo -e "${Y}  ⚠ 自动放行失败，请直接在云控制台放行 ${proto^^} ${start_port}-${end_port}${R}"
+    fi
 }
 
 manual_open_port() {
+    root_use || return
     while true; do
         clear
         echo -e "${Y}===== 手动开放端口 =====${R}"
