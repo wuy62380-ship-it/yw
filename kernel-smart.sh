@@ -395,29 +395,35 @@ sb_del_node() {
     case "$del_type" in vless-reality) del_tag="vless-reality-${del_port}" ;; vless-ws) del_tag="vless-ws-${del_port}" ;; hysteria2) del_tag="hysteria2-${del_port}" ;; esac
     local conf="/etc/sing-box/config.json"; cp "$conf" "${conf}.bak.$(date +%s)"
     
-    # ★ 修复：如果该节点有 NAT 端口跳跃，顺带清理 Linux 内核的 NAT 规则
+    # 清理 NAT 规则
     local ex=$(_get_node_meta "$del_port" "extra")
     if echo "$ex" | grep -q "hop_range="; then
         local old_hop=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+')
         if [ -n "$old_hop" ]; then
             local hop_start="${old_hop%-*}" hop_end="${old_hop#*-}" main_nic=$(ip route | grep default | awk '{print $5}' | head -1)
-            if [ -n "$main_nic" ]; then
-                iptables -t nat -D PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${del_port} 2>/dev/null
-                echo -e "${Y}已清理 NAT 跳跃规则: ${hop_start}-${hop_end}${R}"
-                command -v iptables-save >/dev/null 2>&1 && iptables-save > /etc/iptables.rules 2>/dev/null
-            fi
+            [ -n "$main_nic" ] && { iptables -t nat -D PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${del_port} 2>/dev/null; echo -e "${Y}已清理 NAT 规则${R}"; command -v iptables-save >/dev/null 2>&1 && iptables-save > /etc/iptables.rules 2>/dev/null; }
         fi
     fi
 
-    [ -n "$del_tag" ] && jq --arg t "$del_tag" '.inbounds = [.inbounds[] | select(.tag != $t)]' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
-    if sing-box check -c "$conf" >/dev/null 2>&1; then 
-        _del_node_meta "$del_port"; systemctl restart sing-box; echo -e "${G}✅ 已彻底删除${R}"; 
-    else 
-        echo -e "${RED}配置异常，强制清理...${R}"
+    # ★ 核心修复：只要 jq 成功把节点从配置里剔除，就坚决生效，绝不用备份覆盖回来！
+    local jq_ok=0
+    if [ -n "$del_tag" ]; then
+        if jq --arg t "$del_tag" '.inbounds = [.inbounds[] | select(.tag != $t)]' "$conf" > /tmp/sb_cfg.json 2>/dev/null; then
+            mv /tmp/sb_cfg.json "$conf"
+            jq_ok=1
+        fi
+    else
+        jq_ok=1
+    fi
+
+    if [ "$jq_ok" -eq 1 ]; then
         _del_node_meta "$del_port"
-        local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"
-        systemctl restart sing-box
-    fi; read -rs -n 1 -p "按任意键返回..."
+        systemctl restart sing-box 2>/dev/null
+        echo -e "${G}✅ 已彻底删除${R}"
+    else
+        echo -e "${RED}❌ 删除失败，配置可能损坏${R}"
+    fi
+    read -rs -n 1 -p "按任意键返回..."
 }
 sb_list_nodes() {
     sb_check || { read -rs -n 1 -p ""; return; }; _init_meta_file
