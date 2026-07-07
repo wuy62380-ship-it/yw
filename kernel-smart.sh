@@ -10,17 +10,18 @@ check_env() {
     if ! command -v jq >/dev/null 2>&1; then need_update=1; fi
     if ! command -v openssl >/dev/null 2>&1; then need_update=1; fi
     if ! command -v iptables >/dev/null 2>&1; then need_update=1; fi
+    if ! command -v ethtool >/dev/null 2>&1; then need_update=1; fi
     
     if [ "$need_update" -eq 1 ]; then
         echo -e "${gl_huang}正在准备基础环境...${gl_bai}"
         if command -v apt >/dev/null 2>&1; then 
             apt-get update -y >/dev/null 2>&1
-            apt-get install -y curl jq openssl iptables >/dev/null 2>&1
+            apt-get install -y curl jq openssl iptables ethtool >/dev/null 2>&1
         elif command -v yum >/dev/null 2>&1; then 
-            yum install -y curl jq openssl iptables >/dev/null 2>&1
+            yum install -y curl jq openssl iptables ethtool >/dev/null 2>&1
         elif command -v apk >/dev/null 2>&1; then 
             apk update >/dev/null 2>&1
-            apk add curl jq openssl iptables >/dev/null 2>&1
+            apk add curl jq openssl iptables ethtool >/dev/null 2>&1
         fi
         echo -e "${gl_lv}✅ 基础环境准备完毕！${gl_bai}"
     fi
@@ -165,6 +166,66 @@ EOF
     echo -e "${gl_lv}${mode_name} 完成！内存: ${MEM_MB_VAL}MB | 算法: ${CC}${gl_bai}"; read -rs -n 1 -p ""
 }
 
+# 专家级极速网卡优化
+nic_extreme_optimize() {
+    root_use || return
+    command -v ethtool >/dev/null 2>&1 || install_pkg ethtool || { echo -e "${RED}缺少 ethtool，无法优化${R}"; read -rs -n 1 -p ""; return; }
+    
+    local main_nic=$(ip route | grep default | awk '{print $5}' | head -1)
+    if [ -z "$main_nic" ]; then echo -e "${RED}未检测到默认网卡${R}"; read -rs -n 1 -p ""; return; fi
+    
+    echo -e "${Y}正在对网卡 [${main_nic}] 进行极速满载优化...${R}"
+    
+    # 1. Ring Buffer 拉满
+    local max_rx=$(ethtool -g "$main_nic" 2>/dev/null | grep -i "RX MAX" | awk '{print $3}')
+    local max_tx=$(ethtool -g "$main_nic" 2>/dev/null | grep -i "TX MAX" | awk '{print $3}')
+    if [ -n "$max_rx" ] && [ "$max_rx" -gt 0 ]; then ethtool -G "$main_nic" rx "$max_rx" tx "$max_tx" 2>/dev/null && echo -e "${G}✅ 网卡队列拉满 (RX: $max_rx, TX: $max_tx)${R}"; fi
+    
+    # 2. 中断合并调优 (直播大吞吐+游戏低延迟折中)
+    if ethtool -C "$main_nic" rx-usecs 50 tx-usecs 50 2>/dev/null; then echo -e "${G}✅ 中断合并优化 (50us)${R}"; fi
+    
+    # 3. RPS/RFS 多核负载分发
+    local cpu_count=$(nproc)
+    local hex_len=$(( (cpu_count + 3) / 4 ))
+    local rps_mask=$(printf 'f%.0s' $(seq 1 $hex_len))
+    for f in /sys/class/net/"$main_nic"/queues/rx-*/rps_cpus; do [ -f "$f" ] && echo "$rps_mask" > "$f" 2>/dev/null; done
+    for f in /sys/class/net/"$main_nic"/queues/rx-*/rps_flow_cnt; do [ -f "$f" ] && echo "32768" > "$f" 2>/dev/null; done
+    [ -f /proc/sys/net/core/rps_sock_flow_entries ] && echo "32768" > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null
+    echo -e "${G}✅ 多核 RPS/RFS 负载分发已开启 ($cpu_count 核)${R}"
+
+    # 4. 持久化配置
+    cat > /usr/local/bin/yw-nic-optimize.sh << EOF
+#!/bin/bash
+NIC="\$(ip route | grep default | awk '{print \$5}' | head -1)"
+[ -z "\$NIC" ] && exit 0
+ethtool -G \$NIC rx $max_rx tx $max_tx 2>/dev/null
+ethtool -C \$NIC rx-usecs 50 tx-usecs 50 2>/dev/null
+for f in /sys/class/net/\$NIC/queues/rx-*/rps_cpus; do [ -f "\$f" ] && echo "$rps_mask" > "\$f" 2>/dev/null; done
+for f in /sys/class/net/\$NIC/queues/rx-*/rps_flow_cnt; do [ -f "\$f" ] && echo "32768" > "\$f" 2>/dev/null; done
+echo "32768" > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null
+EOF
+    chmod +x /usr/local/bin/yw-nic-optimize.sh
+    cat > /etc/systemd/system/yw-nic-optimize.service << EOF
+[Unit]
+Description=YW NIC Extreme Optimize
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/yw-nic-optimize.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl enable yw-nic-optimize.service >/dev/null 2>&1
+    systemctl start yw-nic-optimize.service >/dev/null 2>&1
+    echo -e "${G}✅ 已写入开机自启守护服务${R}"
+    
+    echo -e "${Y}建议配合内核优化 [1] 直播+游戏混合模式 食用效果最佳！${R}"
+    read -rs -n 1 -p ""
+}
+
 xanmod_add_repo() {
     local keyring="/usr/share/keyrings/xanmod-archive-keyring.gpg" list_file="/etc/apt/sources.list.d/xanmod-release.list" os_codename=""
     if command -v lsb_release >/dev/null 2>&1; then os_codename=$(lsb_release -sc); elif [ -r /etc/os-release ]; then os_codename=$(. /etc/os-release && echo "$VERSION_CODENAME"); fi
@@ -197,6 +258,7 @@ restore_defaults() {
     [ -f /sys/kernel/mm/transparent_hugepage/enabled ] && echo always > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null; sed -i '/# YW-optimize/,+4d' /etc/security/limits.conf 2>/dev/null
     [ -f /sys/module/zswap/parameters/enabled ] && echo N > /sys/module/zswap/parameters/enabled 2>/dev/null; sed -i '/vm.zswap.enabled/d' /etc/sysctl.conf 2>/dev/null
     systemctl is-enabled zramswap >/dev/null 2>&1 && { systemctl stop zramswap >/dev/null 2>&1; systemctl disable zramswap >/dev/null 2>&1; }
+    systemctl is-enabled yw-nic-optimize.service >/dev/null 2>&1 && { systemctl stop yw-nic-optimize.service >/dev/null 2>&1; systemctl disable yw-nic-optimize.service >/dev/null 2>&1; rm -f /usr/local/bin/yw-nic-optimize.sh /etc/systemd/system/yw-nic-optimize.service; }
     echo -e "${gl_lv}已还原所有设置${gl_bai}"; read -rs -n 1 -p ""
 }
 
@@ -316,11 +378,13 @@ Kernel_optimize() {
         echo -e "    ${gl_hui}[9]  远程脚本${gl_bai}"
         echo -e "    ${gl_hui}[10] 释放缓存${gl_bai}"
         echo -e "    ${gl_hui}[11] 验证状态${gl_bai}"
+        echo -e "    ${gl_hui}[12] 极速网卡通挂满载优化${gl_bai}"
         echo ""
         echo -e "    ${gl_hui}[0]  返回${gl_bai}"
         echo ""
         read -e -p "  选择: " c
-        case $c in
+        c=$(echo "$c" | tr -d '[:space:]')
+        case "$c" in
             1) clear; _kernel_optimize_core "直播+游戏" "stream_game" ;;
             2) clear; _kernel_optimize_core "高性能" "high" ;;
             3) clear; _kernel_optimize_core "均衡" "balanced" ;;
@@ -332,6 +396,7 @@ Kernel_optimize() {
             9) curl -sS ${gh_proxy}raw.githubusercontent.com/YW/sh/refs/heads/main/network-optimize.sh | bash ;;
             10) read -e -p "确定释放缓存？: " d; [[ "$d" =~ ^[Yy]$ ]] && sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null ;;
             11) verify_network_status ;;
+            12) clear; nic_extreme_optimize ;;
             0|"") break ;;
         esac
     done
