@@ -255,33 +255,72 @@ estimate_stream_capacity() {
     read -rs -n 1 -p ""
 }
 
+# 专家级极速网卡优化 (强化反馈机制)
 nic_extreme_optimize() {
     root_use || return
-    command -v ethtool >/dev/null 2>&1 || install_pkg ethtool || { echo -e "${gl_red}缺少 ethtool，无法优化${gl_bai}"; read -rs -n 1 -p ""; return; }
+    echo -e "${gl_huang}正在检测网卡硬件信息...${gl_bai}"
+    command -v ethtool >/dev/null 2>&1 || install_pkg ethtool
+    if ! command -v ethtool >/dev/null 2>&1; then
+        echo -e "${gl_red}缺少 ethtool 工具且安装失败，无法优化网卡硬件层${gl_bai}"
+        read -rs -n 1 -p ""; return
+    fi
     
-    local main_nic=$(ip route | grep default | awk '{print $5}' | head -1)
-    if [ -z "$main_nic" ]; then echo -e "${gl_red}未检测到默认网卡${gl_bai}"; read -rs -n 1 -p ""; return; fi
+    local main_nic=$(ip route | awk '$1=="default" {print $5}' | head -1)
+    if [ -z "$main_nic" ]; then
+        echo -e "${gl_red}未检测到默认网卡，无法优化${gl_bai}"
+        read -rs -n 1 -p ""; return
+    fi
     
     echo -e "${gl_huang}正在对网卡 [${main_nic}] 进行极速满载优化...${gl_bai}"
     
+    # 1. Ring Buffer 网卡队列拉满
     local max_rx=$(ethtool -g "$main_nic" 2>/dev/null | grep -i "RX MAX" | awk '{print $3}')
     local max_tx=$(ethtool -g "$main_nic" 2>/dev/null | grep -i "TX MAX" | awk '{print $3}')
-    if [ -n "$max_rx" ] && [ "$max_rx" -gt 0 ]; then ethtool -G "$main_nic" rx "$max_rx" tx "$max_tx" 2>/dev/null && echo -e "${gl_lv}✅ 网卡队列拉满 (RX: $max_rx, TX: $max_tx)${gl_bai}"; fi
+    if [ -n "$max_rx" ] && [ "$max_rx" -gt 0 ]; then 
+        ethtool -G "$main_nic" rx "$max_rx" tx "$max_tx" 2>/dev/null && echo -e "${gl_lv}✅ 网卡队列拉满 (RX: $max_rx, TX: $max_tx)${gl_bai}"
+    else
+        echo -e "${gl_hui}⚠ 网卡不支持调整队列长度 (虚拟网卡常见)${gl_bai}"
+    fi
     
-    ethtool -K "$main_nic" tso on gso on gro on 2>/dev/null && echo -e "${gl_lv}✅ 硬件卸载已开启 (TSO/GSO/GRO)${gl_bai}"
-    if ethtool -C "$main_nic" rx-usecs 50 tx-usecs 50 2>/dev/null; then echo -e "${gl_lv}✅ 中断合并优化 (50us)${gl_bai}"; fi
+    # 2. 硬件卸载强制开启
+    if ethtool -K "$main_nic" tso on gso on gro on 2>/dev/null; then 
+        echo -e "${gl_lv}✅ 硬件卸载已开启 (TSO/GSO/GRO)${gl_bai}"
+    else
+        echo -e "${gl_hui}⚠ 网卡不支持调整硬件卸载 (虚拟网卡常见)${gl_bai}"
+    fi
     
+    # 3. 中断合并调优
+    if ethtool -C "$main_nic" rx-usecs 50 tx-usecs 50 2>/dev/null; then 
+        echo -e "${gl_lv}✅ 中断合并优化 (50us)${gl_bai}"
+    else
+        echo -e "${gl_hui}⚠ 网卡不支持中断合并调整 (虚拟网卡常见)${gl_bai}"
+    fi
+    
+    # 4. RPS/RFS 多核负载分发 (单核也会设置掩码1，无副作用)
     local cpu_count=$(nproc)
     local hex_len=$(( (cpu_count + 3) / 4 ))
     local rps_mask=$(printf 'f%.0s' $(seq 1 $hex_len))
-    for f in /sys/class/net/"$main_nic"/queues/rx-*/rps_cpus; do [ -f "$f" ] && echo "$rps_mask" > "$f" 2>/dev/null; done
-    for f in /sys/class/net/"$main_nic"/queues/rx-*/rps_flow_cnt; do [ -f "$f" ] && echo "32768" > "$f" 2>/dev/null; done
+    local rps_applied=0
+    for f in /sys/class/net/"$main_nic"/queues/rx-*/rps_cpus; do
+        if [ -f "$f" ]; then 
+            echo "$rps_mask" > "$f" 2>/dev/null && rps_applied=1
+        fi
+    done
+    for f in /sys/class/net/"$main_nic"/queues/rx-*/rps_flow_cnt; do 
+        [ -f "$f" ] && echo "32768" > "$f" 2>/dev/null
+    done
     [ -f /proc/sys/net/core/rps_sock_flow_entries ] && echo "32768" > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null
-    echo -e "${gl_lv}✅ 多核 RPS/RFS 负载分发已开启 ($cpu_count 核)${gl_bai}"
+    
+    if [ "$rps_applied" -eq 1 ]; then
+        echo -e "${gl_lv}✅ 多核 RPS/RFS 负载分发已开启 ($cpu_count 核)${gl_bai}"
+    else
+        echo -e "${gl_hui}⚠ 未找到 RPS 配置接口 (可能宿主机限制)${gl_bai}"
+    fi
 
+    # 5. 持久化配置
     cat > /usr/local/bin/yw-nic-optimize.sh << EOF
 #!/bin/bash
-NIC="\$(ip route | grep default | awk '{print \$5}' | head -1)"
+NIC="\$(ip route | awk '\$1==\"default\" {print \$5}' | head -1)"
 [ -z "\$NIC" ] && exit 0
 ethtool -G \$NIC rx $max_rx tx $max_tx 2>/dev/null
 ethtool -K \$NIC tso on gso on gro on 2>/dev/null
@@ -304,10 +343,11 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 EOF
+    systemctl daemon-reload >/dev/null 2>&1
     systemctl enable yw-nic-optimize.service >/dev/null 2>&1
-    systemctl start yw-nic-optimize.service >/dev/null 2>&1
     echo -e "${gl_lv}✅ 已写入开机自启守护服务${gl_bai}"
-    echo -e "${gl_huang}建议配合内核优化 [1] 直播+游戏混合模式 食用效果最佳！${gl_bai}"
+    
+    echo -e "${gl_huang}极速网卡通挂满载优化执行完毕！${gl_bai}"
     read -rs -n 1 -p ""
 }
 
