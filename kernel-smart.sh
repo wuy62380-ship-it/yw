@@ -88,7 +88,6 @@ _kernel_optimize_core() {
     elif [ "$MEM_MB_VAL" -ge 2048 ]; then MIN_FREE_KB=65536; RMEM_MAX=33554432; WMEM_MAX=33554432; TCP_RMEM="4096 87380 33554432"; TCP_WMEM="4096 65536 33554432"; BACKLOG=50000; [ "$scene" = "stream_game" ] || [ "$scene" = "stream" ] && STREAM_GAME_EXTRA=$'net.ipv4.udp_rmem_min = 65536\nnet.ipv4.udp_wmem_min = 65536\nnet.ipv4.udp_rmem_max = 8388608\nnet.ipv4.udp_wmem_max = 8388608\nnet.core.netdev_budget = 800\nnet.core.netdev_max_backlog = 50000\nnet.core.optmem_max = 20480'
     elif [ "$MEM_MB_VAL" -ge 1024 ]; then MIN_FREE_KB=32768; RMEM_MAX=16777216; WMEM_MAX=16777216; TCP_RMEM="4096 87380 16777216"; TCP_WMEM="4096 65536 16777216"; BACKLOG=10000; [ "$scene" = "stream_game" ] || [ "$scene" = "stream" ] && STREAM_GAME_EXTRA=$'net.ipv4.udp_rmem_min = 16384\nnet.ipv4.udp_wmem_min = 16384\nnet.ipv4.udp_rmem_max = 4194304\nnet.ipv4.udp_wmem_max = 4194304\nnet.core.netdev_budget = 600\nnet.core.netdev_max_backlog = 10000\nnet.core.optmem_max = 20480'
     else 
-        # 针对 1C1G 小鸡极限优化
         MIN_FREE_KB=16384; OVERCOMMIT=0; SWAPPINESS=10; VFS_PRESSURE=50; DIRTY_RATIO=20; DIRTY_BG_RATIO=5
         RMEM_MAX=8388608; WMEM_MAX=8388608; SOMAXCONN=4096; BACKLOG=2000; SYN_BACKLOG=2048
         TCP_RMEM="4096 32768 8388608"; TCP_WMEM="4096 32768 8388608"
@@ -175,48 +174,53 @@ EOF
     echo -e "${gl_lv}${mode_name} 完成！内存: ${MEM_MB_VAL}MB | 算法: ${CC}${gl_bai}"; read -rs -n 1 -p ""
 }
 
-# 直播承载能力评估
+# 直播承载能力评估 (内置真实测速)
 estimate_stream_capacity() {
     clear
     echo -e "${gl_huang}===== 直播承载能力评估 =====${gl_bai}"
-    echo -e "由于云服务器内部无法直接读取公网带宽限制，请手动输入："
-    read -e -p "服务器上行带宽 (Mbps, 如100): " up_bw
-    read -e -p "服务器下行带宽 (Mbps, 如100): " down_bw
+    echo -e "1. 手动输入带宽"
+    echo -e "2. 自动实测带宽 (约10秒)"
+    read -e -p "请选择: " speed_choice
     
-    if [[ ! "$up_bw" =~ ^[0-9]+$ ]] || [[ ! "$down_bw" =~ ^[0-9]+$ ]]; then
-        echo -e "${gl_red}输入无效${gl_bai}"
-        read -rs -n 1 -p ""
-        return
+    local up_bw=0 down_bw=0
+    
+    if [ "$speed_choice" = "2" ]; then
+        echo -e "${Y}正在测试下行带宽...${R}"
+        local down_speed_bps=$(curl -o /dev/null -s -w "%{speed_download}" --max-time 10 https://speed.cloudflare.com/__down?bytes=10000000)
+        down_bw=$(awk "BEGIN{printf \"%.0f\", ${down_speed_bps} * 8 / 1000000}")
+        echo -e "${Y}正在测试上行带宽...${R}"
+        local up_speed_bps=$(dd if=/dev/zero bs=1M count=10 2>/dev/null | curl -o /dev/null -s -w "%{speed_upload}" --max-time 10 -X POST -d @- https://speed.cloudflare.com/__up)
+        up_bw=$(awk "BEGIN{printf \"%.0f\", ${up_speed_bps} * 8 / 1000000}")
+        echo -e "${G}实测完成！ 上行: ${up_bw}Mbps | 下行: ${down_bw}Mbps${R}"
+    else
+        read -e -p "服务器上行带宽 (Mbps, 如100): " up_bw
+        read -e -p "服务器下行带宽 (Mbps, 如100): " down_bw
+    fi
+    
+    if [[ ! "$up_bw" =~ ^[0-9]+$ ]] || [[ ! "$down_bw" =~ ^[0-9]+$ ]] || [ "$up_bw" -eq 0 ] || [ "$down_bw" -eq 0 ]; then
+        echo -e "${gl_red}输入或测速无效${gl_bai}"; read -rs -n 1 -p ""; return
     fi
 
-    # 硬件瓶颈评估
     local cpu_cores=$(nproc)
     local mem_mb=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo)
     
-    # 理论带宽评估 (假设保留20%带宽用于游戏/控制信令)
     local effective_up=$((up_bw * 8 / 10))
     local effective_down=$((down_bw * 8 / 10))
     
-    # 直播需求：1080P@60fps 约需 6Mbps 上行，2Mbps 下行
     local bw_up_1080p=$((effective_up / 6))
     local bw_down_1080p=$((effective_down / 2))
     local bw_limit_1080=$bw_up_1080p
     [ "$bw_down_1080p" -lt "$bw_limit_1080" ] && bw_limit_1080=$bw_down_1080p
 
-    # 直播需求：720P@30fps 约需 3Mbps 上行，1Mbps 下行
     local bw_up_720p=$((effective_up / 3))
     local bw_down_720p=$((effective_down / 1))
     local bw_limit_720=$bw_up_720p
     [ "$bw_down_720p" -lt "$bw_limit_720" ] && bw_limit_720=$bw_down_720p
 
-    # CPU瓶颈评估 (Sing-box加解密，单核约带3-5路1080P，这里保守按 2路/核)
     local cpu_limit=$((cpu_cores * 2))
-    
-    # 内存瓶颈评估 (1路代理约耗100MB内存，留出512MB给系统)
     local mem_limit=$(( (mem_mb - 512) / 100 ))
     [ "$mem_limit" -lt 0 ] && mem_limit=0
 
-    # 综合得出推荐值
     local rec_1080=$bw_limit_1080
     [ "$cpu_limit" -lt "$rec_1080" ] && rec_1080=$cpu_limit
     [ "$mem_limit" -lt "$rec_1080" ] && rec_1080=$mem_limit
@@ -243,7 +247,6 @@ estimate_stream_capacity() {
     read -rs -n 1 -p ""
 }
 
-# 专家级极速网卡优化 (针对单核/多核小鸡大幅降低CPU占用)
 nic_extreme_optimize() {
     root_use || return
     command -v ethtool >/dev/null 2>&1 || install_pkg ethtool || { echo -e "${RED}缺少 ethtool，无法优化${R}"; read -rs -n 1 -p ""; return; }
@@ -253,18 +256,13 @@ nic_extreme_optimize() {
     
     echo -e "${Y}正在对网卡 [${main_nic}] 进行极速满载优化...${R}"
     
-    # 1. Ring Buffer 网卡队列拉满
     local max_rx=$(ethtool -g "$main_nic" 2>/dev/null | grep -i "RX MAX" | awk '{print $3}')
     local max_tx=$(ethtool -g "$main_nic" 2>/dev/null | grep -i "TX MAX" | awk '{print $3}')
     if [ -n "$max_rx" ] && [ "$max_rx" -gt 0 ]; then ethtool -G "$main_nic" rx "$max_rx" tx "$max_tx" 2>/dev/null && echo -e "${G}✅ 网卡队列拉满 (RX: $max_rx, TX: $max_tx)${R}"; fi
     
-    # 2. 硬件卸载强制开启 (1核CPU减负神器)
     ethtool -K "$main_nic" tso on gso on gro on 2>/dev/null && echo -e "${G}✅ 硬件卸载已开启 (TSO/GSO/GRO)${R}"
-    
-    # 3. 中断合并调优
     if ethtool -C "$main_nic" rx-usecs 50 tx-usecs 50 2>/dev/null; then echo -e "${G}✅ 中断合并优化 (50us)${R}"; fi
     
-    # 4. RPS/RFS 多核负载分发 (单核也会设置掩码1，无副作用)
     local cpu_count=$(nproc)
     local hex_len=$(( (cpu_count + 3) / 4 ))
     local rps_mask=$(printf 'f%.0s' $(seq 1 $hex_len))
@@ -273,7 +271,6 @@ nic_extreme_optimize() {
     [ -f /proc/sys/net/core/rps_sock_flow_entries ] && echo "32768" > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null
     echo -e "${G}✅ 多核 RPS/RFS 负载分发已开启 ($cpu_count 核)${R}"
 
-    # 5. 持久化配置
     cat > /usr/local/bin/yw-nic-optimize.sh << EOF
 #!/bin/bash
 NIC="\$(ip route | grep default | awk '{print \$5}' | head -1)"
@@ -302,7 +299,6 @@ EOF
     systemctl enable yw-nic-optimize.service >/dev/null 2>&1
     systemctl start yw-nic-optimize.service >/dev/null 2>&1
     echo -e "${G}✅ 已写入开机自启守护服务${R}"
-    
     echo -e "${Y}建议配合内核优化 [1] 直播+游戏混合模式 食用效果最佳！${R}"
     read -rs -n 1 -p ""
 }
@@ -525,6 +521,18 @@ _save_node_meta() {
 _del_node_meta() { [ -f "$META_FILE" ] && jq --arg p "$1" 'del(.[$p])' "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"; }
 _get_node_meta() { [ -f "$META_FILE" ] && jq -r --arg p "$1" --arg f "$2" '.[$p][$f] // empty' "$META_FILE"; }
 
+# Sing-Box OOM 免杀与自启守护
+_harden_singbox_service() {
+    mkdir -p /etc/systemd/system/sing-box.service.d
+    cat > /etc/systemd/system/sing-box.service.d/override.conf << EOF
+[Service]
+Restart=always
+RestartSec=3
+OOMScoreAdjust=-1000
+EOF
+    systemctl daemon-reload >/dev/null 2>&1
+}
+
 _open_single_port() {
     local port=$1 proto="${2:-tcp}" opened=0
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
@@ -547,7 +555,20 @@ _open_single_port() {
     fi
 }
 
+# 删除单端口防火墙规则
+_del_single_port() {
+    local port=$1 proto="${2:-tcp}"
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
+        ufw delete allow ${port}/${proto} >/dev/null 2>&1
+    elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+        firewall-cmd --permanent --remove-port=${port}/${proto} >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1
+    elif command -v iptables >/dev/null 2>&1; then
+        iptables -D INPUT -p ${proto} --dport ${port} -j ACCEPT >/dev/null 2>&1
+    fi
+}
+
 open_port_both() { _open_single_port "$1" "tcp"; _open_single_port "$1" "udp"; }
+del_port_both() { _del_single_port "$1" "tcp"; _del_single_port "$1" "udp"; }
 
 open_port_range() {
     local start_port=$1 end_port=$2 proto="${3:-udp}" opened=0
@@ -570,6 +591,18 @@ open_port_range() {
         echo -e "${G}  ✅ 已放行 ${proto^^} ${start_port}-${end_port}${R}"
     else
         echo -e "${Y}  ⚠ 自动放行失败，请直接在云控制台放行 ${proto^^} ${start_port}-${end_port}${R}"
+    fi
+}
+
+# 删除端口范围防火墙规则
+_del_port_range() {
+    local start_port=$1 end_port=$2 proto="${3:-udp}"
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
+        ufw delete allow ${start_port}:${end_port}/${proto} >/dev/null 2>&1
+    elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+        firewall-cmd --permanent --remove-port=${start_port}-${end_port}/${proto} >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1
+    elif command -v iptables >/dev/null 2>&1; then
+        iptables -D INPUT -p ${proto} --dport ${start_port}:${end_port} -j ACCEPT >/dev/null 2>&1
     fi
 }
 
@@ -633,6 +666,7 @@ sb_install() {
     apt-get update -y 2>&1 | tail -1; apt-get install -y sing-box 2>&1 | tail -3
     if ! command -v sing-box >/dev/null 2>&1; then echo -e "${RED}❌ 安装失败${R}"; read -rs -n 1 -p ""; return 1; fi
     mkdir -p /etc/sing-box; sb_init_conf; systemctl enable sing-box >/dev/null 2>&1
+    _harden_singbox_service # 写入 OOM 免杀
     echo -e "${G}✅ 安装成功 | 版本: $(sing-box version 2>/dev/null | head -1)${R}"; read -rs -n 1 -p ""
 }
 
@@ -654,6 +688,7 @@ sb_uninstall() {
     systemctl stop sing-box >/dev/null 2>&1; systemctl disable sing-box >/dev/null 2>&1
     apt-get purge -y sing-box >/dev/null 2>&1; apt-get autoremove -y >/dev/null 2>&1
     rm -rf /etc/sing-box; rm -f /etc/apt/sources.list.d/sagernet.list /etc/apt/keyrings/sagernet.asc
+    rm -rf /etc/systemd/system/sing-box.service.d
     echo -e "${G}✅ Sing-Box 已完全卸载${R}"; read -rs -n 1 -p ""
 }
 
@@ -673,7 +708,7 @@ sb_add_reality() {
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
     if sing-box check -c "$conf" >/dev/null 2>&1; then
         open_port_both "$port"; _save_node_meta "$port" "$nn" "vless-reality" "$pub_key" "short_id=${short_id}"
-        systemctl enable sing-box >/dev/null 2>&1; systemctl restart sing-box; sleep 2
+        _harden_singbox_service; systemctl restart sing-box; sleep 2
         if ! systemctl is-active --quiet sing-box 2>/dev/null; then
             echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"
         else
@@ -696,7 +731,7 @@ sb_add_vless_ws() {
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
     if sing-box check -c "$conf" >/dev/null 2>&1; then
         open_port_both "$port"; _save_node_meta "$port" "$nn" "vless-ws" "" "path=${ws_path}"
-        systemctl enable sing-box >/dev/null 2>&1; systemctl restart sing-box; sleep 2
+        _harden_singbox_service; systemctl restart sing-box; sleep 2
         if ! systemctl is-active --quiet sing-box 2>/dev/null; then
             echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"
         else
@@ -744,7 +779,6 @@ sb_add_hysteria2() {
                 echo -e "${Y}  ⚠ 系统未安装 iptables，NAT 跳跃未添加${R}"
             elif ! iptables -t nat -L PREROUTING -n >/dev/null 2>&1; then
                 echo -e "${Y}  ⚠ iptables nat 表不可用（可能是 nftables-only 环境），NAT 跳跃未添加${R}"
-                echo -e "${Y}    建议改用 nftables 手动配置，或在云控制台做端口范围转发${R}"
             else
                 modprobe iptable_nat 2>/dev/null
                 if iptables -t nat -C PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${port} 2>/dev/null; then
@@ -758,7 +792,7 @@ sb_add_hysteria2() {
             fi
         fi
         _save_node_meta "$port" "$nn" "hysteria2" "" "password=${pwd};hop_range=${hop_range};tls_method=${tls_method}"
-        systemctl enable sing-box >/dev/null 2>&1; systemctl restart sing-box; sleep 2
+        _harden_singbox_service; systemctl restart sing-box; sleep 2
         if ! systemctl is-active --quiet sing-box 2>/dev/null; then
             echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"
         else
@@ -844,8 +878,36 @@ sb_del_node() {
     read -e -p "请输入要删除的端口号: " del_input
     [ -z "$del_input" ] || [[ "$del_input" == "0" ]] && return
     if ! [[ "$del_input" =~ ^[0-9]+$ ]]; then echo -e "${RED}无效输入${R}"; read -rs -n 1 -p ""; return; fi
+    
+    # 删除前获取节点信息用于清理防火墙
+    local ex=$(_get_node_meta "$del_input" "extra")
+    local main_nic=$(ip route | grep default | awk '{print $5}' | head -1)
+    
     local found_tag=$(jq -r --argjson p "$del_input" '.inbounds[] | select(.listen_port == $p) | .tag' "$conf" 2>/dev/null | head -1)
     if [ -z "$found_tag" ]; then echo -e "${RED}未找到端口 ${del_input} 对应的节点${R}"; read -rs -n 1 -p ""; return; fi
+    
+    echo -e "${Y}正在清理相关防火墙规则...${R}"
+    # 清理 NAT 跳跃规则
+    if [ -n "$ex" ] && echo "$ex" | grep -q "hop_range="; then
+        local hop_range=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+')
+        if [ -n "$hop_range" ] && [ -n "$main_nic" ] && command -v iptables >/dev/null 2>&1; then
+            local hop_start="${hop_range%-*}" hop_end="${hop_range#*-}"
+            iptables -t nat -D PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${del_input} 2>/dev/null
+            _del_port_range "$hop_start" "$hop_end" "udp"
+            _persist_iptables
+            echo -e "${G}  ✅ 已清理 NAT 跳跃规则 ${hop_range}${R}"
+        fi
+    fi
+    # 清理端口放行规则
+    del_port_both "$del_input"
+    if [ -n "$ex" ] && echo "$ex" | grep -q "hop_range="; then
+        local hop_range=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+')
+        if [ -n "$hop_range" ]; then
+            local hop_start="${hop_range%-*}" hop_end="${hop_range#*-}"
+            _del_port_range "$hop_start" "$hop_end" "tcp"
+        fi
+    fi
+    
     cp "$conf" "${conf}.bak.$(date +%s)"
     jq --arg t "$found_tag" 'del(.inbounds[] | select(.tag == $t))' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
     if sing-box check -c "$conf" >/dev/null 2>&1; then
