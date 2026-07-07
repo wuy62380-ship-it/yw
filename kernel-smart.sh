@@ -167,7 +167,6 @@ bbrv3() {
         while true; do clear; echo "当前: $(uname -r)\n1.更新 2.卸载 0.返回"; read -e -p "选择: " c
         case $c in 1) check_disk_space 3 && check_swap && xanmod_add_repo && apt update -y && apt install -y --only-upgrade $(xanmod_detect_package) && bbr_on && server_reboot ;; 2) apt purge -y 'linux-*xanmod*' && apt autoremove -y && update-grub && rm -f /etc/apt/sources.list.d/xanmod-release.list && server_reboot ;; *) break ;; esac; done
     else clear; echo "设置BBR3"; read -e -p "继续？: " c; [[ "$c" =~ ^[Yy]$ ]] && check_disk_space 3 && check_swap && xanmod_add_repo && apt update -y && apt install -y $(xanmod_detect_package) && bbr_on && server_reboot; fi
-fi
 }
 restore_defaults() {
     rm -f /etc/sysctl.d/99-yw-optimize.conf /etc/sysctl.d/99-network-optimize.conf; sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf 2>/dev/null; sysctl --system >/dev/null 2>&1
@@ -270,13 +269,15 @@ show_sys_info() {
 }
 Kernel_optimize() {
     root_use
-    local scenes=("直播+游戏" "高性能" "均衡" "网站" "纯直播" "纯游戏" "中转网关" "还原默认" "远程脚本" "释放缓存" "验证状态")
-    local names=("直播+游戏" "高性能" "均衡" "网站" "纯直播" "纯游戏" "中转网关" "还原默认" "远程脚本" "释放缓存" "验证状态")
+    local scenes=("stream_game" "high" "balanced" "web" "stream" "game" "gateway")
+    local names=("直播+游戏" "高性能" "均衡" "网站" "纯直播" "纯游戏" "中转网关")
     while true; do
         clear
         local cur_scene=""
         [ -f /etc/sysctl.d/99-yw-optimize.conf ] && cur_scene=$(grep "^# 模式:" /etc/sysctl.d/99-yw-optimize.conf 2>/dev/null | sed 's/^# 模式: //' | awk -F'|' '{print $2}' | tr -d ' \t')
-        echo -e "${gl_lv}╔════════════════════════════════╗\n║       Linux 内核网络优化            ║\n╚════════════════════════╗${gl_bai}"
+        echo -e "${gl_lv}╔════════════════════════════════╗"
+        echo -e "║       Linux 内核网络优化            ║"
+        echo -e "╚════════════════════════════════╝${gl_bai}"
         echo ""
         local i=0
         while [ $i -lt 7 ]; do
@@ -317,7 +318,7 @@ Kernel_optimize() {
 }
 R="${gl_bai}"; G="${gl_lv}"; Y="${gl_huang}"; H="${gl_hui}"; RED="${gl_red}"; C="\033[36m"
 get_my_ip() { curl -4 -s -f --connect-timeout 3 https://ifconfig.me 2>/dev/null || curl -4 -s -f --connect-timeout 3 https://checkip.amazonaws.com 2>/dev/null || echo "未知IP"; }
-url_encode() { printf '%s' "$1" | sed 's/+/%2B/g; s/\//%2F/g; s/=/%3D/g; s/ /%20/g; s/#/%23/g; s/?/%3F/g; s/&/%26/g; s/@/%40/g';'; }
+url_encode() { printf '%s' "$1" | sed 's/+/%2B/g; s/\//%2F/g; s/=/%3D/g; s/ /%20/g; s/#/%23/g; s/?/%3F/g; s/&/%26/g; s/@/%40/g'; }
 _test_tls_once() {
     local host="$1" t1 t2 ms
     t1=$(date +%s%3N 2>/dev/null)
@@ -425,7 +426,7 @@ sb_install() {
     install_pkg wget gnupg ca-certificates || { echo -e "${RED}依赖安装失败${R}"; read -s -n 1 -p ""; return 1; }
     mkdir -p /etc/apt/keyrings
     curl -fsSL https://sing-box.app/gpg.key -o /etc/apt/keyrings/sagernet.asc 2>/dev/null
-    [ $? -ne 0 ] || [ ! -s /etc/apt/keyrings/sagernet.asc ]; then
+    if [ $? -ne 0 ] || [ ! -s /etc/apt/keyrings/sagernet.asc ]; then
         curl -fsSL ${gh_proxy}sing-box.app/gpg.key -o /etc/apt/keyrings/sagernet.asc 2>/dev/null
         if [ $? -ne 0 ] || [ ! -s /etc/apt/keyrings/sagernet.asc ]; then echo -e "${RED}GPG 下载失败，检查网络${R}"; read -s -n 1 -p ""; return 1; fi
     fi
@@ -507,7 +508,8 @@ sb_add_hysteria2() {
     if [ -f "/etc/sing-box/config.json" ] && jq -e . "/etc/sing-box/config.json" >/dev/null 2>&1; then
         local dup_port=$(jq -r --argjson p "$port" '.inbounds[] | select(.listen_port == $p) | .tag' "/etc/sing-box/config.json" 2>/dev/null)
         if [ -n "$dup_port" ]; then echo -e "${RED}❌ 端口 ${port} 已被 [${dup_port}] 占用！${R}"; read -rs -n 1 -p ""; return; fi
-    local hop_range=""; read -e -p "需要NAT端口跳跃吗？(y/n): " need_hop
+    fi
+    local hop_range=""; read -e -p "需要NAT端口跳跃吗？: " need_hop
     if [[ "$need_hop" =~ ^[Yy]$ ]]; then
         read -e -p "跳跃范围(如20000-21000): " hop_range
         if [[ ! "$hop_range" =~ ^[0-9]+-[0-9]+$ ]]; then
@@ -525,7 +527,7 @@ sb_add_hysteria2() {
         2) local c k; read -e -p "证书路径: " c; read -e -p "密钥路径: " k; [ ! -f "$c" ] || [ ! -f "$k" ] && { echo -e "${RED}不存在${R}"; return; }; tls_obj=$(jq -n --arg c "$c" --arg k "$k" '{"enabled":true,"certificate_path":$c,"key_path":$k}'); tls_method="manual" ;;
         3) local d="/etc/sing-box/certs/hy2-${port}"; mkdir -p "$d"; openssl req -x509 -nodes -days 3650 -newkey rsa:2048 -keyout "${d}/key.pem" -out "${d}/cert.pem" -subj "/CN=hysteria2" 2>/dev/null; if [ ! -f "${d}/cert.pem" ] || [ ! -f "${d}/key.pem" ]; then echo -e "${RED}证书生成失败${R}"; return; fi; tls_obj=$(jq -n --arg c "${d}/cert.pem" --arg k "${d}/key.pem" '{"enabled":true,"certificate_path":$c,"key_path":$k}'); tls_method="selfsign" ;;
         *) return ;;
-    fi
+    esac
     sb_init_conf; local conf="/etc/sing-box/config.json"; cp "$conf" "${conf}.bak.$(date +%s)"
     local ij=$(jq -n --argjson p "$port" --arg pwd "$pwd" --argjson tls "$tls_obj" '{"type":"hysteria2","tag":("hysteria2-"+($p|tostring)),"listen":"::","listen_port":$p,"up_mbps":100,"down_mbps":100,"users":[{"password":$pwd}],"tls":$tls}')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
@@ -541,7 +543,7 @@ sb_add_hysteria2() {
                 fi
                 if [ -n "$hop_range" ] && command -v iptables >/dev/null 2>&1; then
                     modprobe iptable_nat 2>/dev/null
-                    iptables -t nat -A PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${port}"
+                    iptables -t nat -A PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${port}
                     echo -e "${G}✅ NAT跳跃: UDP ${hop_start}-${hop_end} -> ${port}${R}"
                     _persist_iptables
                 fi
@@ -610,9 +612,9 @@ sb_show_nodes_and_links() {
                         link="vless://${uuid}@${server_ip}:${port}?encryption=none${flow_param}&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp#$(url_encode "$nn")"
                     else
                         ws_path=$(echo "$obj" | jq -r '.transport.path // empty' 2>/dev/null)
-                        link="vless://${uuid}@${server_ip}:${port}?encryption=none&security=none&type=ws&path=$(url_encode "${ws_path:-/}")#$(url_encode "$nn")${R}"
+                        link="vless://${uuid}@${server_ip}:${port}?encryption=none&security=none&type=ws&path=$(url_encode "${ws_path:-/}")#$(url_encode "$nn")"
                     fi
-                fi
+                }
                 ;;
             hysteria2)
                 local pwd sni insecure="0" sni_param=""
@@ -621,8 +623,8 @@ sb_show_nodes_and_links() {
                     sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null)
                     echo "$ex" | grep -q "tls_method=selfsign" && insecure="1"
                     [ -n "$sni" ] && sni_param="&sni=${sni}"
-                    link="hysteria2://$(url_encode "$pwd")@${server_ip}:${port}?insecure=${insecure}${sni_param}#$(url_encode "$nn")${R}"
-                fi
+                    link="hysteria2://$(url_encode "$pwd")@${server_ip}:${port}?insecure=${insecure}${sni_param}#$(url_encode "$nn")"
+                }
                 ;;
         esac
         [ -n "$link" ] && echo -e "${C}${link}${R}"
@@ -637,125 +639,101 @@ sb_del_node() {
     local conf="/etc/sing-box/config.json"
     [ ! -f "$conf" ] || ! jq -e . "$conf" >/dev/null 2>&1 && { echo -e "${Y}无节点${R}"; read -s -n 1 -p ""; return; }
     echo -e "${Y}===== 删除节点 =====${R}"
-    local idx=1 ports=()
+    local idx=1
+    local ports=()
+    local tags=()
     while IFS= read -r b64_obj; do
         local obj; obj=$(echo "$b64_obj" | base64 -d 2>/dev/null); [ -z "$obj" ] && continue
-        local port; port=$(echo "$obj" | jq -r '.listen_port // empty' 2>/dev/null); [ -z "$port" ] && continue
-        local tag; tag=$(echo "$obj" | jq -r '.tag // empty' 2>/dev/null)
-        local nn=$(_get_node_meta "$port" "name"); [ -z "$nn" ] && nn="$tag"
-        local hop_info=""
-        local ex=$(_get_node_meta "$port" "extra")
-        if [ -n "$ex" ] && echo "$ex" | grep -q "hop_range="; then
-            local hr=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+')
-            [ -n "$hr" ] && hop_info=" | 跳跃: ${hr}"
-        fi
-        echo -e "${G}[${idx}] 端口: ${port}${hop_info} | ${nn}${R}"
+        local port tag nn
+        port=$(echo "$obj" | jq -r '.listen_port // empty' 2>/dev/null); [ -z "$port" ] && continue
+        tag=$(echo "$obj" | jq -r '.tag // empty' 2>/dev/null)
+        nn=$(_get_node_meta "$port" "name"); [ -z "$nn" ] && nn="$tag"
+        ports+=("$port")
+        tags+=("$tag")
+        echo -e "  [${idx}] ${nn} | 端口: ${port} | ${tag}"
         idx=$((idx + 1))
     done < <(jq -r '.inbounds[] | @base64' "$conf" 2>/dev/null)
-    [ $idx -eq 1 ] && { echo -e "${Y}无节点${R}"; read -s -n 1 -p ""; return; }
-    echo -e "${H}输入端口号或编号直接删除，0返回${R}"
-    read -e -p "删除: " del_input
-    [ -z "$del_input" ] && return
-    [[ "$del_input" == "0" ]] && return
-    local del_port=""
-    if [[ "$del_input" =~ ^[0-9]+$ ]]; then
-        local found_port=$(jq -r --argjson p "$del_input" '.inbounds[] | select(.listen_port == $p) | .listen_port' "$conf" 2>/dev/null | head -1)
-        if [ -n "$found_port" ]; then del_port="$found_port"
-        else
-            local idx2=1
-            while IFS= read -r b64_obj; do
-                local obj; obj=$(echo "$b64_obj" | base64 -d 2>/dev/null); [ -z "$obj" ] && continue
-                local port; port=$(echo "$obj" | jq -r '.listen_port // empty' 2>/dev/null); [ -z "$port" ] && continue
-                if [ "$idx2" -eq "$del_input" ]; then del_port="$port"; break; fi
-                idx2=$((idx2 + 1))
-            done < <(jq -r '.inbounds[] | @base64' "$conf" 2>/dev/null)
-        fi
-    fi
-    [ -z "$del_port" ] && { echo -e "${RED}未找到匹配的节点${R}"; read -rs -n 1 -p ""; return; }
-    local del_nn=$(_get_node_meta "$del_port" "name")
-    [ -z "$del_nn" ] && del_nn=$(jq -r --argjson p "$del_port" '.inbounds[] | select(.listen_port == $p) | .tag // "未知"' "$conf" 2>/dev/null)
-    echo -ne "${Y}确认删除 [端口:${del_port}] ${del_nn}？(y/n): ${R}"
-    read -e -p "" confirm
-    [[ ! "$confirm" =~ ^[Yy]$ ]] && { echo -e "${H}已取消${R}"; read -rs -n 1 -p ""; return; }
-    local ex=$(_get_node_meta "$del_port" "extra")
-    if [ -n "$ex" ] && echo "$ex" | grep -q "hop_range="; then
-        local old_hop=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+')
-        if [ -n "$old_hop" ] && [[ "$old_hop" =~ ^[0-9]+-[0-9]+$ ]]; then
-            local hop_start="${old_hop%-*}" hop_end="${old_hop#*-}" main_nic=$(ip route | grep default | awk '{print $5}' | head -1)
-            if [ -n "$main_nic" ] && command -v iptables >/dev/null 2>&1; then
-                iptables -t nat -D PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${del_port} 2>/dev/null
-                iptables -D INPUT -p udp --dport ${hop_start}:${hop_end} -j ACCEPT 2>/dev/null
-                echo -e "${Y}已清理 NAT 规则 (UDP ${hop_start}-${hop_end})${R}"
-                _persist_iptables
-            fi
-        fi
-    fi
-    if jq --argjson p "$del_port" '.inbounds = [.inbounds[] | select(.listen_port != $p)]' "$conf" > /tmp/sb_cfg.json 2>/dev/null && mv -f /tmp/sb_cfg.json "$conf"
-    _del_node_meta "$del_port"
-    if jq -e '.inbounds | length > 0' "$conf" >/dev/null 2>&1; then
-        systemctl restart sing-box 2>/dev/null
+    [ ${#ports[@]} -eq 0 ] && { echo -e "${Y}无节点可删除${R}"; read -s -n 1 -p ""; return; }
+    echo ""
+    read -e -p "输入要删除的编号 (0取消): " c
+    [ -z "$c" ] || [ "$c" = "0" ] && return
+    [[ ! "$c" =~ ^[0-9]+$ ]] && { echo -e "${RED}无效输入${R}"; read -s -n 1 -p ""; return; }
+    [ "$c" -lt 1 ] || [ "$c" -gt ${#ports[@]} ] && { echo -e "${RED}编号超出范围${R}"; read -s -n 1 -p ""; return; }
+    local del_idx=$((c - 1))
+    local del_port="${ports[$del_idx]}"
+    local del_tag="${tags[$del_idx]}"
+    cp "$conf" "${conf}.bak.$(date +%s)"
+    jq --arg t "$del_tag" 'del(.inbounds[] | select(.tag == $t))' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
+    if sing-box check -c "$conf" >/dev/null 2>&1; then
+        _del_node_meta "$del_port"
+        systemctl restart sing-box; sleep 1
+        echo -e "${G}✅ 已删除节点: ${del_tag} (端口 ${del_port})${R}"
     else
-        systemctl stop sing-box 2>/dev/null; systemctl disable sing-box 2>/dev/null
+        echo -e "${RED}删除后校验失败，回滚...${R}"
+        local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"
     fi
-    echo -e "${G}✅ 已删除端口 ${del_port} 的节点 [${del_nn}]${R}"
-else
-    echo -e "${RED}❌ 删除失败${R}"
-    read -rs -n 1 -p "按任意键返回..."
+    read -s -n 1 -p ""
 }
-# ★ 通用上下键菜单选择器 - 支持方向键 + 数字 + 0/Q 返回
-# 参数: items 数组 (整个数组引用)
-# 返回: 选中的索引，-1 表示返回上一级
-menu_select() {
-    local -n items=("$@")
-    local total=${#items[@]}
-    [ "$total" -eq 0 ] && return -1
-    local cur=0
-    local use_arrows=0
-    [ -t 0 ] && use_arrows=1
+sb_menu() {
     while true; do
-        local i=0
-        while [ $i -lt "$total" ]; do
-            if [ "$i" -eq "$cur" ]; then
-                printf "  \033[33m▶ \033[32m%s \033[33m◀\033[0m\n" "${items[$i]}"
-            else
-                printf "    \033[90m%s\033[0m\n" "${items[$i]}"
-            fi
-            i=$((i + 1))
-        done
-        if [ "$use_arrows" -eq 1 ]; then
-            printf "    \033[90m↑↓ 选择  回车确认  0/Q 返回\033[0m\n"
-        else
-            printf "    \033[90m输入编号选择，回车确认，0/Q 返回\033[0m\n"
-        fi
-        local key=""
-        read -r key
-        case "$key" in
-            A|k) cur=$((cur - 1)); [ "$cur" -lt 0 ] && cur=$((total - 1)) ;;
-            B|j) cur=$((cur + 1)); [ "$cur" -ge "$total" ] && cur=0 ;;
-            "") return "$cur" ;;
-            0|q|Q) return -1 ;;
-            [0-9]*)
-                local num="${key##0}"; [ -n "$num" ] && [ "$num" -ge 0 ] && [ "$num" -lt "$total" ] && { cur=$num; continue; }
-                ;;
+        clear
+        echo -e "${G}╔════════════════════════════════╗"
+        echo -e "║       Sing-Box 管理面板            ║"
+        echo -e "╚════════════════════════════════╝${R}"
+        echo ""
+        echo -e "    ${H}[1] 安装/更新 Sing-Box${R}"
+        echo -e "    ${H}[2] 添加 VLESS-Reality${R}"
+        echo -e "    ${H}[3] 添加 VLESS-WS${R}"
+        echo -e "    ${H}[4] 添加 Hysteria2${R}"
+        echo -e "    ${H}[5] 查看节点与链接${R}"
+        echo -e "    ${H}[6] 删除节点${R}"
+        echo -e "    ${H}[7] 重启 Sing-Box${R}"
+        echo -e "    ${H}[8] 停止 Sing-Box${R}"
+        echo -e "    ${H}[9] 查看运行状态${R}"
+        echo ""
+        echo -e "    ${H}[0] 返回主菜单${R}"
+        echo ""
+        read -e -p "  选择: " c
+        case $c in
+            1) clear; sb_install ;;
+            2) clear; sb_add_reality ;;
+            3) clear; sb_add_vless_ws ;;
+            4) clear; sb_add_hysteria2 ;;
+            5) clear; sb_show_nodes_and_links ;;
+            6) clear; sb_del_node ;;
+            7) systemctl restart sing-box && echo -e "${G}✅ 已重启${R}" || echo -e "${RED}重启失败${R}"; read -rs -n 1 -p "" ;;
+            8) systemctl stop sing-box && echo -e "${Y}已停止${R}" || echo -e "${RED}停止失败${R}"; read -rs -n 1 -p "" ;;
+            9) clear; systemctl status sing-box --no-pager -l 2>/dev/null || echo "未运行"; read -rs -n 1 -p "" ;;
+            0|"") break ;;
         esac
     done
 }
 main_menu() {
+    check_env
     while true; do
         clear
-        local items=("系统信息" "内核优化" "BBRv3/XanMod" "Swap管理" "Sing-Box节点管理" "退出")
-        local sel
-        sel=$(menu_select "${items[@]}")
-        [ "$sel" -eq -1 ] && break
-        case "$sel" in
-            0|5) exit 0 ;;
-            1) show_sys_info ;;
-            2) Kernel_optimize ;;
-            3) bbrv3 ;;
-            4) change_swap_size ;;
-            5) singbox_manager ;;
+        echo -e "${G}╔══════════════════════════════════════╗"
+        echo -e "║          YW 服务器优化工具箱            ║"
+        echo -e "╚══════════════════════════════════════╝${R}"
+        echo ""
+        echo -e "    ${Y}[1] Linux 内核网络优化${R}"
+        echo -e "    ${Y}[2] BBRv3 (XanMod内核)${R}"
+        echo -e "    ${Y}[3] Swap 管理${R}"
+        echo -e "    ${Y}[4] Sing-Box 管理面板${R}"
+        echo -e "    ${Y}[5] 系统信息查询${R}"
+        echo ""
+        echo -e "    ${H}[0] 退出${R}"
+        echo ""
+        read -e -p "  请选择: " c
+        case $c in
+            1) Kernel_optimize ;;
+            2) bbrv3 ;;
+            3) change_swap_size ;;
+            4) sb_menu ;;
+            5) show_sys_info ;;
+            0|"") echo -e "${G}再见！${R}"; exit 0 ;;
+            *) echo -e "${RED}无效选择${R}"; sleep 1 ;;
         esac
-        read -rs -n 1 -p ""
     done
 }
-check_env; main_menu
+main_menu
