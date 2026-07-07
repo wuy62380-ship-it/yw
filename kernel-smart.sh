@@ -167,7 +167,7 @@ change_swap_size() {
 }
 
 # ============================================================================
-# Core Optimization Logic  ★★★ 已改造为清晰分步输出 ★★★
+# Core Optimization Logic
 # ============================================================================
 
 _kernel_optimize_core() {
@@ -341,18 +341,19 @@ EOF
 
     echo -e "${gl_lv}应用优化参数...${gl_bai}"
 
-    # 统计配置文件中的实际参数行数（以小写字母开头的行才是有效参数）
-    local total_params=$(grep -cE '^[a-z]' "$CONF" 2>/dev/null || echo 0)
-    # 执行 sysctl -p 并捕获全部输出（stdout+stderr），不再逐行刷屏
+    local total_params
+    total_params=$(grep -cE '^[a-z]' "$CONF" 2>/dev/null) || total_params=0
+
     local sysctl_output
     sysctl_output=$(sysctl -p "$CONF" 2>&1)
-    # 统计不支持的参数数量
-    local error_params=$(echo "$sysctl_output" | grep -cE "Invalid argument|No such file or directory|unknown key" || echo 0)
+
+    local error_params
+    error_params=$(echo "$sysctl_output" | grep -cE "Invalid argument|No such file or directory|unknown key" 2>/dev/null) || error_params=0
+
     local applied_params=$((total_params - error_params))
 
     echo -e "${gl_lv}已应用 ${applied_params} 项参数，跳过 ${error_params} 项不支持的参数${gl_bai}"
 
-    # 静默处理文件描述符限制
     if ! grep -q "# YW-optimize" /etc/security/limits.conf 2>/dev/null; then
         echo -e "\n# YW-optimize" >> /etc/security/limits.conf
         echo -e "* soft nofile 1048576\n* hard nofile 1048576\nroot soft nofile 1048576\nroot hard nofile 1048576" >> /etc/security/limits.conf
