@@ -712,17 +712,28 @@ main_menu() {
     check_env
     while true; do
         clear
-        echo -e "${G}╔══════════════════════════════════════╗"
+        # 检测 Sing-Box 状态用于主菜单显示
+        local sb_status_text="${gl_hui}未安装${gl_bai}"
+        if command -v sing-box >/dev/null 2>&1; then
+            if systemctl is-active --quiet sing-box 2>/dev/null; then
+                sb_status_text="${gl_lv}● 运行中${gl_bai}"
+            else
+                sb_status_text="${gl_red}○ 未运行${gl_bai}"
+            fi
+        fi
+
+        echo -e "${gl_lv}╔══════════════════════════════════════╗"
         echo -e "║          YW 服务器优化工具箱            ║"
-        echo -e "╚══════════════════════════════════════╝${R}"
+        echo -e "╚══════════════════════════════════════╝${gl_bai}"
         echo ""
-        echo -e "    ${Y}[1] Linux 内核网络优化${R}"
-        echo -e "    ${Y}[2] BBRv3 (XanMod内核)${R}"
-        echo -e "    ${Y}[3] Swap 管理${R}"
-        echo -e "    ${Y}[4] Sing-Box 管理面板${R}"
-        echo -e "    ${Y}[5] 系统信息查询${R}"
+        echo -e "    ${gl_huang}[1] Linux 内核网络优化${gl_bai}"
+        echo -e "    ${gl_huang}[2] BBRv3 (XanMod内核)${gl_bai}"
+        echo -e "    ${gl_huang}[3] Swap 管理${gl_bai}"
+        echo -e "    ${gl_huang}[4] Sing-Box 管理面板${gl_bai}"
+        echo -e "          ➔ 状态: ${sb_status_text}"
+        echo -e "    ${gl_huang}[5] 系统信息查询${gl_bai}"
         echo ""
-        echo -e "    ${H}[0] 退出${R}"
+        echo -e "    ${gl_hui}[0] 退出${gl_bai}"
         echo ""
         read -e -p "  请选择: " c
         case $c in
@@ -731,8 +742,8 @@ main_menu() {
             3) change_swap_size ;;
             4) sb_menu ;;
             5) show_sys_info ;;
-            0|"") echo -e "${G}再见！${R}"; exit 0 ;;
-            *) echo -e "${RED}无效选择${R}"; sleep 1 ;;
+            0|"") echo -e "${gl_lv}再见！${gl_bai}"; exit 0 ;;
+            *) echo -e "${gl_red}无效选择${gl_bai}"; sleep 1 ;;
         esac
     done
 }
