@@ -183,11 +183,86 @@ verify_network_status() {
 }
 show_sys_info() {
     while true; do
-        local cpu_info=$(lscpu 2>/dev/null | awk -F':' '/Model name:/ {print $2}' | sed 's/^[ \t]*//') cpu_cores=$(nproc 2>/dev/null) mem_total_mb=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo) mem_avail_mb=$(awk '/MemAvailable/{printf "%d", $2/1024}' /proc/meminfo) mem_used_mb=$((mem_total_mb - mem_avail_mb)) mem_percent=$(awk "BEGIN{printf \"%.1f\", ${mem_used_mb}*100/${mem_total_mb}}") disk_info=$(df -h / | awk 'NR==2{printf "%s/%s (%s)", $3, $2, $5}')
-        local ipinfo=$(curl -s --connect-timeout 2 --max-time 3 ipinfo.io 2>/dev/null || echo "{}") country=$(echo "$ipinfo" | jq -r '.country // empty' 2>/dev/null) city=$(echo "$ipinfo" | jq -r '.city // empty' 2>/dev/null) isp_info=$(echo "$ipinfo" | jq -r '.org // empty' 2>/dev/null)
-        local load=$(uptime | awk '{print $(NF-2), $(NF-1), $NF}') ipv4_addr=$(ip -4 addr 2>/dev/null | grep inet | grep -v "127.0.0.1" | awk '{print $2}' | head -1) kernel_version=$(uname -r) os_info=$(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d '=' -f2 | tr -d '"')
-        clear; echo -e "${gl_kjlan}主机: ${gl_bai}${os_info} ${kernel_version}\n${gl_kjlan}CPU: ${gl_bai}${cpu_info} (${cpu_cores}核)\n${gl_kjlan}内存: ${gl_bai}${mem_avail_mb}M/${mem_total_mb}M (${mem_percent}%)\n${gl_kjlan}硬盘: ${gl_bai}${disk_info}\n${gl_kjlan}负载: ${gl_bai}${load}\n${gl_kjlan}IP: ${gl_bai}${ipv4_addr}\n${gl_kjlan}运营商: ${gl_bai}${isp_info}\n${gl_kjlan}位置: ${gl_bai}${country} ${city}\n\n0.返回"
-        read -e -p "选择: " c; case $c in 0|"") break ;; *) break ;; esac; done
+        send_stats "系统信息查询"
+        local cpu_info=$(lscpu 2>/dev/null | awk -F':' '/Model name:/ {print $2}' | sed 's/^[ \t]*//')
+        local cpu_usage_percent=$(awk '{u=$2+$4; t=$2+$4+$5; if (NR==1){u1=u; t1=t;} else printf "%.0f\n", (($2+$4-u1) * 100 / (t-t1))}' <(grep 'cpu ' /proc/stat) <(sleep 1; grep 'cpu ' /proc/stat))
+        local cpu_cores=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo)
+        local cpu_freq=$(grep "MHz" /proc/cpuinfo 2>/dev/null | head -n 1 | awk '{printf "%.1f GHz\n", $4/1000}')
+        local mem_total_mb=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo)
+        local mem_avail_mb=$(awk '/MemAvailable/{printf "%d", $2/1024}' /proc/meminfo)
+        local mem_used_mb=$((mem_total_mb - mem_avail_mb))
+        local mem_percent=$(awk "BEGIN{printf \"%.1f\", ${mem_used_mb}*100/${mem_total_mb}}")
+        local mem_info="${mem_avail_mb}M/${mem_total_mb}M (${mem_percent}%)"
+        local disk_info=$(df -h / | awk 'NR==2{printf "%s/%s (%s)", $3, $2, $5}')
+        echo -ne "${gl_hui}正在获取外网IP信息(超时3秒自动跳过)...${gl_bai}\r"
+        local ipinfo=$(curl -s --connect-timeout 2 --max-time 3 ipinfo.io 2>/dev/null || echo "{}")
+        local country=$(echo "$ipinfo" | jq -r '.country // empty' 2>/dev/null)
+        local city=$(echo "$ipinfo" | jq -r '.city // empty' 2>/dev/null)
+        local isp_info=$(echo "$ipinfo" | jq -r '.org // empty' 2>/dev/null)
+        local load=$(uptime | awk '{print $(NF-2), $(NF-1), $NF}')
+        local dns_addresses=$(awk '/^nameserver/{printf "%s ", $2 } END {print ""}' /etc/resolv.conf)
+        local cpu_arch=$(uname -m)
+        local hostname_val=$(uname -n)
+        local kernel_version=$(uname -r)
+        local congestion_algorithm=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+        local queue_algorithm=$(sysctl -n net.core.default_qdisc 2>/dev/null)
+        local os_info=$(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d '=' -f2 | tr -d '"')
+        local current_time=$(date "+%Y-%m-%d %I:%M %p")
+        local swap_total_mb=$(awk '/SwapTotal/{printf "%d", $2/1024}' /proc/meminfo)
+        local swap_avail_mb=$(awk '/SwapFree/{printf "%d", $2/1024}' /proc/meminfo)
+        local swap_used_mb=$((swap_total_mb - swap_avail_mb))
+        local swap_percent="0%"
+        [ "$swap_total_mb" -gt 0 ] && swap_percent=$(awk "BEGIN{printf \"%d%%\", ${swap_used_mb}*100/${swap_total_mb}}")
+        local swap_info="${swap_used_mb}M/${swap_total_mb}M (${swap_percent}%)"
+        local runtime=$(cat /proc/uptime 2>/dev/null | awk -F. '{run_days=int($1 / 86400);run_hours=int(($1 % 86400) / 3600);run_minutes=int(($1 % 3600) / 60); if (run_days > 0) printf("%d天 ", run_days); if (run_hours > 0) printf("%d时 ", run_hours); printf("%d分\n", run_minutes)}')
+        local timezone=$(cat /etc/timezone 2>/dev/null || echo "Unknown")
+        local tcp_count=$(ss -t state established 2>/dev/null | wc -l)
+        local udp_count=$(ss -u state established 2>/dev/null | wc -l)
+        local rx=$(awk 'NR>2 && $1 !~ /^lo:/ && $1 !~ /^sit/ {gsub(/:/,""); a+=$2} END{print a+0}' /proc/net/dev)
+        local tx=$(awk 'NR>2 && $1 !~ /^lo:/ && $1 !~ /^sit/ {gsub(/:/,""); a+=$10} END{print a+0}' /proc/net/dev)
+        local rx_gb=$(awk "BEGIN{printf \"%.2f\", ${rx}/1024/1024/1024}")
+        local tx_gb=$(awk "BEGIN{printf \"%.2f\", ${tx}/1024/1024/1024}")
+        local ipv4_addr=$(ip -4 addr 2>/dev/null | grep inet | grep -v "127.0.0.1" | awk '{print $2}' | head -1)
+        local ipv6_addr=$(ip -6 addr 2>/dev/null | grep inet6 | grep -v "::1" | awk '{print $2}' | head -1)
+        clear
+        echo -e "${gl_kjlan}系统信息查询${gl_bai}"
+        echo -e "${gl_kjlan}=============="
+        echo -e "${gl_kjlan}主机名:         ${gl_bai}${hostname_val}"
+        echo -e "${gl_kjlan}系统版本:       ${gl_bai}${os_info}"
+        echo -e "${gl_kjlan}Linux版本:      ${gl_bai}${kernel_version}"
+        echo -e "${gl_kjlan}=============="
+        echo -e "${gl_kjlan}CPU架构:        ${gl_bai}${cpu_arch}"
+        echo -e "${gl_kjlan}CPU型号:        ${gl_bai}${cpu_info}"
+        echo -e "${gl_kjlan}CPU核心数:      ${gl_bai}${cpu_cores}"
+        echo -e "${gl_kjlan}CPU频率:        ${gl_bai}${cpu_freq}"
+        echo -e "${gl_kjlan}=============="
+        echo -e "${gl_kjlan}CPU占用:        ${gl_bai}${cpu_usage_percent}%"
+        echo -e "${gl_kjlan}系统负载:       ${gl_bai}${load}"
+        echo -e "${gl_kjlan}TCP|UDP连接数:  ${gl_bai}${tcp_count}|${udp_count}"
+        echo -e "${gl_kjlan}物理内存:       ${gl_bai}${mem_info}"
+        echo -e "${gl_kjlan}虚拟内存:       ${gl_bai}${swap_info}"
+        echo -e "${gl_kjlan}硬盘占用:       ${gl_bai}${disk_info}"
+        echo -e "${gl_kjlan}=============="
+        echo -e "${gl_kjlan}总接收:         ${gl_bai}${rx_gb}G"
+        echo -e "${gl_kjlan}总发送:         ${gl_bai}${tx_gb}G"
+        echo -e "${gl_kjlan}=============="
+        echo -e "${gl_kjlan}网络算法:       ${gl_bai}${congestion_algorithm:-N/A} ${queue_algorithm:-N/A}"
+        echo -e "${gl_kjlan}=============="
+        echo -e "${gl_kjlan}运营商:         ${gl_bai}${isp_info}"
+        [ -n "${ipv4_addr}" ] && echo -e "${gl_kjlan}IPv4地址:       ${gl_bai}${ipv4_addr}"
+        [ -n "${ipv6_addr}" ] && echo -e "${gl_kjlan}IPv6地址:       ${gl_bai}${ipv6_addr}"
+        echo -e "${gl_kjlan}DNS地址:        ${gl_bai}${dns_addresses}"
+        echo -e "${gl_kjlan}地理位置:       ${gl_bai}${country} ${city}"
+        echo -e "${gl_kjlan}系统时间:       ${gl_bai}${timezone} ${current_time}"
+        echo -e "${gl_kjlan}=============="
+        echo -e "${gl_kjlan}运行时长:       ${gl_bai}${runtime}"
+        echo -e "${gl_kjlan}=============="
+        echo -e "${gl_huang}0. 返回主菜单"
+        echo -e "${gl_huang}=============="
+        read -e -p "请输入选择: " menu_choice
+        case "$menu_choice" in 0|"") break ;; *) break ;; esac
+    done
+    return 0
 }
 Kernel_optimize() {
     root_use
