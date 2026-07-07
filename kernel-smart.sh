@@ -167,14 +167,15 @@ change_swap_size() {
 }
 
 # ============================================================================
-# Core Optimization Logic
+# Core Optimization Logic  ★★★ 已改造为清晰分步输出 ★★★
 # ============================================================================
 
 _kernel_optimize_core() {
     local mode_name="$1"
     local scene="${2:-high}"
     local CONF="/etc/sysctl.d/99-yw-optimize.conf"
-    echo -e "${gl_lv}正在应用${mode_name}参数..."
+
+    echo -e "${gl_lv}切换到${mode_name}...${gl_bai}"
 
     local SWAPPINESS DIRTY_RATIO DIRTY_BG_RATIO OVERCOMMIT MIN_FREE_KB VFS_PRESSURE
     local RMEM_MAX WMEM_MAX TCP_RMEM TCP_WMEM
@@ -235,7 +236,9 @@ _kernel_optimize_core() {
 
     local backup_conf="${CONF}.bak.$(date +%s)"; [ -f "$CONF" ] && cp "$CONF" "$backup_conf"
     local lock_file="/tmp/99-yw-optimize.lock"; exec 200> "$lock_file"; flock -x 200
-    
+
+    echo -e "${gl_lv}写入优化配置...${gl_bai}"
+
     cat > "$CONF" << EOF
 # YW Linux 内核调优配置
 # 模式: $mode_name | 场景: $scene
@@ -335,33 +338,44 @@ fi )
 EOF
 
     flock -u 200; exec 200>&-
-    echo -e "${gl_lv}正在加载配置..."
-    
-    local sysctl_err=$(sysctl -p "$CONF" 2>&1 | grep -v "Invalid argument" | grep -v "No such file or directory" | grep -v "unknown key")
-    if [ -n "$sysctl_err" ]; then
-        echo -e "${gl_huang}Sysctl 加载时有以下异常(通常不影响核心功能):${gl_bai}"
-        echo "$sysctl_err" | head -n 3
-    fi
-    
+
+    echo -e "${gl_lv}应用优化参数...${gl_bai}"
+
+    # 统计配置文件中的实际参数行数（以小写字母开头的行才是有效参数）
+    local total_params=$(grep -cE '^[a-z]' "$CONF" 2>/dev/null || echo 0)
+    # 执行 sysctl -p 并捕获全部输出（stdout+stderr），不再逐行刷屏
+    local sysctl_output
+    sysctl_output=$(sysctl -p "$CONF" 2>&1)
+    # 统计不支持的参数数量
+    local error_params=$(echo "$sysctl_output" | grep -cE "Invalid argument|No such file or directory|unknown key" || echo 0)
+    local applied_params=$((total_params - error_params))
+
+    echo -e "${gl_lv}已应用 ${applied_params} 项参数，跳过 ${error_params} 项不支持的参数${gl_bai}"
+
+    # 静默处理文件描述符限制
     if ! grep -q "# YW-optimize" /etc/security/limits.conf 2>/dev/null; then
         echo -e "\n# YW-optimize" >> /etc/security/limits.conf
         echo -e "* soft nofile 1048576\n* hard nofile 1048576\nroot soft nofile 1048576\nroot hard nofile 1048576" >> /etc/security/limits.conf
     fi
     ulimit -n 1048576 2>/dev/null
-    check_swap; bbr_on
+    check_swap >/dev/null 2>&1
+    bbr_on
 
-    echo -e "${gl_lv}✅ 验证结果:${gl_bai}"
-    echo -e "   - 核心: \e[32m$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)\e[0m | 缓冲: \e[32m$((RMEM_MAX/1024/1024))MB\e[0m | Swap策略: \e[32m$SWAPPINESS\e[0m"
-    echo -e "${gl_lv}✅ ${mode_name} 优化完成！${gl_bai}"
+    echo -e "${gl_lv}${mode_name} 优化完成！配置已持久化到 ${CONF}${gl_bai}"
+    echo -e "${gl_lv}内存: ${MEM_MB_VAL}MB | 拥塞算法: ${CC} | 队列: ${QDISC}${gl_bai}"
+    echo -e "${gl_lv}操作完成${gl_bai}"
+    echo ""
+    read -rs -n 1 -p "按任意键继续..."
+    echo ""
 }
 
 # ============================================================================
-# BBRv3 / System Info / Restore (为节省篇幅合并简化结构，功能完全一致)
+# BBRv3 / System Info / Restore
 # ============================================================================
 xanmod_add_repo() { local keyring="/usr/share/keyrings/xanmod-archive-keyring.gpg" list_file="/etc/apt/sources.list.d/xanmod-release.list" os_codename=""; if command -v lsb_release >/dev/null 2>&1; then os_codename=$(lsb_release -sc); elif [ -r /etc/os-release ]; then os_codename=$(. /etc/os-release && echo "$VERSION_CODENAME"); fi; if ! echo "bookworm trixie forky sid noble plucky" | grep -qw "$os_codename"; then os_codename="releases"; fi; if echo "jammy focal bullseye buster releases" | grep -qw "$os_codename"; then echo -e "${gl_hong}XanMod 已停止对当前系统($os_codename)支持${gl_bai}"; return 1; fi; [ -z "$os_codename" ] && { echo "无法获取代号"; return 1; }; install wget gnupg ca-certificates || return 1; mkdir -p /usr/share/keyrings /etc/apt/sources.list.d; wget -qO - "https://dl.xanmod.org/archive.key" | gpg --dearmor -o "$keyring" --yes 2>/dev/null; chmod 644 "$keyring"; echo "deb [signed-by=$keyring] http://deb.xanmod.org $os_codename main" > "$list_file"; }
 xanmod_detect_package() { local psabi_level=$(awk 'BEGIN{ while(!/flags/) if(getline<"/proc/cpuinfo"!=1) exit 1; if(/lm/&&/cmov/&&/cx8/&&/fpu/&&/fxsr/&&/mmx/&&/syscall/&&/sse2/) level=1; if(level==1&&/cx16/&&/lahf/&&/popcnt/&&/sse4_1/&&/sse4_2/&&/ssse3/) level=2; if(level==2&&/avx/&&/avx2/&&/bmi1/&&/bmi2/&&/f16c/&&/fma/&&/abm/&&/movbe/&&/xsave/) level=3; if(level>0){print level;exit}}' /proc/cpuinfo 2>/dev/null) || return 1; [ "$psabi_level" -gt 3 ] && psabi_level=3; apt update -y >/dev/null 2>&1; for prefix in linux-xanmod linux-xanmod-lts; do local l="$psabi_level"; while [ "$l" -ge 1 ]; do local p="${prefix}-x64v${l}"; if apt-cache policy "$p" 2>/dev/null | grep -q 'Candidate: [^ ]'; then printf '%s\n' "$p"; return 0; fi; l=$((l-1)); done; done; return 1; }
 bbrv3() { root_use; if [ "$(uname -m)" = "aarch64" ]; then bash <(curl -sL jhb.ovh/jb/bbrv3arm.sh); return 0; fi; if [ -r /etc/os-release ]; then . /etc/os-release; if [ "$ID" != "debian" ] && [ "$ID" != "ubuntu" ]; then echo "仅支持Debian/Ubuntu"; return 0; fi; else return 0; fi; if dpkg-query -W -f='${Package}\n' 'linux-*xanmod*' 2>/dev/null | grep -q '^linux-.*xanmod'; then while true; do clear; echo "当前: $(uname -r)\n1.更新 2.卸载 0.返回"; read -e -p "选择: " c; case $c in 1) check_disk_space 3 && check_swap && xanmod_add_repo && apt update -y && apt install -y --only-upgrade $(xanmod_detect_package) && bbr_on && server_reboot ;; 2) apt purge -y 'linux-*xanmod*' && apt autoremove -y && update-grub && rm -f /etc/apt/sources.list.d/xanmod-release.list && server_reboot ;; *) break ;; esac; done; else clear; echo "设置BBR3 (仅Debian/Ubuntu)"; read -e -p "继续？: " c; [[ "$c" =~ ^[Yy]$ ]] && check_disk_space 3 && check_swap && xanmod_add_repo && apt update -y && apt install -y $(xanmod_detect_package) && bbr_on && server_reboot; fi; }
-restore_defaults() { echo -e "${gl_lv}还原中...${gl_bai}"; rm -f /etc/sysctl.d/99-yw-optimize.conf /etc/sysctl.d/99-network-optimize.conf; sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf 2>/dev/null; sysctl --system >/dev/null 2>&1; [ -f /sys/kernel/mm/transparent_hugepage/enabled ] && echo always > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null; sed -i '/# YW-optimize/,+4d' /etc/security/limits.conf 2>/dev/null; if [ -f /sys/module/zswap/parameters/enabled ]; then echo N > /sys/module/zswap/parameters/enabled 2>/dev/null; fi; sed -i '/vm.zswap.enabled/d' /etc/sysctl.conf 2>/dev/null; if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled zramswap >/dev/null 2>&1; then echo -e "${gl_huang}检测到由脚本部署的 zram，正在停止并取消开机自启...${gl_bai}"; systemctl stop zramswap >/dev/null 2>&1; systemctl disable zramswap >/dev/null 2>&1; fi; echo -e "${gl_lv}已还原所有设置（包括禁用 zram）${gl_bai}"; }
+restore_defaults() { echo -e "${gl_lv}还原中...${gl_bai}"; rm -f /etc/sysctl.d/99-yw-optimize.conf /etc/sysctl.d/99-network-optimize.conf; sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf 2>/dev/null; sysctl --system >/dev/null 2>&1; [ -f /sys/kernel/mm/transparent_hugepage/enabled ] && echo always > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null; sed -i '/# YW-optimize/,+4d' /etc/security/limits.conf 2>/dev/null; if [ -f /sys/module/zswap/parameters/enabled ]; then echo N > /sys/module/zswap/parameters/enabled 2>/dev/null; fi; sed -i '/vm.zswap.enabled/d' /etc/sysctl.conf 2>/dev/null; if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled zramswap >/dev/null 2>&1; then echo -e "${gl_huang}检测到由脚本部署的 zram，正在停止并取消开机自启...${gl_bai}"; systemctl stop zramswap >/dev/null 2>&1; systemctl disable zramswap >/dev/null 2>&1; fi; echo -e "${gl_lv}已还原所有设置（包括禁用 zram）${gl_bai}"; read -rs -n 1 -p "按任意键继续..."; echo ""; }
 verify_network_status() { clear; local rmem=$(sysctl -n net.core.rmem_max 2>/dev/null) mode="未知"; case $rmem in 8388608) if sysctl -n net.ipv4.tcp_keepalive_time 2>/dev/null | grep -q "300"; then mode="中转网关模式 (8MB 防止卡顿+保隧道)"; else mode="电竞级游戏模式 (8MB 绝杀缓冲)"; fi ;; 16777216) mode="通用游戏/中等内存 (16MB)" ;; 4194304) mode="极限低内存保护 (4MB)" ;; 67108864|134217728) if sysctl -n net.core.netdev_budget 2>/dev/null | grep -q "1200"; then mode="直播推流模式 (64MB + 软中断加速)"; elif sysctl -n vm.dirty_ratio 2>/dev/null | grep -q "40"; then mode="高性能下载模式 (64MB + IO聚簇)"; else mode="高并发网站模式 (64MB + 极限TW池)"; fi ;; esac; echo -e "${gl_huang}========================================\n       智能模式识别验证\n========================================${gl_bai}"; echo -e "算法: $(sysctl -n net.ipv4.tcp_congestion_control) | 队列: $(sysctl -n net.core.default_qdisc)"; echo -e "防抖(ECN): $(sysctl -n net.ipv4.tcp_ecn) | 慢启动: $(sysctl -n net.ipv4.tcp_slow_start_after_idle)"; echo -e "最大TCP缓冲: $((rmem/1024/1024))MB"; echo -e ">>> 智能鉴定结果: ${gl_lv}${mode}${gl_bai}"; echo -e "${gl_huang}========================================${gl_bai}"; }
 show_sys_info() { while true; do send_stats "系统信息查询"; local cpu_info=$(lscpu 2>/dev/null | awk -F':' '/Model name:/ {print $2}' | sed 's/^[ \t]*//'); local cpu_usage_percent=$(awk '{u=$2+$4; t=$2+$4+$5; if (NR==1){u1=u; t1=t;} else printf "%.0f\n", (($2+$4-u1) * 100 / (t-t1))}' <(grep 'cpu ' /proc/stat) <(sleep 1; grep 'cpu ' /proc/stat)); local cpu_cores=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo); local cpu_freq=$(grep "MHz" /proc/cpuinfo 2>/dev/null | head -n 1 | awk '{printf "%.1f GHz\n", $4/1000}'); local mem_total_mb=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo); local mem_avail_mb=$(awk '/MemAvailable/{printf "%d", $2/1024}' /proc/meminfo); local mem_used_mb=$((mem_total_mb - mem_avail_mb)); local mem_percent=$(awk "BEGIN{printf \"%.1f\", ${mem_used_mb}*100/${mem_total_mb}}"); local mem_info="${mem_avail_mb}M/${mem_total_mb}M (${mem_percent}%)"; local disk_info=$(df -h / | awk 'NR==2{printf "%s/%s (%s)", $3, $2, $5}'); echo -ne "${gl_hui}正在获取外网IP信息(超时3秒自动跳过)...${gl_bai}\r"; local ipinfo=$(curl -s --connect-timeout 2 --max-time 3 ipinfo.io 2>/dev/null || echo "{}"); local country=$(echo "$ipinfo" | awk -F'"' '/country/{print $4}'); local city=$(echo "$ipinfo" | awk -F'"' '/city/{print $4}'); local isp_info=$(echo "$ipinfo" | awk -F'"' '/org/{print $4}'); local load=$(uptime | awk '{print $(NF-2), $(NF-1), $NF}'); local dns_addresses=$(awk '/^nameserver/{printf "%s ", $2 } END {print ""}' /etc/resolv.conf); local cpu_arch=$(uname -m); local hostname_val=$(uname -n); local kernel_version=$(uname -r); local congestion_algorithm=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null); local queue_algorithm=$(sysctl -n net.core.default_qdisc 2>/dev/null); local os_info=$(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d '=' -f2 | tr -d '"'); local current_time=$(date "+%Y-%m-%d %I:%M %p"); local swap_total_mb=$(awk '/SwapTotal/{printf "%d", $2/1024}' /proc/meminfo); local swap_avail_mb=$(awk '/SwapFree/{printf "%d", $2/1024}' /proc/meminfo); local swap_used_mb=$((swap_total_mb - swap_avail_mb)); local swap_percent="0%"; [ "$swap_total_mb" -gt 0 ] && swap_percent=$(awk "BEGIN{printf \"%d%%\", ${swap_used_mb}*100/${swap_total_mb}}"); local swap_info="${swap_used_mb}M/${swap_total_mb}M (${swap_percent}%)"; local runtime=$(cat /proc/uptime 2>/dev/null | awk -F. '{run_days=int($1 / 86400);run_hours=int(($1 % 86400) / 3600);run_minutes=int(($1 % 3600) / 60); if (run_days > 0) printf("%d天 ", run_days); if (run_hours > 0) printf("%d时 ", run_hours); printf("%d分\n", run_minutes)}'); local timezone=$(cat /etc/timezone 2>/dev/null || echo "Unknown"); local tcp_count=$(ss -t state established 2>/dev/null | wc -l); local udp_count=$(ss -u state established 2>/dev/null | wc -l); local rx=$(awk 'NR>2 && $1 !~ /^lo:/ && $1 !~ /^sit/ {gsub(/:/,""); a+=$2} END{print a+0}' /proc/net/dev); local tx=$(awk 'NR>2 && $1 !~ /^lo:/ && $1 !~ /^sit/ {gsub(/:/,""); a+=$10} END{print a+0}' /proc/net/dev); local rx_gb=$(awk "BEGIN{printf \"%.2f\", ${rx}/1024/1024/1024/1024}"); local tx_gb=$(awk "BEGIN{printf \"%.2f\", ${tx}/1024/1024/1024/1024}"); local ipv4_addr=$(ip -4 addr 2>/dev/null | grep inet | grep -v "127.0.0.1" | awk '{print $2}' | head -1); local ipv6_addr=$(ip -6 addr 2>/dev/null | grep inet6 | grep -v "::1" | awk '{print $2}' | head -1); clear; echo -e "${gl_kjlan}系统信息查询${gl_bai}"; echo -e "${gl_kjlan}=============="; echo -e "${gl_kjlan}主机名:         ${gl_bai}${hostname_val}"; echo -e "${gl_kjlan}系统版本:       ${gl_bai}${os_info}"; echo -e "${gl_kjlan}Linux版本:      ${gl_bai}${kernel_version}"; echo -e "${gl_kjlan}=============="; echo -e "${gl_kjlan}CPU架构:        ${gl_bai}${cpu_arch}"; echo -e "${gl_kjlan}CPU型号:        ${gl_bai}${cpu_info}"; echo -e "${gl_kjlan}CPU核心数:      ${gl_bai}${cpu_cores}"; echo -e "${gl_kjlan}CPU频率:        ${gl_bai}${cpu_freq}"; echo -e "${gl_kjlan}=============="; echo -e "${gl_kjlan}CPU占用:        ${gl_bai}${cpu_usage_percent}%"; echo -e "${gl_kjlan}系统负载:       ${gl_bai}${load}"; echo -e "${gl_kjlan}TCP|UDP连接数:  ${gl_bai}${tcp_count}|${udp_count}"; echo -e "${gl_kjlan}物理内存:       ${gl_bai}${mem_info}"; echo -e "${gl_kjlan}虚拟内存:       ${gl_bai}${swap_info}"; echo -e "${gl_kjlan}硬盘占用:       ${gl_bai}${disk_info}"; echo -e "${gl_kjlan}=============="; echo -e "${gl_kjlan}总接收:         ${gl_bai}${rx_gb}G"; echo -e "${gl_kjlan}总发送:         ${gl_bai}${tx_gb}G"; echo -e "${gl_kjlan}=============="; echo -e "${gl_kjlan}网络算法:       ${gl_bai}${congestion_algorithm:-N/A} ${queue_algorithm:-N/A}"; echo -e "${gl_kjlan}=============="; echo -e "${gl_kjlan}运营商:         ${gl_bai}${isp_info}"; [ -n "${ipv4_addr}" ] && echo -e "${gl_kjlan}IPv4地址:       ${gl_bai}${ipv4_addr}"; [ -n "${ipv6_addr}" ] && echo -e "${gl_kjlan}IPv6地址:       ${gl_bai}${ipv6_addr}"; echo -e "${gl_kjlan}DNS地址:        ${gl_bai}${dns_addresses}"; echo -e "${gl_kjlan}地理位置:       ${gl_bai}${country} ${city}"; echo -e "${gl_kjlan}系统时间:       ${gl_bai}${timezone} ${current_time}"; echo -e "${gl_kjlan}=============="; echo -e "${gl_kjlan}运行时长:       ${gl_bai}${runtime}"; echo -e "${gl_kjlan}=============="; echo -e "${gl_huang}0. 返回主菜单"; echo -e "${gl_huang}=============="; read -e -p "请输入选择: " menu_choice; case "$menu_choice" in 0|"") break ;; *) break ;; esac; done; return 0; }
 Kernel_optimize() { root_use; while true; do clear; local cur="未优化"; [ -f /etc/sysctl.d/99-yw-optimize.conf ] && cur=$(grep "^# 模式:" /etc/sysctl.d/99-yw-optimize.conf 2>/dev/null | sed 's/^# 模式: //' | awk -F'|' '{print $1}' | xargs); echo -e "${gl_lv}Linux系统内核参数优化${gl_bai}"; echo "------------------------------------------------"; echo -e "当前模式: ${gl_huang}${cur:-系统优化已启用}${gl_bai}"; echo -e "提供多种系统参数调优模式，用户可以根据自身使用场景进行选择切换。"; echo -e "${gl_huang}提示: ${gl_bai}生产环境请谨慎使用！"; echo -e "--------------------"; echo -e "1. 高性能优化模式：     极限IO聚簇写回，吞吐拉满"; echo -e "2. 均衡优化模式：       稳定至上，内存安全锁"; echo -e "3. 网站优化模式：       极限TW池，抗大促并发"; echo -e "4. 直播优化模式：       UDP极限拉爆+网卡软中断狂暴"; echo -e "5. 游戏服优化模式：     8MB电竞级TCP防Bufferbloat"; echo -e "6. 中转网关模式：       专精V2Ray/SS加密中转防卡顿 ${gl_huang}★${gl_bai}"; echo -e "7. 还原默认设置：       将系统设置还原为默认配置。"; echo -e "8. 自动调优：           根据测试数据自动调优内核参数。${gl_huang}★${gl_bai}"; echo -e "9. 释放内存缓存：      强制清理系统 Cache (谨慎使用)"; echo -e "10. 验证当前网络状态：  查看内核参数是否生效 ${gl_huang}★${gl_bai}"; echo "--------------------"; echo "0. 返回主菜单"; echo "--------------------"; read -e -p "请输入你的选择: " sub_choice; case $sub_choice in 1) cd ~; clear; tiaoyou_moshi="高性能优化模式"; _kernel_optimize_core "$tiaoyou_moshi" "high" ;; 2) cd ~; clear; _kernel_optimize_core "均衡优化模式" "balanced" ;; 3) cd ~; clear; tiaoyou_moshi="网站优化模式"; _kernel_optimize_core "$tiaoyou_moshi" "web" ;; 4) cd ~; clear; tiaoyou_moshi="直播优化模式"; _kernel_optimize_core "$tiaoyou_moshi" "stream" ;; 5) cd ~; clear; tiaoyou_moshi="游戏服优化模式"; _kernel_optimize_core "$tiaoyou_moshi" "game" ;; 6) cd ~; clear; tiaoyou_moshi="中转网关模式"; _kernel_optimize_core "$tiaoyou_moshi" "gateway" ;; 7) cd ~; clear; restore_defaults ;; 8) echo -e "${gl_huang}即将拉取并执行远程网络优化脚本..."; read -e -p "按回车键继续，或按 Ctrl+C 取消: "; curl -sS ${gh_proxy}raw.githubusercontent.com/YW/sh/refs/heads/main/network-optimize.sh | bash ;; 9) echo -e "${gl_red}警告：强制释放内存缓存可能导致短暂 IO 抖动，生产环境请谨慎！${gl_bai}"; read -e -p "确定要执行 echo 3 > /proc/sys/vm/drop_caches 吗？: " drop_choice; if [[ "$drop_choice" =~ ^[Yy]$ ]]; then sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null && echo -e "${gl_lv}✅ 内存缓存已释放${gl_bai}"; else echo "已取消"; fi; read -rs -n 1 -p "按任意键继续..." ;; 10) verify_network_status; read -rs -n 1 -p "按任意键返回菜单..." ;; 0|"") break ;; *) echo -e "${gl_red}无效的选择${gl_bai}" ; read -rs -n 1 -p "按任意键继续..." ;; esac; done; }
@@ -380,7 +394,6 @@ get_my_ip() {
     echo "${ip:-未知IP}"
 }
 
-# 【新增】URL 编码函数，彻底解决客户端导入报错问题
 url_encode() {
     local str="$1"
     printf '%s' "$str" | sed 's/+/%2B/g; s/\//%2F/g; s/=/%3D/g; s/ /%20/g; s/#/%23/g; s/?/%3F/g; s/&/%26/g; s/@/%40/g'
@@ -447,7 +460,6 @@ sb_add_reality() {
             return
         fi
         local my_ip; my_ip=$(get_my_ip)
-        # 【已修复】对公钥和节点名进行 URL 编码
         local enc_pub_key=$(url_encode "$pub_key")
         local enc_name=$(url_encode "$node_name")
         local link="vless://${uuid}@${my_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${enc_pub_key}&type=tcp#${enc_name}"
@@ -506,7 +518,6 @@ sb_add_hy2() {
             return
         fi
         local my_ip; my_ip=$(get_my_ip)
-        # 【已修复】对密码和节点名进行 URL 编码
         local enc_pass=$(url_encode "$pass")
         local enc_name=$(url_encode "$node_name")
         local link="hysteria2://${enc_pass}@${my_ip}:${port}?insecure=1&sni=${sni}#${enc_name}"
@@ -539,10 +550,7 @@ sb_view_nodes() {
         local type=$(echo "$inbound" | jq -r '.type')
         local name=$(_get_node_meta "$port" "name")
         [ -z "$name" ] && name="未命名节点"
-        
-        # 【已修复】查看节点时生成的链接也加上 URL 编码
         local enc_name=$(url_encode "$name")
-        
         if [ "$type" = "vless" ]; then
             local uuid=$(echo "$inbound" | jq -r '.users[0].uuid')
             local sni=$(echo "$inbound" | jq -r '.tls.server_name')
