@@ -267,7 +267,18 @@ show_sys_info() {
 Kernel_optimize() {
     root_use
     while true; do clear; local cur="未优化"; [ -f /etc/sysctl.d/99-yw-optimize.conf ] && cur=$(grep "^# 模式:" /etc/sysctl.d/99-yw-optimize.conf 2>/dev/null | sed 's/^# 模式: //' | awk -F'|' '{print $1}' | xargs)
-        echo -e "${gl_lv}Linux内核优化 | 当前: ${gl_huang}${cur}${gl_bai}\n1.直播+游戏 2.高性能 3.均衡 4.网站 5.纯直播 6.纯游戏 7.中转网关\n8.还原默认 9.远程脚本 10.释放缓存 11.验证状态\n0.返回"
+        echo -e "${gl_lv}Linux内核优化 | 当前: ${gl_huang}${cur}${gl_bai}\n
+        1.直播+游戏 
+        2.高性能 
+        3.均衡 
+        4.网站 
+        5.纯直播 
+        6.纯游戏 
+        7.中转网关
+        8.还原默认 
+        9.远程脚本 
+        10.释放缓存 
+        11.验证状态\n0.返回"
         read -e -p "选择: " c
         case $c in 1) clear; _kernel_optimize_core "直播+游戏" "stream_game" ;; 2) clear; _kernel_optimize_core "高性能" "high" ;; 3) clear; _kernel_optimize_core "均衡" "balanced" ;; 4) clear; _kernel_optimize_core "网站" "web" ;; 5) clear; _kernel_optimize_core "直播" "stream" ;; 6) clear; _kernel_optimize_core "游戏" "game" ;; 7) clear; _kernel_optimize_core "网关" "gateway" ;; 8) clear; restore_defaults ;; 9) curl -sS ${gh_proxy}raw.githubusercontent.com/YW/sh/refs/heads/main/network-optimize.sh | bash ;; 10) read -e -p "确定释放缓存？: " d; [[ "$d" =~ ^[Yy]$ ]] && sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null ;; 11) verify_network_status ;; 0|"") break ;; esac; done
 }
@@ -383,8 +394,30 @@ sb_del_node() {
     local del_port="${ports[$((del_idx - 1))]}" del_type=$(_get_node_meta "$del_port" "type") del_tag=""
     case "$del_type" in vless-reality) del_tag="vless-reality-${del_port}" ;; vless-ws) del_tag="vless-ws-${del_port}" ;; hysteria2) del_tag="hysteria2-${del_port}" ;; esac
     local conf="/etc/sing-box/config.json"; cp "$conf" "${conf}.bak.$(date +%s)"
+    
+    # ★ 修复：如果该节点有 NAT 端口跳跃，顺带清理 Linux 内核的 NAT 规则
+    local ex=$(_get_node_meta "$del_port" "extra")
+    if echo "$ex" | grep -q "hop_range="; then
+        local old_hop=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+')
+        if [ -n "$old_hop" ]; then
+            local hop_start="${old_hop%-*}" hop_end="${old_hop#*-}" main_nic=$(ip route | grep default | awk '{print $5}' | head -1)
+            if [ -n "$main_nic" ]; then
+                iptables -t nat -D PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${del_port} 2>/dev/null
+                echo -e "${Y}已清理 NAT 跳跃规则: ${hop_start}-${hop_end}${R}"
+                command -v iptables-save >/dev/null 2>&1 && iptables-save > /etc/iptables.rules 2>/dev/null
+            fi
+        fi
+    fi
+
     [ -n "$del_tag" ] && jq --arg t "$del_tag" '.inbounds = [.inbounds[] | select(.tag != $t)]' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
-    if sing-box check -c "$conf" >/dev/null 2>&1; then _del_node_meta "$del_port"; systemctl restart sing-box; echo -e "${G}已删除${R}"; else local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; fi; read -rs -n 1 -p ""
+    if sing-box check -c "$conf" >/dev/null 2>&1; then 
+        _del_node_meta "$del_port"; systemctl restart sing-box; echo -e "${G}✅ 已彻底删除${R}"; 
+    else 
+        echo -e "${RED}配置异常，强制清理...${R}"
+        _del_node_meta "$del_port"
+        local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"
+        systemctl restart sing-box
+    fi; read -rs -n 1 -p "按任意键返回..."
 }
 sb_list_nodes() {
     sb_check || { read -rs -n 1 -p ""; return; }; _init_meta_file
@@ -404,7 +437,9 @@ sb_gen_links() {
     local server_ip; server_ip=$(get_my_ip); [ "$server_ip" = "未知IP" ] && { read -e -p "无法获取IP，手动输入: " server_ip; [ -z "$server_ip" ] && return; }
     echo -e "${Y}===== 客户端链接 =====\n服务器: ${G}${server_ip}${R}\n${Y}========================${R}\n"
     local link_count=0
-    jq -r '.inbounds[] | @base64' "$conf" 2>/dev/null | while IFS= read -r b64_obj; do
+    
+    # ★ 核心修复：把 while 前面的管道符改成 < <(进程替换)，这样 link_count 才能正确累加！
+    while IFS= read -r b64_obj; do
         local obj; obj=$(echo "$b64_obj" | base64 -d 2>/dev/null); [ -z "$obj" ] && continue
         local inb_type; inb_type=$(echo "$obj" | jq -r '.type // empty' 2>/dev/null); [ -z "$inb_type" ] && continue
         local port; port=$(echo "$obj" | jq -r '.listen_port // empty' 2>/dev/null); [ -z "$port" ] && continue
@@ -429,8 +464,9 @@ sb_gen_links() {
             *) continue ;;
         esac
         if [ -n "$link" ]; then echo -e "${G}[$((link_count + 1))] ${node_name}${R}\n${H}${link}${R}\n"; link_count=$((link_count + 1)); fi
-    done
-    [ "$link_count" -eq 0 ] && echo -e "${Y}无链接${R}" || echo -e "${Y}===== 共 ${link_count} 条 =====${R}"; read -rs -n 1 -p ""
+    done < <(jq -r '.inbounds[] | @base64' "$conf" 2>/dev/null)
+    
+    [ "$link_count" -eq 0 ] && echo -e "${Y}无链接${R}" || echo -e "${Y}===== 共 ${link_count} 条 =====${R}"; read -rs -n 1 -p "按任意键返回..."
 }
 singbox_manager() {
     root_use
