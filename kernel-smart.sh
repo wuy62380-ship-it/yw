@@ -359,9 +359,24 @@ sb_add_reality() {
     sb_init_conf; local conf="/etc/sing-box/config.json"; cp "$conf" "${conf}.bak.$(date +%s)"
     local ij=$(jq -n --argjson p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" '{"type":"vless","tag":("vless-reality-"+($p|tostring)),"listen":"::","listen_port":$p,"users":[{"uuid":$u,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$s,"reality":{"enabled":true,"handshake":{"server":$s,"server_port":443},"private_key":$pk,"short_id":[$sid]}}}')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
-    if sing-box check -c "$conf" >/dev/null 2>&1; then open_port_both "$port"; _save_node_meta "$port" "$nn" "vless-reality" "$pub_key" "short_id=${short_id}"; systemctl enable sing-box >/dev/null 2>&1; systemctl restart sing-box; sleep 2
-    if ! systemctl is-active --quiet sing-box 2>/dev/null; then echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"; else echo -e "${G}✅ 成功\nPublicKey: ${pub_key}\nshort_id: ${short_id}${R}"; fi
-    else echo -e "${RED}校验失败${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"; fi; read -rs -n 1 -p ""
+    if sing-box check -c "$conf" >/dev/null 2>&1; then
+        open_port_both "$port"; _save_node_meta "$port" "$nn" "vless-reality" "$pub_key" "short_id=${short_id}"
+        systemctl enable sing-box >/dev/null 2>&1; systemctl restart sing-box; sleep 2
+        if ! systemctl is-active --quiet sing-box 2>/dev/null; then
+            echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"
+        else
+            echo -e "${G}✅ 成功 | PublicKey: ${pub_key} | short_id: ${short_id}${R}"
+            # ★ 创建成功后直接显示链接
+            local link_ip=$(get_my_ip)
+            if [ "$link_ip" != "未知IP" ]; then
+                echo -e "${Y}节点链接:${R}"
+                echo -e "${C}vless://${uuid}@${link_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp#$(url_encode "$nn")${R}"
+            fi
+        fi
+    else
+        echo -e "${RED}校验失败${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"
+    fi
+    read -rs -n 1 -p ""
 }
 sb_add_vless_ws() {
     sb_check || { read -rs -n 1 -p ""; return; }
@@ -372,9 +387,23 @@ sb_add_vless_ws() {
     sb_init_conf; local conf="/etc/sing-box/config.json"; cp "$conf" "${conf}.bak.$(date +%s)"
     local ij=$(jq -n --argjson p "$port" --arg u "$uuid" --arg wp "$ws_path" '{"type":"vless","tag":("vless-ws-"+($p|tostring)),"listen":"::","listen_port":$p,"users":[{"uuid":$u}],"transport":{"type":"ws","path":$wp}}')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
-    if sing-box check -c "$conf" >/dev/null 2>&1; then open_port_both "$port"; _save_node_meta "$port" "$nn" "vless-ws" "" "path=${ws_path}"; systemctl enable sing-box >/dev/null 2>&1; systemctl restart sing-box; sleep 2
-    if ! systemctl is-active --quiet sing-box 2>/dev/null; then echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"; else echo -e "${G}✅ 成功 | Path: ${ws_path}${R}"; fi
-    else echo -e "${RED}校验失败${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"; fi; read -rs -n 1 -p ""
+    if sing-box check -c "$conf" >/dev/null 2>&1; then
+        open_port_both "$port"; _save_node_meta "$port" "$nn" "vless-ws" "" "path=${ws_path}"
+        systemctl enable sing-box >/dev/null 2>&1; systemctl restart sing-box; sleep 2
+        if ! systemctl is-active --quiet sing-box 2>/dev/null; then
+            echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"
+        else
+            echo -e "${G}✅ 成功 | Path: ${ws_path}${R}"
+            local link_ip=$(get_my_ip)
+            if [ "$link_ip" != "未知IP" ]; then
+                echo -e "${Y}节点链接:${R}"
+                echo -e "${C}vless://${uuid}@${link_ip}:${port}?encryption=none&security=none&type=ws&path=$(url_encode "${ws_path}")#$(url_encode "$nn")${R}"
+            fi
+        fi
+    else
+        echo -e "${RED}校验失败${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"
+    fi
+    read -rs -n 1 -p ""
 }
 sb_add_hysteria2() {
     sb_check || { read -rs -n 1 -p ""; return; }
@@ -427,7 +456,17 @@ sb_add_hysteria2() {
         systemctl enable sing-box >/dev/null 2>&1; systemctl restart sing-box; sleep 2
         if ! systemctl is-active --quiet sing-box 2>/dev/null; then
             echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"
-        else echo -e "${G}✅ 成功 | 密码: ${pwd} | 跳跃: ${hop_range:-无}${R}"; fi
+        else
+            echo -e "${G}✅ 成功 | 密码: ${pwd} | 跳跃: ${hop_range:-无}${R}"
+            # ★ 创建成功后直接显示链接
+            local link_ip=$(get_my_ip)
+            if [ "$link_ip" != "未知IP" ]; then
+                local insecure="0"; [ "$tls_method" = "selfsign" ] && insecure="1"
+                local sni_param=""; [ -n "$domain" ] && sni_param="&sni=${domain}"
+                echo -e "${Y}节点链接:${R}"
+                echo -e "${C}hysteria2://$(url_encode "$pwd")@${link_ip}:${port}?insecure=${insecure}${sni_param}#$(url_encode "$nn")${R}"
+            fi
+        fi
     else
         echo -e "${RED}❌ 校验失败，具体原因：${R}"; sing-box check -c "$conf" 2>&1; echo -e "${Y}正在回滚...${R}"
         local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"
@@ -456,10 +495,9 @@ sb_show_nodes_and_links() {
         case "$inb_type" in vless) display="VLESS" ;; hysteria2) display="Hysteria2" ;; vmess) display="VMess" ;; trojan) display="Trojan" ;; esac
         local ex=$(_get_node_meta "$port" "extra")
         local hop_info=""
-        local hop_range_val=""
         if [ -n "$ex" ] && echo "$ex" | grep -q "hop_range="; then
-            hop_range_val=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+')
-            [ -n "$hop_range_val" ] && hop_info=" | 跳跃: ${hop_range_val}"
+            local hr=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+')
+            [ -n "$hr" ] && hop_info=" | 跳跃: ${hr}"
         fi
         echo -e "${G}━━━ [${idx}] ${display} | 端口: ${port}${hop_info} | ${nn} ━━━${R}"
         has_any=1
@@ -495,26 +533,12 @@ sb_show_nodes_and_links() {
                 ;;
         esac
         if [ -n "$link" ]; then echo -e "${C}${link}${R}"; fi
-        if [ -n "$hop_range_val" ] && [ "$inb_type" = "hysteria2" ]; then
-            local pwd; pwd=$(echo "$obj" | jq -r '.users[0].password // empty' 2>/dev/null)
-            if [ -n "$pwd" ]; then
-                local sni; sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null)
-                local insecure="0"
-                if echo "$ex" | grep -q "tls_method=selfsign"; then insecure="1"; fi
-                local sni_param=""; [ -n "$sni" ] && sni_param="&sni=${sni}"
-                local hop_link="hysteria2://$(url_encode "$pwd")@${server_ip}:${hop_range_val}?insecure=${insecure}${sni_param}#$(url_encode "${nn}-跳跃")"
-                echo -e "${H}  ↓ 跳跃链接(仅原版客户端)${R}"
-                echo -e "${H}${hop_link}${R}"
-            fi
-        fi
         echo ""
         idx=$((idx + 1))
     done < <(jq -r '.inbounds[] | @base64' "$conf" 2>/dev/null)
     [ "$has_any" -eq 0 ] && echo -e "${Y}无节点${R}"
     read -rs -n 1 -p ""
 }
-
-# ★ 重写：支持输入端口号直接删除，也支持输入编号
 sb_del_node() {
     sb_check || { read -rs -n 1 -p ""; return; }
     local conf="/etc/sing-box/config.json"
@@ -540,17 +564,12 @@ sb_del_node() {
     read -e -p "删除: " del_input
     [ -z "$del_input" ] && return
     [[ "$del_input" == "0" ]] && return
-
     local del_port=""
-    # 判断输入的是端口号还是编号
     if [[ "$del_input" =~ ^[0-9]+$ ]]; then
-        # 先当端口号查，直接从 config 精确匹配
         local found_port=$(jq -r --argjson p "$del_input" '.inbounds[] | select(.listen_port == $p) | .listen_port' "$conf" 2>/dev/null | head -1)
         if [ -n "$found_port" ]; then
-            # 输入的就是端口号，直接命中
             del_port="$found_port"
         else
-            # 当编号查
             local idx2=1
             while IFS= read -r b64_obj; do
                 local obj; obj=$(echo "$b64_obj" | base64 -d 2>/dev/null); [ -z "$obj" ] && continue
@@ -560,17 +579,12 @@ sb_del_node() {
             done < <(jq -r '.inbounds[] | @base64' "$conf" 2>/dev/null)
         fi
     fi
-
     [ -z "$del_port" ] && { echo -e "${RED}未找到匹配的节点${R}"; read -rs -n 1 -p ""; return; }
-
-    # 确认删除
     local del_nn=$(_get_node_meta "$del_port" "name")
     [ -z "$del_nn" ] && del_nn=$(jq -r --argjson p "$del_port" '.inbounds[] | select(.listen_port == $p) | .tag // "未知"' "$conf" 2>/dev/null)
     echo -ne "${Y}确认删除 [端口:${del_port}] ${del_nn}？(y/n): ${R}"
     read -e -p "" confirm
     [[ ! "$confirm" =~ ^[Yy]$ ]] && { echo -e "${H}已取消${R}"; read -rs -n 1 -p ""; return; }
-
-    # 清理 NAT 端口跳跃规则
     local ex=$(_get_node_meta "$del_port" "extra")
     if [ -n "$ex" ] && echo "$ex" | grep -q "hop_range="; then
         local old_hop=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+')
@@ -584,8 +598,6 @@ sb_del_node() {
             fi
         fi
     fi
-
-    # 用端口号精确匹配删除
     if jq --argjson p "$del_port" '.inbounds = [.inbounds[] | select(.listen_port != $p)]' "$conf" > /tmp/sb_cfg.json 2>/dev/null; then
         mv -f /tmp/sb_cfg.json "$conf"
         _del_node_meta "$del_port"
