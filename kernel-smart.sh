@@ -402,50 +402,56 @@ sb_del_node() {
     read -rs -n 1 -p "按任意键返回..."
 }
 sb_list_nodes() {
-    sb_check || { read -rs -n 1 -p ""; return; }; _init_meta_file
-    local cnt=$(jq 'length' "$META_FILE" 2>/dev/null || echo 0); [ "$cnt" -eq 0 ] && { echo -e "${Y}无节点${R}"; read -rs -n 1 -p ""; return; }
-    echo -e "${Y}===== 节点列表 =====${R}"; local idx=1
-    while IFS= read -r port; do
-        local nn=$(_get_node_meta "$port" "name") tt=$(_get_node_meta "$port" "type") display="$tt"
-        case "$tt" in vless-reality) display="VLESS Reality" ;; vless-ws) display="VLESS+WS" ;; hysteria2) display="Hysteria2" ;; esac
-        echo -e "${G}[${idx}] ${display} | 端口: ${port} | ${nn}${R}"
-        local extra=$(_get_node_meta "$port" "extra"); [ -n "$extra" ] && echo -e "${H}     ${extra}${R}"
-        idx=$((idx + 1))
-    done < <(jq -r 'keys[]' "$META_FILE" 2>/dev/null); read -rs -n 1 -p ""
-}
-sb_gen_links() {
     sb_check || { read -rs -n 1 -p ""; return; }
-    local conf="/etc/sing-box/config.json"; [ ! -f "$conf" ] || ! jq -e . "$conf" >/dev/null 2>&1 && { echo -e "${RED}配置错误${R}"; read -rs -n 1 -p ""; return; }
-    local server_ip; server_ip=$(get_my_ip); [ "$server_ip" = "未知IP" ] && { read -e -p "无法获取IP，手动输入: " server_ip; [ -z "$server_ip" ] && return; }
-    echo -e "${Y}===== 客户端链接 =====\n服务器: ${G}${server_ip}${R}\n${Y}========================${R}\n"
-    local link_count=0
+    local conf="/etc/sing-box/config.json"
+    [ ! -f "$conf" ] || ! jq -e . "$conf" >/dev/null 2>&1 && { echo -e "${Y}无节点${R}"; read -rs -n 1 -p ""; return; }
+    echo -e "${Y}===== 节点列表 =====${R}"; local idx=1
+    # ★ 核心修复：直接读 config.json，不再读 meta 文件，杜绝 5和6 看到的不一样
     while IFS= read -r b64_obj; do
         local obj; obj=$(echo "$b64_obj" | base64 -d 2>/dev/null); [ -z "$obj" ] && continue
-        local inb_type; inb_type=$(echo "$obj" | jq -r '.type // empty' 2>/dev/null); [ -z "$inb_type" ] && continue
         local port; port=$(echo "$obj" | jq -r '.listen_port // empty' 2>/dev/null); [ -z "$port" ] && continue
-        local tag; tag=$(echo "$obj" | jq -r '.tag // empty' 2>/dev/null); local node_name; node_name=$(_get_node_meta "$port" "name"); [ -z "$node_name" ] && node_name="$tag"
-        local link=""
-        case "$inb_type" in
-            vless)
-                local uuid=$(echo "$obj" | jq -r '.users[0].uuid // empty' 2>/dev/null) flow=$(echo "$obj" | jq -r '.users[0].flow // empty' 2>/dev/null) sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null) pub_key=$(echo "$obj" | jq -r '.tls.reality.public_key // empty' 2>/dev/null) short_id=$(echo "$obj" | jq -r '.tls.reality.short_id[0] // empty' 2>/dev/null)
-                if [ -n "$pub_key" ]; then link="vless://${uuid}@${server_ip}:${port}?encryption=none&flow=$(url_encode "${flow:-}")&security=reality&sni=$(url_encode "$sni")&fp=chrome&pbk=$(url_encode "$pub_key")&sid=$(url_encode "${short_id:-}")&type=tcp#$(url_encode "${node_name}")"
-                else local ws_path=$(echo "$obj" | jq -r '.transport.path // empty' 2>/dev/null) ws_host=$(echo "$obj" | jq -r '.transport.headers.Host // empty' 2>/dev/null) tls_en=$(echo "$obj" | jq -r '.tls.enabled // false' 2>/dev/null) sec="none"; [ "$tls_en" = "true" ] && sec="tls"; link="vless://${uuid}@${server_ip}:${port}?encryption=none&security=${sec}&type=ws&host=$(url_encode "${ws_host:-$sni}")&path=$(url_encode "${ws_path:-/}")#$(url_encode "${node_name}")"; fi ;;
-            hysteria2)
-                local hy2_pwd=$(echo "$obj" | jq -r '.users[0].password // empty' 2>/dev/null) tls_sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null) tls_insec=$(echo "$obj" | jq -r '.tls.insecure // false' 2>/dev/null) link_port="$port"
-                local ex=$(_get_node_meta "$port" "extra"); if echo "$ex" | grep -q "hop_range="; then local hv=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+'); [ -n "$hv" ] && link_port="$hv"; fi
-                local insec_p=""; [ "$tls_insec" = "true" ] && insec_p="&insecure=1"; link="hysteria2://$(url_encode "$hy2_pwd")@${server_ip}:${link_port}?sni=$(url_encode "${tls_sni:-}")${insec_p}#$(url_encode "${node_name}")" ;;
-            vmess)
-                local vm_uuid=$(echo "$obj" | jq -r '.users[0].uuid // empty' 2>/dev/null) vm_aid=$(echo "$obj" | jq -r '.users[0].alter_id // 0' 2>/dev/null) vm_path=$(echo "$obj" | jq -r '.transport.path // empty' 2>/dev/null) vm_host=$(echo "$obj" | jq -r '.transport.headers.Host // empty' 2>/dev/null) vm_tls=$(echo "$obj" | jq -r '.tls.enabled // false' 2>/dev/null) vm_sec="none"; [ "$vm_tls" = "true" ] && vm_sec="tls"
-                local vm_json=$(jq -n --arg add "$server_ip" --argjson port "$port" --arg id "$vm_uuid" --arg aid "$vm_aid" --arg host "${vm_host:-$server_ip}" --arg path "${vm_path:-/}" --arg tls "$vm_sec" --arg ps "${node_name}" '{"v":"2","ps":$ps,"add":$add,"port":$port,"id":$id,"aid":$aid,"scy":"auto","net":"ws","type":"none","host":$host,"path":$path,"tls":$tls}')
-                link="vmess://$(echo "$vm_json" | base64 -w0 2>/dev/null)" ;;
-            trojan)
-                local tr_pwd=$(echo "$obj" | jq -r '.users[0].password // empty' 2>/dev/null) tr_path=$(echo "$obj" | jq -r '.transport.path // empty' 2>/dev/null) tr_host=$(echo "$obj" | jq -r '.transport.headers.Host // empty' 2>/dev/null) tr_tls=$(echo "$obj" | jq -r '.tls.enabled // false' 2>/dev/null) tr_sec="none"; [ "$tr_tls" = "true" ] && tr_sec="tls"
-                link="trojan://$(url_encode "$tr_pwd")@${server_ip}:${port}?security=${tr_sec}&type=ws&host=$(url_encode "${tr_host:-$server_ip}")&path=$(url_encode "${tr_path:-/}")#$(url_encode "${node_name}")" ;;
-            *) continue ;;
-        esac
-        if [ -n "$link" ]; then echo -e "${G}[$((link_count + 1))] ${node_name}${R}\n${H}${link}${R}\n"; link_count=$((link_count + 1)); fi
+        local tag; tag=$(echo "$obj" | jq -r '.tag // empty' 2>/dev/null)
+        local inb_type; inb_type=$(echo "$obj" | jq -r '.type // empty' 2>/dev/null)
+        local display="$inb_type"
+        case "$inb_type" in vless) display="VLESS" ;; hysteria2) display="Hysteria2" ;; vmess) display="VMess" ;; trojan) display="Trojan" ;; esac
+        local nn=$(_get_node_meta "$port" "name"); [ -z "$nn" ] && nn="$tag"
+        echo -e "${G}[${idx}] ${display} | 端口: ${port} | ${nn}${R}"
+        idx=$((idx + 1))
+    done < <(jq -r '.inbounds[] | @base64' "$conf" 2>/dev/null); read -rs -n 1 -p ""
+}
+sb_del_node() {
+    sb_check || { read -rs -n 1 -p ""; return; }
+    local conf="/etc/sing-box/config.json"
+    [ ! -f "$conf" ] || ! jq -e . "$conf" >/dev/null 2>&1 && { echo -e "${Y}无节点${R}"; read -rs -n 1 -p ""; return; }
+    echo -e "${Y}===== 删除节点 =====${R}"; local idx=1 tags=()
+    # ★ 核心修复：直接读 config.json 列出节点
+    while IFS= read -r b64_obj; do
+        local obj; obj=$(echo "$b64_obj" | base64 -d 2>/dev/null); [ -z "$obj" ] && continue
+        local port; port=$(echo "$obj" | jq -r '.listen_port // empty' 2>/dev/null); [ -z "$port" ] && continue
+        local tag; tag=$(echo "$obj" | jq -r '.tag // empty' 2>/dev/null)
+        local nn=$(_get_node_meta "$port" "name"); [ -z "$nn" ] && nn="$tag"
+        echo -e "${G}[${idx}] 端口: ${port} | ${nn}${R}"
+        tags+=("$tag:$port")
+        idx=$((idx + 1))
     done < <(jq -r '.inbounds[] | @base64' "$conf" 2>/dev/null)
-    [ "$link_count" -eq 0 ] && echo -e "${Y}无链接${R}" || echo -e "${Y}===== 共 ${link_count} 条 =====${R}"; read -rs -n 1 -p "按任意键返回..."
+    [ $idx -eq 1 ] && { echo -e "${Y}无节点${R}"; read -rs -n 1 -p ""; return; }
+    read -e -p "删除编号(0返回): " del_idx; [[ ! "$del_idx" =~ ^[0-9]+$ ]] && return; [ "$del_idx" -eq 0 ] && return
+    [ "$del_idx" -lt 1 ] || [ "$del_idx" -gt ${#tags[@]} ] && { echo -e "${RED}超范围${R}"; return; }
+    local sel="${tags[$((del_idx - 1))]}" del_tag="${sel%%:*}" del_port="${sel##*:}"
+    # 清理 NAT
+    local ex=$(_get_node_meta "$del_port" "extra")
+    if echo "$ex" | grep -q "hop_range="; then
+        local old_hop=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+')
+        if [ -n "$old_hop" ]; then
+            local hop_start="${old_hop%-*}" hop_end="${old_hop#*-}" main_nic=$(ip route | grep default | awk '{print $5}' | head -1)
+            [ -n "$main_nic" ] && { iptables -t nat -D PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${del_port} 2>/dev/null; echo -e "${Y}已清理 NAT${R}"; command -v iptables-save >/dev/null 2>&1 && iptables-save > /etc/iptables.rules 2>/dev/null; }
+        fi
+    fi
+    # ★ 核心修复：硬删除，不用备份恢复
+    if jq --arg t "$del_tag" '.inbounds = [.inbounds[] | select(.tag != $t)]' "$conf" > /tmp/sb_cfg.json 2>/dev/null; then
+        mv /tmp/sb_cfg.json "$conf"; _del_node_meta "$del_port"; systemctl restart sing-box 2>/dev/null; echo -e "${G}✅ 已彻底删除${R}"
+    else echo -e "${RED}❌ 删除失败${R}"; fi
+    read -rs -n 1 -p "按任意键返回..."
 }
 singbox_manager() {
     root_use
