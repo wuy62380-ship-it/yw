@@ -428,7 +428,6 @@ open_port_range() {
 }
 
 manual_open_port() {
-    root_use || return
     while true; do
         clear
         echo -e "${Y}===== 手动开放端口 =====${R}"
@@ -738,6 +737,7 @@ sb_menu() {
         echo -e "    ${H}[0] 返回主菜单${R}"
         echo ""
         read -e -p "  选择: " c
+        c=$(echo "$c" | tr -d '[:space:]')
         case "$c" in
             1) clear; sb_add_reality ;;
             2) clear; sb_add_vless_ws ;;
@@ -772,6 +772,7 @@ main_menu() {
         echo -e "    ${gl_hui}[0] 退出${gl_bai}"
         echo ""
         read -e -p "  请选择: " c
+        c=$(echo "$c" | tr -d '[:space:]')
         case "$c" in
             1) show_sys_info ;;
             2) bbrv3 ;;
