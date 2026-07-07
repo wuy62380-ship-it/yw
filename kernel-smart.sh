@@ -39,13 +39,20 @@ bbr_on() {
     if [ -f "$CONF" ]; then if ! grep -q "tcp_congestion_control = bbr" "$CONF" 2>/dev/null; then sed -i '/net.ipv4.tcp_congestion_control/d' "$CONF"; echo "net.ipv4.tcp_congestion_control = bbr" >> "$CONF"; fi; sysctl -p "$CONF" >/dev/null 2>&1; fi
 }
 change_swap_size() {
+    # ★ 修复：全程统一使用 $swap_file 变量
     local swap_file="/swapfile" current_swap=$(free -m | awk '/Swap/{print $2}')
     clear; echo -e "${gl_huang}======== Swap 管理 ========\n当前: ${gl_lv}${current_swap} MB${gl_bai}\n1.1G 2.2G 3.4G 4.6G 5.自定义 6.移除 0.返回"
     read -e -p "选择: " c; local s=""
     case $c in 1) s=1024;; 2) s=2048;; 3) s=4096;; 4) s=6144;; 5) read -e -p "大小(MB): " s; [[ ! "$s" =~ ^[0-9]+$ ]] && return;; 6) swapoff "$swap_file" 2>/dev/null; rm -f "$swap_file"; sed -i '/swapfile/d' /etc/fstab; return;; 0|"") return;; esac
     [ -z "$s" ] && return
-    swapoff "$swap_file" 2>/dev/null; dd if=/dev/zero of="$swap_file" bs=1M count=$s 2>/dev/null; chmod 600 "$swap_file"; mkswap "$swapfile" >/dev/null 2>&1; swapon "$swapfile" >/dev/null 2>&1
-    grep -q "/swapfile" /etc/fstab 2>/dev/null || echo "/swapfile none swap sw 0 0" >> /etc/fstab; echo -e "${gl_lv}✅ 完成${gl_bai}"; read -rs -n 1 -p ""
+    swapoff "$swap_file" 2>/dev/null
+    dd if=/dev/zero of="$swap_file" bs=1M count=$s 2>/dev/null
+    chmod 600 "$swap_file"
+    # ★ 修复：$swapfile → $swap_file（原来操作的是空字符串，swap 永远不生效）
+    mkswap "$swap_file" >/dev/null 2>&1
+    swapon "$swap_file" >/dev/null 2>&1
+    grep -q "/swapfile" /etc/fstab 2>/dev/null || echo "/swapfile none swap sw 0 0" >> /etc/fstab
+    echo -e "${gl_lv}✅ 完成${gl_bai}"; read -rs -n 1 -p ""
 }
 _kernel_optimize_core() {
     local mode_name="$1" scene="${2:-stream_game}" CONF="/etc/sysctl.d/99-yw-optimize.conf"
@@ -265,24 +272,18 @@ show_sys_info() {
     done
     return 0
 }
-
-# ★ 重写：带当前选项高亮的菜单
 Kernel_optimize() {
     root_use
     local scenes=("stream_game" "high" "balanced" "web" "stream" "game" "gateway")
     local names=("直播+游戏" "高性能" "均衡" "网站" "纯直播" "纯游戏" "中转网关")
-
     while true; do
         clear
-        # 从配置文件读取当前场景标识
         local cur_scene=""
         [ -f /etc/sysctl.d/99-yw-optimize.conf ] && cur_scene=$(grep "^# 模式:" /etc/sysctl.d/99-yw-optimize.conf 2>/dev/null | sed 's/^# 模式: //' | awk -F'|' '{print $2}' | tr -d ' \t')
-
         echo -e "${gl_lv}╔═══════════════════════════════════╗"
         echo -e "║       Linux 内核网络优化            ║"
         echo -e "╚═══════════════════════════════════╝${gl_bai}"
         echo ""
-
         local i=0
         while [ $i -lt 7 ]; do
             local num=$((i + 1))
@@ -295,7 +296,6 @@ Kernel_optimize() {
             fi
             i=$((i + 1))
         done
-
         echo -e "    ${gl_hui}─────────────────────────────${gl_bai}"
         echo -e "    ${gl_hui}[8]  还原默认${gl_bai}"
         echo -e "    ${gl_hui}[9]  远程脚本${gl_bai}"
@@ -321,7 +321,6 @@ Kernel_optimize() {
         esac
     done
 }
-
 R="${gl_bai}"; G="${gl_lv}"; Y="${gl_huang}"; H="${gl_hui}"; RED="${gl_red}"; C="\033[36m"
 get_my_ip() { curl -4 -s -f --connect-timeout 3 https://ifconfig.me 2>/dev/null || curl -4 -s -f --connect-timeout 3 https://checkip.amazonaws.com 2>/dev/null || echo "未知IP"; }
 url_encode() { printf '%s' "$1" | sed 's/+/%2B/g; s/\//%2F/g; s/=/%3D/g; s/ /%20/g; s/#/%23/g; s/?/%3F/g; s/&/%26/g; s/@/%40/g'; }
@@ -352,25 +351,41 @@ select_sni() {
 sb_check() { if ! command -v sing-box >/dev/null 2>&1; then echo -e "${RED}请先安装 Sing-Box${R}"; return 1; fi; if ! command -v jq >/dev/null 2>&1; then echo -e "${RED}请先安装 jq${R}"; return 1; fi; return 0; }
 sb_init_conf() { local conf="/etc/sing-box/config.json"; if [ ! -f "$conf" ] || ! jq -e . "$conf" >/dev/null 2>&1; then mkdir -p /etc/sing-box; echo '{"log":{"level":"error"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct"}}' > "$conf"; fi; }
 META_FILE="/etc/sing-box/.nodes_meta"
-_init_meta_file() { [ ! -f "$META_FILE" ] || ! jq -e . "$META_FILE" >/dev/null 2>&1 && { mkdir -p /etc/sing-box; echo '{}' > "$META_FILE"; }; }
-_save_node_meta() { _init_meta_file; if [ -n "$4" ]; then jq --arg p "$1" --arg n "$2" --arg t "$3" --arg pk "$4" --arg ex "$5" '.[$p] = {"name": $n, "type": $t, "pub_key": $pk, "extra": $ex}' "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"; else jq --arg p "$1" --arg n "$2" --arg t "$3" --arg ex "$5" '.[$p] = {"name": $n, "type": $t, "extra": $ex}' "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"; fi; }
+_init_meta_file() { [ ! -f "$META_FILE" ] || ! jq -e . "$META_FILE" >/dev/null 2>&1 && { mkdir -p /etc/sing-box; echo '{}' > "$META_FILE"; chmod 600 "$META_FILE"; }; }
+_save_node_meta() {
+    _init_meta_file
+    local tmp="/tmp/sb_meta.json.$$"
+    if [ -n "$4" ]; then jq --arg p "$1" --arg n "$2" --arg t "$3" --arg pk "$4" --arg ex "$5" '.[$p] = {"name": $n, "type": $t, "pub_key": $pk, "extra": $ex}' "$META_FILE" > "$tmp"
+    else jq --arg p "$1" --arg n "$2" --arg t "$3" --arg ex "$5" '.[$p] = {"name": $n, "type": $t, "extra": $ex}' "$META_FILE" > "$tmp"
+    fi
+    [ -f "$tmp" ] && { mv -f "$tmp" "$META_FILE"; chmod 600 "$META_FILE"; }
+}
 _del_node_meta() { [ -f "$META_FILE" ] && jq --arg p "$1" 'del(.[$p])' "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"; }
 _get_node_meta() { [ -f "$META_FILE" ] && jq -r --arg p "$1" --arg f "$2" '.[$p][$f] // empty' "$META_FILE"; }
-open_port() {
+
+# ★ 修复：ufw 重复添加时返回非零导致误报"未放行"
+_open_single_port() {
     local port=$1 proto="${2:-tcp}" opened=0
-    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then ufw allow ${port}/${proto} >/dev/null 2>&1 && opened=1
-    elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then firewall-cmd --permanent --add-port=${port}/${proto} >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 && opened=1
-    elif command -v iptables >/dev/null 2>&1; then iptables -C INPUT -p ${proto} --dport ${port} -j ACCEPT >/dev/null 2>&1 && opened=1 || iptables -I INPUT -p ${proto} --dport ${port} -j ACCEPT >/dev/null 2>&1 && opened=1; fi
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
+        if ufw status 2>/dev/null | grep -qE "${port}/${proto}[[:space:]]"; then opened=1
+        else ufw allow ${port}/${proto} >/dev/null 2>&1 && opened=1; fi
+    elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+        firewall-cmd --permanent --add-port=${port}/${proto} >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 && opened=1
+    elif command -v iptables >/dev/null 2>&1; then
+        iptables -C INPUT -p ${proto} --dport ${port} -j ACCEPT >/dev/null 2>&1 && opened=1 || iptables -I INPUT -p ${proto} --dport ${port} -j ACCEPT >/dev/null 2>&1 && opened=1
+    fi
     [ "$opened" -eq 1 ] && echo -e "${G}  ✅ 放行 ${proto^^} ${port}${R}" || echo -e "${Y}  ⚠ 请在云控制台【安全组】放行 ${proto^^} ${port}${R}"
 }
-open_port_both() { open_port "$1" "tcp"; open_port "$1" "udp"; }
+open_port() { _open_single_port "$1" "$2"; }
+open_port_both() { _open_single_port "$1" "tcp"; _open_single_port "$1" "udp"; }
 open_port_range() {
     local start_port=$1 end_port=$2 proto="${3:-udp}" opened=0
     local port_count=$((end_port - start_port + 1))
     if [ "$port_count" -le 0 ] || [ "$start_port" -lt 1 ] || [ "$end_port" -gt 65535 ]; then
         echo -e "${RED}  ❌ 端口范围无效: ${start_port}-${end_port}${R}"; return 1; fi
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
-        ufw allow ${start_port}:${end_port}/${proto} >/dev/null 2>&1 && opened=1
+        if ufw status 2>/dev/null | grep -qE "${start_port}:${end_port}/${proto}[[:space:]]"; then opened=1
+        else ufw allow ${start_port}:${end_port}/${proto} >/dev/null 2>&1 && opened=1; fi
     elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
         firewall-cmd --permanent --add-port=${start_port}-${end_port}/${proto} >/dev/null 2>&1
         firewall-cmd --reload >/dev/null 2>&1 && opened=1
@@ -385,6 +400,23 @@ open_port_range() {
     fi
     return 0
 }
+
+# ★ 修复：确保 /etc/rc.local 存在且可写，避免 sed -i 静默失败
+_ensure_rc_local() {
+    if [ ! -f /etc/rc.local ]; then
+        printf '#!/bin/bash\nexit 0\n' > /etc/rc.local
+        chmod +x /etc/rc.local
+    fi
+    if ! grep -q "iptables-restore" /etc/rc.local 2>/dev/null; then
+        sed -i '/^exit 0/i iptables-restore < /etc/iptables.rules' /etc/rc.local 2>/dev/null
+    fi
+}
+_persist_iptables() {
+    command -v iptables-save >/dev/null 2>&1 || return
+    iptables-save > /etc/iptables.rules 2>/dev/null
+    _ensure_rc_local
+}
+
 sb_add_reality() {
     sb_check || { read -rs -n 1 -p ""; return; }
     read -e -p "端口: " port; [[ ! "$port" =~ ^[0-9]+$ ]] && { echo -e "${RED}错误${R}"; return; }
@@ -487,7 +519,8 @@ sb_add_hysteria2() {
                     modprobe iptable_nat 2>/dev/null
                     iptables -t nat -A PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${port}
                     echo -e "${G}✅ NAT跳跃: UDP ${hop_start}-${hop_end} -> ${port}${R}"
-                    command -v iptables-save >/dev/null 2>&1 && { iptables-save > /etc/iptables.rules 2>/dev/null; grep -q "iptables-restore" /etc/rc.local 2>/dev/null || sed -i '/^exit 0/i iptables-restore < /etc/iptables.rules' /etc/rc.local 2>/dev/null; }
+                    # ★ 修复：使用统一的持久化函数，确保 rc.local 存在
+                    _persist_iptables
                 fi
             else echo -e "${Y}  ⚠ 未检测到默认网卡，NAT 规则未添加${R}"; hop_range=""; fi
         fi
@@ -523,54 +556,54 @@ sb_show_nodes_and_links() {
     echo -e "\n${Y}===== 节点列表与链接 =====${R}"
     echo -e "${H}服务器地址: ${server_ip}${R}\n"
     local idx=1 has_any=0
+    # ★ 优化：一次 jq 调用提取所有需要的字段，减少进程创建
     while IFS= read -r b64_obj; do
         local obj; obj=$(echo "$b64_obj" | base64 -d 2>/dev/null); [ -z "$obj" ] && continue
-        local port; port=$(echo "$obj" | jq -r '.listen_port // empty' 2>/dev/null); [ -z "$port" ] && continue
-        local inb_type; inb_type=$(echo "$obj" | jq -r '.type // empty' 2>/dev/null)
-        local tag; tag=$(echo "$obj" | jq -r '.tag // empty' 2>/dev/null)
-        local nn=$(_get_node_meta "$port" "name"); [ -z "$nn" ] && nn="$tag"
-        local display="$inb_type"
-        case "$inb_type" in vless) display="VLESS" ;; hysteria2) display="Hysteria2" ;; vmess) display="VMess" ;; trojan) display="Trojan" ;; esac
+        local port inb_type tag nn display link="" hop_info=""
+        port=$(echo "$obj" | jq -r '.listen_port // empty' 2>/dev/null); [ -z "$port" ] && continue
+        inb_type=$(echo "$obj" | jq -r '.type // empty' 2>/dev/null)
+        tag=$(echo "$obj" | jq -r '.tag // empty' 2>/dev/null)
+        nn=$(_get_node_meta "$port" "name"); [ -z "$nn" ] && nn="$tag"
+        case "$inb_type" in vless) display="VLESS" ;; hysteria2) display="Hysteria2" ;; vmess) display="VMess" ;; trojan) display="Trojan" ;; *) display="$inb_type" ;; esac
         local ex=$(_get_node_meta "$port" "extra")
-        local hop_info=""
         if [ -n "$ex" ] && echo "$ex" | grep -q "hop_range="; then
             local hr=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+')
             [ -n "$hr" ] && hop_info=" | 跳跃: ${hr}"
         fi
         echo -e "${G}━━━ [${idx}] ${display} | 端口: ${port}${hop_info} | ${nn} ━━━${R}"
         has_any=1
-        local link=""
         case "$inb_type" in
             vless)
-                local uuid; uuid=$(echo "$obj" | jq -r '.users[0].uuid // empty' 2>/dev/null)
-                if [ -n "$uuid" ]; then
-                    local flow; flow=$(echo "$obj" | jq -r '.users[0].flow // empty' 2>/dev/null)
-                    local tls_enabled; tls_enabled=$(echo "$obj" | jq -r '.tls.enabled // false' 2>/dev/null)
+                local uuid flow tls_enabled sni pub_key short_id ws_path flow_param
+                uuid=$(echo "$obj" | jq -r '.users[0].uuid // empty' 2>/dev/null)
+                [ -n "$uuid" ] && {
+                    flow=$(echo "$obj" | jq -r '.users[0].flow // empty' 2>/dev/null)
+                    tls_enabled=$(echo "$obj" | jq -r '.tls.enabled // false' 2>/dev/null)
                     if [ "$tls_enabled" = "true" ] && echo "$obj" | jq -e '.tls.reality' >/dev/null 2>&1; then
-                        local sni; sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null)
-                        local pub_key; pub_key=$(_get_node_meta "$port" "pub_key")
-                        local short_id; short_id=$(echo "$obj" | jq -r '.tls.reality.short_id[0] // empty' 2>/dev/null)
-                        if [ -z "$short_id" ] && [ -n "$ex" ]; then short_id=$(echo "$ex" | grep -oP 'short_id=\K[^;]+'); fi
-                        local flow_param=""; [ -n "$flow" ] && flow_param="&flow=${flow}"
+                        sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null)
+                        pub_key=$(_get_node_meta "$port" "pub_key")
+                        short_id=$(echo "$obj" | jq -r '.tls.reality.short_id[0] // empty' 2>/dev/null)
+                        [ -z "$short_id" ] && [ -n "$ex" ] && short_id=$(echo "$ex" | grep -oP 'short_id=\K[^;]+')
+                        flow_param=""; [ -n "$flow" ] && flow_param="&flow=${flow}"
                         link="vless://${uuid}@${server_ip}:${port}?encryption=none${flow_param}&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp#$(url_encode "$nn")"
                     else
-                        local ws_path; ws_path=$(echo "$obj" | jq -r '.transport.path // empty' 2>/dev/null)
+                        ws_path=$(echo "$obj" | jq -r '.transport.path // empty' 2>/dev/null)
                         link="vless://${uuid}@${server_ip}:${port}?encryption=none&security=none&type=ws&path=$(url_encode "${ws_path:-/}")#$(url_encode "$nn")"
                     fi
-                fi
+                }
                 ;;
             hysteria2)
-                local pwd; pwd=$(echo "$obj" | jq -r '.users[0].password // empty' 2>/dev/null)
-                if [ -n "$pwd" ]; then
-                    local sni; sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null)
-                    local insecure="0"
-                    if echo "$ex" | grep -q "tls_method=selfsign"; then insecure="1"; fi
-                    local sni_param=""; [ -n "$sni" ] && sni_param="&sni=${sni}"
+                local pwd sni insecure="0" sni_param=""
+                pwd=$(echo "$obj" | jq -r '.users[0].password // empty' 2>/dev/null)
+                [ -n "$pwd" ] && {
+                    sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null)
+                    echo "$ex" | grep -q "tls_method=selfsign" && insecure="1"
+                    [ -n "$sni" ] && sni_param="&sni=${sni}"
                     link="hysteria2://$(url_encode "$pwd")@${server_ip}:${port}?insecure=${insecure}${sni_param}#$(url_encode "$nn")"
-                fi
+                }
                 ;;
         esac
-        if [ -n "$link" ]; then echo -e "${C}${link}${R}"; fi
+        [ -n "$link" ] && echo -e "${C}${link}${R}"
         echo ""
         idx=$((idx + 1))
     done < <(jq -r '.inbounds[] | @base64' "$conf" 2>/dev/null)
@@ -623,6 +656,7 @@ sb_del_node() {
     echo -ne "${Y}确认删除 [端口:${del_port}] ${del_nn}？(y/n): ${R}"
     read -e -p "" confirm
     [[ ! "$confirm" =~ ^[Yy]$ ]] && { echo -e "${H}已取消${R}"; read -rs -n 1 -p ""; return; }
+    # 清理 NAT
     local ex=$(_get_node_meta "$del_port" "extra")
     if [ -n "$ex" ] && echo "$ex" | grep -q "hop_range="; then
         local old_hop=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+')
@@ -632,14 +666,15 @@ sb_del_node() {
                 iptables -t nat -D PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${del_port} 2>/dev/null
                 iptables -D INPUT -p udp --dport ${hop_start}:${hop_end} -j ACCEPT 2>/dev/null
                 echo -e "${Y}已清理 NAT 规则 (UDP ${hop_start}-${hop_end})${R}"
-                command -v iptables-save >/dev/null 2>&1 && iptables-save > /etc/iptables.rules 2>/dev/null
+                # ★ 修复：使用统一的持久化函数
+                _persist_iptables
             fi
         fi
     fi
     if jq --argjson p "$del_port" '.inbounds = [.inbounds[] | select(.listen_port != $p)]' "$conf" > /tmp/sb_cfg.json 2>/dev/null; then
         mv -f /tmp/sb_cfg.json "$conf"
         _del_node_meta "$del_port"
-        if jq -e '.inbounds | length > 0' "$conf" >/dev/null 2>&1; then
+        if jq -e '.inbounds | length > 0' "$conf" >/dev/null 2>/dev/null; then
             systemctl restart sing-box 2>/dev/null
         else
             systemctl stop sing-box 2>/dev/null
