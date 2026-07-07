@@ -3,7 +3,6 @@
 # Linux YW内核与网络调优模块 (YW全场景极限特化 + 中转网关专属)
 # ============================================================================
 
-# 修复1: 补全所有变量的冒号前缀
 : "${gl_bai:=\033[0m}"
 : "${gl_lv:=\033[32m}"
 : "${gl_huang:=\033[33m}"
@@ -16,6 +15,42 @@
 
 send_stats() { :; return 0; }
 root_use() { [ "$(id -u)" -ne 0 ] && { echo -e "${gl_red}错误：请使用 root 用户运行此脚本${gl_bai}"; exit 1; }; }
+
+# ★ 新增：环境自检，自动安装 curl 和 jq 等必备工具
+check_env() {
+    local need_update=0
+    if ! command -v curl >/dev/null 2>&1; then
+        echo -e "${gl_huang}检测到未安装 curl，正在自动安装...${gl_bai}"
+        need_update=1
+    fi
+    if ! command -v jq >/dev/null 2>&1; then
+        echo -e "${gl_huang}检测到未安装 jq，正在自动安装...${gl_bai}"
+        need_update=1
+    fi
+    if ! command -v openssl >/dev/null 2>&1; then
+        echo -e "${gl_huang}检测到未安装 openssl，正在自动安装...${gl_bai}"
+        need_update=1
+    fi
+
+    if [ "$need_update" -eq 1 ]; then
+        if command -v apt >/dev/null 2>&1; then
+            apt-get update -y >/dev/null 2>&1
+            command -v curl >/dev/null 2>&1 || apt-get install -y curl >/dev/null 2>&1
+            command -v jq >/dev/null 2>&1 || apt-get install -y jq >/dev/null 2>&1
+            command -v openssl >/dev/null 2>&1 || apt-get install -y openssl >/dev/null 2>&1
+        elif command -v yum >/dev/null 2>&1; then
+            command -v curl >/dev/null 2>&1 || yum install -y curl >/dev/null 2>&1
+            command -v jq >/dev/null 2>&1 || yum install -y jq >/dev/null 2>&1
+            command -v openssl >/dev/null 2>&1 || yum install -y openssl >/dev/null 2>&1
+        elif command -v apk >/dev/null 2>&1; then
+            apk update >/dev/null 2>&1
+            command -v curl >/dev/null 2>&1 || apk add curl >/dev/null 2>&1
+            command -v jq >/dev/null 2>&1 || apk add jq >/dev/null 2>&1
+            command -v openssl >/dev/null 2>&1 || apk add openssl >/dev/null 2>&1
+        fi
+        echo -e "${gl_lv}✅ 基础环境依赖准备完毕！${gl_bai}"
+    fi
+}
 
 check_swap() {
     local swap_total=$(free -m | awk '/Swap/{print $2}')
@@ -55,7 +90,7 @@ change_swap_size() {
 }
 
 # ============================================================================
-# 核心优化逻辑 (完美输出版)
+# 核心优化逻辑
 # ============================================================================
 _kernel_optimize_core() {
     local mode_name="$1" scene="${2:-high}" CONF="/etc/sysctl.d/99-yw-optimize.conf"
@@ -161,7 +196,6 @@ EOF
     echo -e "${gl_lv}操作完成${gl_bai}"; echo ""; read -rs -n 1 -p "按任意键继续..."; echo ""
 }
 
-# 其他模块(精简防截断)
 xanmod_add_repo() { local k="/usr/share/keyrings/xanmod-archive-keyring.gpg" l="/etc/apt/sources.list.d/xanmod-release.list" c=""; command -v lsb_release >/dev/null 2>&1 && c=$(lsb_release -sc) || { [ -r /etc/os-release ] && c=$(. /etc/os-release && echo "$VERSION_CODENAME"); }; if ! echo "bookworm trixie forky sid noble plucky" | grep -qw "$c"; then c="releases"; fi; if echo "jammy focal bullseye buster releases" | grep -qw "$c"; then echo -e "${gl_hong}XanMod 已停止支持${gl_bai}"; return 1; fi; [ -z "$c" ] && { echo "无法获取代号"; return 1; }; install wget gnupg ca-certificates || return 1; mkdir -p /usr/share/keyrings /etc/apt/sources.list.d; wget -qO - "https://dl.xanmod.org/archive.key" | gpg --dearmor -o "$k" --yes 2>/dev/null; chmod 644 "$k"; echo "deb [signed-by=$k] http://deb.xanmod.org $c main" > "$l"; }
 xanmod_detect_package() { local p=$(awk 'BEGIN{ while(!/flags/) if(getline<"/proc/cpuinfo"!=1) exit 1; if(/lm/&&/cmov/&&/cx8/&&/fpu/&&/fxsr/&&/mmx/&&/syscall/&&/sse2/) l=1; if(l==1&&/cx16/&&/lahf/&&/popcnt/&&/sse4_1/&&/sse4_2/&&/ssse3/) l=2; if(l==2&&/avx/&&/avx2/&&/bmi1/&&/bmi2/&&/f16c/&&/fma/&&/abm/&&/movbe/&&/xsave/) l=3; if(l>0){print l;exit}}' /proc/cpuinfo 2>/dev/null) || return 1; [ "$p" -gt 3 ] && p=3; apt update -y >/dev/null 2>&1; for x in linux-xanmod linux-xanmod-lts; do local i="$p"; while [ "$i" -ge 1 ]; do local y="${x}-x64v${i}"; apt-cache policy "$y" 2>/dev/null | grep -q 'Candidate: [^ ]' && { printf '%s\n' "$y"; return 0; }; i=$((i-1)); done; done; return 1; }
 bbrv3() { root_use; [ "$(uname -m)" = "aarch64" ] && { bash <(curl -sL jhb.ovh/jb/bbrv3arm.sh); return; }; [ -r /etc/os-release ] && . /etc/os-release; [ "$ID" != "debian" ] && [ "$ID" != "ubuntu" ] && { echo "仅支持Debian/Ubuntu"; return; }; if dpkg-query -W -f='${Package}\n' 'linux-*xanmod*' 2>/dev/null | grep -q '^linux-.*xanmod'; then while true; do clear; echo "当前: $(uname -r)\n1.更新 2.卸载 0.返回"; read -e -p "选择: " c; case $c in 1) check_disk_space 3 && check_swap && xanmod_add_repo && apt update -y && apt install -y --only-upgrade $(xanmod_detect_package) && bbr_on && server_reboot ;; 2) apt purge -y 'linux-*xanmod*' && apt autoremove -y && update-grub && rm -f /etc/apt/sources.list.d/xanmod-release.list && server_reboot ;; *) break ;; esac; done; else clear; echo "设置BBR3"; read -e -p "继续？: " c; [[ "$c" =~ ^[Yy]$ ]] && check_disk_space 3 && check_swap && xanmod_add_repo && apt update -y && apt install -y $(xanmod_detect_package) && bbr_on && server_reboot; fi; }
@@ -177,7 +211,7 @@ Kernel_optimize() {
 }
 
 # ============================================================================
-# 模块 5：Sing-Box 落地机节点管理面板 (完美版)
+# 模块 5：Sing-Box 落地机节点管理面板
 # ============================================================================
 R="${gl_bai}"; G="${gl_lv}"; Y="${gl_huang}"; H="${gl_hui}"; RED="${gl_red}"; C="\033[36m"; B="\033[97m"
 get_my_ip() { curl -4 -s -f --connect-timeout 3 https://ifconfig.me 2>/dev/null || curl -4 -s -f --connect-timeout 3 https://checkip.amazonaws.com 2>/dev/null || echo "未知IP"; }
@@ -191,39 +225,12 @@ _init_meta_file() { [ ! -f "$META_FILE" ] || jq -e . "$META_FILE" >/dev/null 2>&
 _save_node_meta() { _init_meta_file; jq --arg p "$1" --arg n "$2" --arg t "$3" --arg pk "${4:-}" --arg ex "${5:-}" '.[$p] = {name: $n, type: $t, pub_key: $pk, extra: $ex}' "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"; }
 _del_node_meta() { [ -f "$META_FILE" ] && jq --arg p "$1" 'del(.[$p])' "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"; }
 _get_node_meta() { [ -f "$META_FILE" ] && jq -r --arg p "$1" --arg f "$2" '.[$p][$f] // empty' "$META_FILE"; }
-
-# 修复2: 修复 iptables 已存在时无法识别为已放行的逻辑
-open_port() { 
-    local o=0 pr=$2
-    if command -v ufw >/dev/null 2>&1 && ufw status | grep -q active; then 
-        ufw allow $1/$pr >/dev/null 2>&1 && o=1
-    elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then 
-        firewall-cmd --permanent --add-port=$1/$pr >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 && o=1
-    elif command -v iptables >/dev/null 2>&1; then 
-        iptables -C INPUT -p $pr --dport $1 -j ACCEPT >/dev/null 2>&1 && o=1 || { iptables -I INPUT -p $pr --dport $1 -j ACCEPT >/dev/null 2>&1 && o=1; }
-    fi
-    [ "$o" -eq 1 ] && echo -e "${G}  ✅ 放行 ${pr^^} $1${R}" || echo -e "${Y}  ⚠ 请手动放行 ${pr^^} $1${R}"; 
-}
-
-open_port_range() { 
-    local o=0 pr=${3:-udp}
-    if command -v ufw >/dev/null 2>&1 && ufw status | grep -q active; then 
-        ufw allow $1:$2/$pr >/dev/null 2>&1 && o=1
-    elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then 
-        firewall-cmd --permanent --add-port=$1-$2/$pr >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 && o=1
-    elif command -v iptables >/dev/null 2>&1; then 
-        iptables -C INPUT -p $pr --dport $1:$2 -j ACCEPT >/dev/null 2>&1 && o=1 || { iptables -I INPUT -p $pr --dport $1:$2 -j ACCEPT >/dev/null 2>&1 && o=1; }
-    fi
-    [ "$o" -eq 1 ] && echo -e "${G}  ✅ 放行 ${pr^^} $1-$2${R}" || echo -e "${Y}  ⚠ 请手动放行 ${pr^^} $1-$2${R}"; 
-}
+open_port() { local o=0 pr=$2; if command -v ufw >/dev/null 2>&1 && ufw status | grep -q active; then ufw allow $1/$pr >/dev/null 2>&1 && o=1; elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then firewall-cmd --permanent --add-port=$1/$pr >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 && o=1; elif command -v iptables >/dev/null 2>&1; then iptables -C INPUT -p $pr --dport $1 -j ACCEPT >/dev/null 2>&1 && o=1 || { iptables -I INPUT -p $pr --dport $1 -j ACCEPT >/dev/null 2>&1 && o=1; }; fi; [ "$o" -eq 1 ] && echo -e "${G}  ✅ 放行 ${pr^^} $1${R}" || echo -e "${Y}  ⚠ 请手动放行 ${pr^^} $1${R}"; }
+open_port_range() { local o=0 pr=${3:-udp}; if command -v ufw >/dev/null 2>&1 && ufw status | grep -q active; then ufw allow $1:$2/$pr >/dev/null 2>&1 && o=1; elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then firewall-cmd --permanent --add-port=$1-$2/$pr >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 && o=1; elif command -v iptables >/dev/null 2>&1; then iptables -C INPUT -p $pr --dport $1:$2 -j ACCEPT >/dev/null 2>&1 && o=1 || { iptables -I INPUT -p $pr --dport $1:$2 -j ACCEPT >/dev/null 2>&1 && o=1; }; fi; [ "$o" -eq 1 ] && echo -e "${G}  ✅ 放行 ${pr^^} $1-$2${R}" || echo -e "${Y}  ⚠ 请手动放行 ${pr^^} $1-$2${R}"; }
 
 sb_manage_menu() {
     local conf="/etc/sing-box/config.json"
-    # 修复3: 只有在配置损坏或不存在时才重置并停止服务，避免每次进菜单都停服务
-    if [ ! -f "$conf" ] || [ ! -s "$conf" ] || ! jq -e . "$conf" >/dev/null 2>&1; then
-        sb_init_conf; systemctl stop sing-box >/dev/null 2>&1
-    fi
-
+    if [ ! -f "$conf" ] || [ ! -s "$conf" ] || ! jq -e . "$conf" >/dev/null 2>&1; then sb_init_conf; systemctl stop sing-box >/dev/null 2>&1; fi
     while true; do clear; local sb_status="${RED}未安装${R}"; if command -v sing-box >/dev/null 2>&1; then if jq -e '.inbounds | length > 0' "$conf" >/dev/null 2>&1; then systemctl is-active --quiet sing-box 2>/dev/null && sb_status="${G}运行中 ✅${R}" || sb_status="${Y}已停止${R}"; else sb_status="${Y}待配置 (无节点)${R}"; fi; fi
     echo -e "${G}========================================${R}"; echo -e "${G}       Sing-Box 落地节点管理          ${R}"; echo -e "${G}========================================${R}"; echo -e "核心状态: ${sb_status}${R}"; echo -e "${G}----------------------------------------${R}"
     echo -e "${C}1.${R} 安装/更新 Sing-Box 核心"
@@ -274,7 +281,7 @@ sb_add_reality() {
 }
 
 sb_add_hy2() {
-    sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }; command -v openssl >/dev/null 2>&1 || { echo -e "${RED}需安装 openssl${R}"; read -rs -n 1 -p ""; return; }
+    sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
     echo -e "${C}--- 添加 Hysteria2 落地节点 ---${R}"; read -e -p "端口: " port; [[ ! "$port" =~ ^[0-9]+$ ]] && { echo -e "${RED}端口错误${R}"; read -rs -n 1 -p ""; return; }
     local hop=""
     read -e -p "开启端口跳跃？: " eh; if [[ "$eh" =~ ^[Yy]$ ]]; then read -e -p "起始端口: " hs; read -e -p "结束端口: " he; [[ "$hs" =~ ^[0-9]+$ && "$he" =~ ^[0-9]+$ && "$he" -gt "$hs" ]] && hop="$hs-$he" || echo -e "${Y}范围无效，跳过跳跃。${R}"; fi
@@ -333,5 +340,7 @@ main_menu() {
     case $main_choice in 1) show_sys_info ;; 2) bbrv3 ;; 3) Kernel_optimize ;; 4) sb_manage_menu ;; 5) change_swap_size ;; 0|"") exit 0 ;; *) echo -e "${gl_red}输入无效${gl_bai}"; sleep 1 ;; esac; done
 }
 
+# ★ 启动逻辑：先查ROOT -> 再装环境 -> 最后进面板
 root_use
+check_env
 main_menu
