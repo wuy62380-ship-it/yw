@@ -2,96 +2,44 @@
 # ============================================================================
 # Linux YW内核与网络调优模块 (YW全场景极限特化 + 中转网关专属)
 # ============================================================================
-
-: "${gl_bai:=\033[0m}"
-: "${gl_lv:=\033[32m}"
-: "${gl_huang:=\033[33m}"
-: "${gl_hui:=\033[90m}"
-: "${gl_red:=\033[31m}"
-: "${gl_hong:=\033[31m}"
-: "${gl_kjlan:=\033[32m}"
-: "${gh_proxy:=https://}"
-: "${tiaoyou_moshi:=默认优化模式}"
-
+: "${gl_bai:=\033[0m}"; "${gl_lv:=\033[32m}"; "${gl_huang:=\033[33m}"; "${gl_hui:=\033[90m}"; "${gl_red:=\033[31m}"; "${gl_hong:=\033[31m}"; "${gl_kjlan:=\033[32m}"
+: "${gh_proxy:=https://}"; "${tiaoyou_moshi:=默认优化模式}"
 send_stats() { :; return 0; }
 root_use() { [ "$(id -u)" -ne 0 ] && { echo -e "${gl_red}错误：请使用 root 用户运行此脚本${gl_bai}"; exit 1; }; }
-
-# ★ 新增：环境自检，自动安装 curl 和 jq 等必备工具
 check_env() {
     local need_update=0
-    if ! command -v curl >/dev/null 2>&1; then
-        echo -e "${gl_huang}检测到未安装 curl，正在自动安装...${gl_bai}"
-        need_update=1
-    fi
-    if ! command -v jq >/dev/null 2>&1; then
-        echo -e "${gl_huang}检测到未安装 jq，正在自动安装...${gl_bai}"
-        need_update=1
-    fi
-    if ! command -v openssl >/dev/null 2>&1; then
-        echo -e "${gl_huang}检测到未安装 openssl，正在自动安装...${gl_bai}"
-        need_update=1
-    fi
-
+    if ! command -v curl >/dev/null 2>&1; then echo -e "${gl_huang}检测到未安装 curl，正在自动安装...${gl_bai}"; need_update=1; fi
+    if ! command -v jq >/dev/null 2>&1; then echo -e "${gl_huang}检测到未安装 jq，正在自动安装...${gl_bai}"; need_update=1; fi
+    if ! command -v openssl >/dev/null 2>&1; then echo -e "${gl_huang}检测到未安装 openssl，正在自动安装...${gl_bai}"; need_update=1; fi
     if [ "$need_update" -eq 1 ]; then
-        if command -v apt >/dev/null 2>&1; then
-            apt-get update -y >/dev/null 2>&1
-            command -v curl >/dev/null 2>&1 || apt-get install -y curl >/dev/null 2>&1
-            command -v jq >/dev/null 2>&1 || apt-get install -y jq >/dev/null 2>&1
-            command -v openssl >/dev/null 2>&1 || apt-get install -y openssl >/dev/null 2>&1
-        elif command -v yum >/dev/null 2>&1; then
-            command -v curl >/dev/null 2>&1 || yum install -y curl >/dev/null 2>&1
-            command -v jq >/dev/null 2>&1 || yum install -y jq >/dev/null 2>&1
-            command -v openssl >/dev/null 2>&1 || yum install -y openssl >/dev/null 2>&1
-        elif command -v apk >/dev/null 2>&1; then
-            apk update >/dev/null 2>&1
-            command -v curl >/dev/null 2>&1 || apk add curl >/dev/null 2>&1
-            command -v jq >/dev/null 2>&1 || apk add jq >/dev/null 2>&1
-            command -v openssl >/dev/null 2>&1 || apk add openssl >/dev/null 2>&1
-        fi
-        echo -e "${gl_lv}✅ 基础环境依赖准备完毕！${gl_bai}"
-    fi
+        if command -v apt >/dev/null 2>&1; then apt-get update -y >/dev/null 2>&1; command -v curl >/dev/null 2>&1 || apt-get install -y curl >/dev/null 2>&1; command -v jq >/dev/null 2>&1 || apt-get install -y jq >/dev/null 2>&1; command -v openssl >/dev/null 2>&1 || apt-get install -y openssl >/dev/null 2>&1;
+        elif command -v yum >/dev/null 2>&1; then command -v curl >/dev/null 2>&1 || yum install -y curl >/dev/null 2>&1; command -v jq >/dev/null 2>&1 || yum install -y jq >/dev/null 2>&1; command -v openssl >/dev/null 2>&1 || yum install -y openssl >/dev/null 2>&1;
+        elif command -v apk >/dev/null 2>&1; then apk update >/dev/null 2>&1; command -v curl >/dev/null 2>&1 || apk add curl >/dev/null 2>&1; command -v jq >/dev/null 2>&1 || apk add jq >/dev/null 2>&1; command -v openssl >/dev/null 2>&1 || apk add openssl >/dev/null 2>&1; fi
+        echo -e "${gl_lv}✅ 基础环境依赖准备完毕！${gl_bai}"; fi
 }
-
 check_swap() {
     local swap_total=$(free -m | awk '/Swap/{print $2}')
     if [ "$swap_total" -ge 512 ] || grep -q "/dev/zram" /proc/swaps 2>/dev/null; then return 0; fi
     if [ -f /swapfile ] && [ "$swap_total" -lt 512 ]; then swapon /swapfile >/dev/null 2>&1; swap_total=$(free -m | awk '/Swap/{print $2}'); [ "$swap_total" -ge 512 ] && return 0; fi
-    if df / | grep -q "/$" && [ ! -f /etc/pve/.version ]; then
-        echo -e "${gl_huang}正在创建 512MB 应急 Swap...${gl_bai}"; dd if=/dev/zero of=/swapfile bs=1M count=512 2>/dev/null; chmod 600 /swapfile; mkswap /swapfile >/dev/null 2>&1; swapon /swapfile >/dev/null 2>&1
-        grep -q "/swapfile none" /etc/fstab 2>/dev/null || echo "/swapfile none swap sw 0 0" >> /etc/fstab; echo -e "${gl_lv}✅ 应急 Swap 创建完成。${gl_bai}"
-    fi
+    if df / | grep -q "/$" && [ ! -f /etc/pve/.version ]; then echo -e "${gl_huang}正在创建 512MB 应急 Swap...${gl_bai}"; dd if=/dev/zero of=/swapfile bs=1M count=512 2>/dev/null; chmod 600 /swapfile; mkswap /swapfile >/dev/null 2>&1; swapon /swapfile >/dev/null 2>&1; grep -q "/swapfile none" /etc/fstab 2>/dev/null || echo "/swapfile none swap sw 0 0" >> /etc/fstab; echo -e "${gl_lv}✅ 应急 Swap 创建完成。${gl_bai}"; fi
 }
-
 auto_setup_zram() {
     if grep -q "/dev/zram" /proc/swaps 2>/dev/null; then echo -e "${gl_lv}检测到 zram 已在运行，跳过配置。${gl_bai}"; return 0; fi
     echo -e "${gl_lv}正在尝试自动配置 zram 替代 zswap...${gl_bai}"
-    if command -v apt >/dev/null 2>&1; then
-        if ! command -v zramctl >/dev/null 2>&1; then install zram-tools || return 1; fi
-        sed -i 's/^ALGO=.*/ALGO=zstd/' /etc/default/zramswap 2>/dev/null; sed -i 's/^PERCENT=.*/PERCENT=50/' /etc/default/zramswap 2>/dev/null
-        systemctl enable zramswap >/dev/null 2>&1; systemctl restart zramswap >/dev/null 2>&1
-        grep -q "/dev/zram" /proc/swaps 2>/dev/null && echo -e "${gl_lv}✅ zram 配置成功并已启动！${gl_bai}" || echo -e "${gl_huang}zram 启动失败，可能内核不支持。${gl_bai}"
-    elif command -v yum >/dev/null 2>&1; then echo -e "${gl_huang}CentOS/RHEL 建议手动安装 zram-generator${gl_bai}"; fi
+    if command -v apt >/dev/null 2>&1; then if ! command -v zramctl >/dev/null 2>&1; then install zram-tools || return 1; fi; sed -i 's/^ALGO=.*/ALGO=zstd/' /etc/default/zramswap 2>/dev/null; sed -i 's/^PERCENT=.*/PERCENT=50/' /etc/default/zramswap 2>/dev/null; systemctl enable zramswap >/dev/null 2>&1; systemctl restart zramswap >/dev/null 2>&1; grep -q "/dev/zram" /proc/swaps 2>/dev/null && echo -e "${gl_lv}✅ zram 配置成功并已启动！${gl_bai}" || echo -e "${gl_huang}zram 启动失败，可能内核不支持。${gl_bai}"; elif command -v yum >/dev/null 2>&1; then echo -e "${gl_huang}CentOS/RHEL 建议手动安装 zram-generator${gl_bai}"; fi
 }
-
 check_disk_space() { local a=$(df -m / | tail -1 | awk '{print $4}'); if [ "$a" -lt "$1" ]; then echo -e "${gl_red}磁盘不足，需 ${1}MB，可用 ${a}MB${gl_bai}"; return 1; fi; return 0; }
 install() { if command -v apt >/dev/null 2>&1; then apt-get install -y "$@" >/tmp/yw_apt.log 2>&1 || { echo -e "${gl_red}APT 失败${gl_bai}"; return 1; }; elif command -v yum >/dev/null 2>&1; then yum install -y "$@" >/tmp/yw_yum.log 2>/dev/null || { echo -e "${gl_red}YUM 失败${gl_bai}"; return 1; }; fi; }
 server_reboot() { echo -e "${gl_lv}建议立即重启服务器...${gl_bai}"; read -e -p "是否现在重启？: "; [[ "$REPLY" =~ ^[Yy]$ ]] && reboot; }
 bbr_on() { local C="/etc/sysctl.d/99-yw-optimize.conf"; [ -f "$C" ] && { grep -q "tcp_congestion_control = bbr" "$C" 2>/dev/null || { sed -i '/net.ipv4.tcp_congestion_control/d' "$C"; echo "net.ipv4.tcp_congestion_control = bbr" >> "$C"; }; sysctl -p "$C" >/dev/null 2>&1; }; }
-break_end() { local c="$1"; [ -z "$c" ] || [ "$c" = "0" ] || [ "$c" = "return" ]; }
-
 change_swap_size() {
     local s="/swapfile" c=$(free -m | awk '/Swap/{print $2}'); clear
-    echo -e "${gl_huang}========================================${gl_bai}\n${gl_huang}        Swap 虚拟内存管理               ${gl_bai}\n${gl_huang}========================================${gl_bai}"
-    echo -e "当前 Swap: ${gl_lv}${c} MB${gl_bai} | 可用磁盘: $(df -m / | tail -1 | awk '{print $4}') MB\n"
+    echo -e "${gl_huang}========================================${gl_bai}\n${gl_huang}        Swap 虚拟内存管理               ${gl_bai}\n${gl_huang}========================================${gl_bai}"; echo -e "当前 Swap: ${gl_lv}${c} MB${gl_bai} | 可用磁盘: $(df -m / | tail -1 | awk '{print $4}') MB\n"
     echo -e "1. 1 GB\n2. 2 GB\n3. 4 GB\n4. 6 GB\n5. 自定义\n6. 移除 Swap\n0. 返回\n${gl_huang}----------------------------------------${gl_bai}"
     read -e -p "选择: " ch; local sz=""
     case $ch in 1) sz=1024;; 2) sz=2048;; 3) sz=4096;; 4) sz=6144;; 5) read -e -p "大小(MB,最小512): " sz; [[ ! "$sz" =~ ^[0-9]+$ || "$sz" -lt 512 ]] && { echo -e "${gl_red}错误${gl_bai}"; read -rs -n 1 -p ""; return; };; 6) [ "$c" -gt 0 ] && { swapoff "$s" 2>/dev/null; rm -f "$s"; sed -i '/swapfile/d' /etc/fstab; echo -e "${gl_lv}已移除${gl_bai}"; }; read -rs -n 1 -p ""; return;; 0|"") return;; *) echo -e "${gl_red}无效${gl_bai}"; read -rs -n 1 -p ""; return;; esac
     [ -n "$sz" ] && { [ "$(df -m / | tail -1 | awk '{print $4}')" -lt $((sz+100)) ] && { echo -e "${gl_red}空间不足${gl_bai}"; read -rs -n 1 -p ""; return; }; echo -e "${gl_lv}创建中...${gl_bai}"; swapoff "$s" 2>/dev/null; dd if=/dev/zero of="$s" bs=1M count=$sz 2>/dev/null; chmod 600 "$s"; mkswap "$s" >/dev/null 2>&1; swapon "$s" >/dev/null 2>&1; grep -q "$s" /etc/fstab 2>/dev/null || echo "$s none swap sw 0 0" >> /etc/fstab; echo -e "${gl_lv}✅ 成功: ${sz}MB${gl_bai}"; }; read -rs -n 1 -p ""
 }
-
-# ============================================================================
-# 核心优化逻辑
-# ============================================================================
 _kernel_optimize_core() {
     local mode_name="$1" scene="${2:-high}" CONF="/etc/sysctl.d/99-yw-optimize.conf"
     echo -e "${gl_lv}切换到${mode_name}...${gl_bai}"
@@ -195,24 +143,111 @@ EOF
     echo -e "${gl_lv}内存: ${MEM_MB_VAL}MB | 拥塞算法: ${CC} | 队列: ${QDISC}${gl_bai}"
     echo -e "${gl_lv}操作完成${gl_bai}"; echo ""; read -rs -n 1 -p "按任意键继续..."; echo ""
 }
-
 xanmod_add_repo() { local k="/usr/share/keyrings/xanmod-archive-keyring.gpg" l="/etc/apt/sources.list.d/xanmod-release.list" c=""; command -v lsb_release >/dev/null 2>&1 && c=$(lsb_release -sc) || { [ -r /etc/os-release ] && c=$(. /etc/os-release && echo "$VERSION_CODENAME"); }; if ! echo "bookworm trixie forky sid noble plucky" | grep -qw "$c"; then c="releases"; fi; if echo "jammy focal bullseye buster releases" | grep -qw "$c"; then echo -e "${gl_hong}XanMod 已停止支持${gl_bai}"; return 1; fi; [ -z "$c" ] && { echo "无法获取代号"; return 1; }; install wget gnupg ca-certificates || return 1; mkdir -p /usr/share/keyrings /etc/apt/sources.list.d; wget -qO - "https://dl.xanmod.org/archive.key" | gpg --dearmor -o "$k" --yes 2>/dev/null; chmod 644 "$k"; echo "deb [signed-by=$k] http://deb.xanmod.org $c main" > "$l"; }
 xanmod_detect_package() { local p=$(awk 'BEGIN{ while(!/flags/) if(getline<"/proc/cpuinfo"!=1) exit 1; if(/lm/&&/cmov/&&/cx8/&&/fpu/&&/fxsr/&&/mmx/&&/syscall/&&/sse2/) l=1; if(l==1&&/cx16/&&/lahf/&&/popcnt/&&/sse4_1/&&/sse4_2/&&/ssse3/) l=2; if(l==2&&/avx/&&/avx2/&&/bmi1/&&/bmi2/&&/f16c/&&/fma/&&/abm/&&/movbe/&&/xsave/) l=3; if(l>0){print l;exit}}' /proc/cpuinfo 2>/dev/null) || return 1; [ "$p" -gt 3 ] && p=3; apt update -y >/dev/null 2>&1; for x in linux-xanmod linux-xanmod-lts; do local i="$p"; while [ "$i" -ge 1 ]; do local y="${x}-x64v${i}"; apt-cache policy "$y" 2>/dev/null | grep -q 'Candidate: [^ ]' && { printf '%s\n' "$y"; return 0; }; i=$((i-1)); done; done; return 1; }
 bbrv3() { root_use; [ "$(uname -m)" = "aarch64" ] && { bash <(curl -sL jhb.ovh/jb/bbrv3arm.sh); return; }; [ -r /etc/os-release ] && . /etc/os-release; [ "$ID" != "debian" ] && [ "$ID" != "ubuntu" ] && { echo "仅支持Debian/Ubuntu"; return; }; if dpkg-query -W -f='${Package}\n' 'linux-*xanmod*' 2>/dev/null | grep -q '^linux-.*xanmod'; then while true; do clear; echo "当前: $(uname -r)\n1.更新 2.卸载 0.返回"; read -e -p "选择: " c; case $c in 1) check_disk_space 3 && check_swap && xanmod_add_repo && apt update -y && apt install -y --only-upgrade $(xanmod_detect_package) && bbr_on && server_reboot ;; 2) apt purge -y 'linux-*xanmod*' && apt autoremove -y && update-grub && rm -f /etc/apt/sources.list.d/xanmod-release.list && server_reboot ;; *) break ;; esac; done; else clear; echo "设置BBR3"; read -e -p "继续？: " c; [[ "$c" =~ ^[Yy]$ ]] && check_disk_space 3 && check_swap && xanmod_add_repo && apt update -y && apt install -y $(xanmod_detect_package) && bbr_on && server_reboot; fi; }
 restore_defaults() { echo -e "${gl_lv}还原中...${gl_bai}"; rm -f /etc/sysctl.d/99-yw-optimize.conf /etc/sysctl.d/99-network-optimize.conf; sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf 2>/dev/null; sysctl --system >/dev/null 2>&1; [ -f /sys/kernel/mm/transparent_hugepage/enabled ] && echo always > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null; sed -i '/# YW-optimize/,+4d' /etc/security/limits.conf 2>/dev/null; [ -f /sys/module/zswap/parameters/enabled ] && echo N > /sys/module/zswap/parameters/enabled 2>/dev/null; sed -i '/vm.zswap.enabled/d' /etc/sysctl.conf 2>/dev/null; systemctl is-enabled zramswap >/dev/null 2>&1 && { systemctl stop zramswap >/dev/null 2>&1; systemctl disable zramswap >/dev/null 2>&1; }; echo -e "${gl_lv}已还原所有设置${gl_bai}"; read -rs -n 1 -p "按任意键继续..."; echo ""; }
 verify_network_status() { clear; local r=$(sysctl -n net.core.rmem_max 2>/dev/null) m="未知"; case $r in 8388608) m="游戏/网关 (8MB)" ;; 16777216) m="中等内存 (16MB)" ;; 4194304) m="低内存保护 (4MB)" ;; 67108864|134217728) m="高性能/直播/网站 (64MB)" ;; esac; echo -e "${gl_huang}========================================\n       智能模式识别验证\n========================================${gl_bai}"; echo -e "算法: $(sysctl -n net.ipv4.tcp_congestion_control) | 队列: $(sysctl -n net.core.default_qdisc)"; echo -e "最大缓冲: $((r/1024/1024))MB | 鉴定: ${gl_lv}${m}${gl_bai}\n${gl_huang}========================================${gl_bai}"; }
-show_sys_info() { while true; do local c=$(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d '=' -f2 | tr -d '"') m=$(awk '/MemTotal/{printf "%.0fMB", $2/1024/1024}' /proc/meminfo) l=$(uptime | awk '{print $(NF-2), $(NF-1), $NF}') i=$(curl -4 -s --connect-timeout 2 ifconfig.me 2>/dev/null || echo "获取失败"); clear; echo -e "${gl_kjlan}==============${gl_bai}"; echo -e "${gl_kjlan}系统: ${gl_bai}${c} $(uname -r)"; echo -e "${gl_kjlan}内存: ${gl_bai}${m} | 负载: ${l}"; echo -e "${gl_kjlan}IP:   ${gl_bai}${i}"; echo -e "${gl_kjlan}==============${gl_bai}"; echo -e "${gl_huang}0. 返回"; read -e -p "选择: " m; case $m in 0|"") break ;; *) break ;; esac; done; }
-
+show_sys_info() {
+    while true; do
+        send_stats "系统信息查询"
+        local cpu_info=$(lscpu 2>/dev/null | awk -F':' '/Model name:/ {print $2}' | sed 's/^[ \t]*//')
+        local cpu_usage_percent=$(awk '{u=$2+$4; t=$2+$4+$5; if (NR==1){u1=u; t1=t;} else printf "%.0f\n", (($2+$4-u1) * 100 / (t-t1))}' <(grep 'cpu ' /proc/stat) <(sleep 1; grep 'cpu ' /proc/stat))
+        local cpu_cores=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo)
+        local cpu_freq=$(grep "MHz" /proc/cpuinfo 2>/dev/null | head -n 1 | awk '{printf "%.1f GHz\n", $4/1000}')
+        local mem_total_mb=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo)
+        local mem_avail_mb=$(awk '/MemAvailable/{printf "%d", $2/1024}' /proc/meminfo)
+        local mem_used_mb=$((mem_total_mb - mem_avail_mb))
+        local mem_percent=$(awk "BEGIN{printf \"%.1f\", ${mem_used_mb}*100/${mem_total_mb}}")
+        local mem_info="${mem_avail_mb}M/${mem_total_mb}M (${mem_percent}%)"
+        local disk_info=$(df -h / | awk 'NR==2{printf "%s/%s (%s)", $3, $2, $5}')
+        echo -ne "${gl_hui}正在获取外网IP信息(超时3秒自动跳过)...${gl_bai}\r"
+        local ipinfo=$(curl -s --connect-timeout 2 --max-time 3 ipinfo.io 2>/dev/null || echo "{}")
+        local country=$(echo "$ipinfo" | awk -F'"' '/country/{print $4}')
+        local city=$(echo "$ipinfo" | awk -F'"' '/city/{print $4}')
+        local isp_info=$(echo "$ipinfo" | awk -F'"' '/org/{print $4}')
+        local load=$(uptime | awk '{print $(NF-2), $(NF-1), $NF}')
+        local dns_addresses=$(awk '/^nameserver/{printf "%s ", $2 } END {print ""}' /etc/resolv.conf)
+        local cpu_arch=$(uname -m)
+        local hostname_val=$(uname -n)
+        local kernel_version=$(uname -r)
+        local congestion_algorithm=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+        local queue_algorithm=$(sysctl -n net.core.default_qdisc 2>/dev/null)
+        local os_info=$(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d '=' -f2 | tr -d '"')
+        local current_time=$(date "+%Y-%m-%d %I:%M %p")
+        local swap_total_mb=$(awk '/SwapTotal/{printf "%d", $2/1024}' /proc/meminfo)
+        local swap_avail_mb=$(awk '/SwapFree/{printf "%d", $2/1024}' /proc/meminfo)
+        local swap_used_mb=$((swap_total_mb - swap_avail_mb))
+        local swap_percent="0%"
+        [ "$swap_total_mb" -gt 0 ] && swap_percent=$(awk "BEGIN{printf \"%d%%\", ${swap_used_mb}*100/${swap_total_mb}}")
+        local swap_info="${swap_used_mb}M/${swap_total_mb}M (${swap_percent}%)"
+        local runtime=$(cat /proc/uptime 2>/dev/null | awk -F. '{run_days=int($1 / 86400);run_hours=int(($1 % 86400) / 3600);run_minutes=int(($1 % 3600) / 60); if (run_days > 0) printf("%d天 ", run_days); if (run_hours > 0) printf("%d时 ", run_hours); printf("%d分\n", run_minutes)}')
+        local timezone=$(cat /etc/timezone 2>/dev/null || echo "Unknown")
+        local tcp_count=$(ss -t state established 2>/dev/null | wc -l)
+        local udp_count=$(ss -u state established 2>/dev/null | wc -l)
+        local rx=$(awk 'NR>2 && $1 !~ /^lo:/ && $1 !~ /^sit/ {gsub(/:/,""); a+=$2} END{print a+0}' /proc/net/dev)
+        local tx=$(awk 'NR>2 && $1 !~ /^lo:/ && $1 !~ /^sit/ {gsub(/:/,""); a+=$10} END{print a+0}' /proc/net/dev)
+        local rx_gb=$(awk "BEGIN{printf \"%.2f\", ${rx}/1024/1024/1024/1024}")
+        local tx_gb=$(awk "BEGIN{printf \"%.2f\", ${tx}/1024/1024/1024/1024}")
+        local ipv4_addr=$(ip -4 addr 2>/dev/null | grep inet | grep -v "127.0.0.1" | awk '{print $2}' | head -1)
+        local ipv6_addr=$(ip -6 addr 2>/dev/null | grep inet6 | grep -v "::1" | awk '{print $2}' | head -1)
+        clear
+        echo -e "${gl_kjlan}系统信息查询${gl_bai}"
+        echo -e "${gl_kjlan}=============="
+        echo -e "${gl_kjlan}主机名:         ${gl_bai}${hostname_val}"
+        echo -e "${gl_kjlan}系统版本:       ${gl_bai}${os_info}"
+        echo -e "${gl_kjlan}Linux版本:      ${gl_bai}${kernel_version}"
+        echo -e "${gl_kjlan}=============="
+        echo -e "${gl_kjlan}CPU架构:        ${gl_bai}${cpu_arch}"
+        echo -e "${gl_kjlan}CPU型号:        ${gl_bai}${cpu_info}"
+        echo -e "${gl_kjlan}CPU核心数:      ${gl_bai}${cpu_cores}"
+        echo -e "${gl_kjlan}CPU频率:        ${gl_bai}${cpu_freq}"
+        echo -e "${gl_kjlan}=============="
+        echo -e "${gl_kjlan}CPU占用:        ${gl_bai}${cpu_usage_percent}%"
+        echo -e "${gl_kjlan}系统负载:       ${gl_bai}${load}"
+        echo -e "${gl_kjlan}TCP|UDP连接数:  ${gl_bai}${tcp_count}|${udp_count}"
+        echo -e "${gl_kjlan}物理内存:       ${gl_bai}${mem_info}"
+        echo -e "${gl_kjlan}虚拟内存:       ${gl_bai}${swap_info}"
+        echo -e "${gl_kjlan}硬盘占用:       ${gl_bai}${disk_info}"
+        echo -e "${gl_kjlan}=============="
+        echo -e "${gl_kjlan}总接收:         ${gl_bai}${rx_gb}G"
+        echo -e "${gl_kjlan}总发送:         ${gl_bai}${tx_gb}G"
+        echo -e "${gl_kjlan}=============="
+        echo -e "${gl_kjlan}网络算法:       ${gl_bai}${congestion_algorithm:-N/A} ${queue_algorithm:-N/A}"
+        echo -e "${gl_kjlan}=============="
+        echo -e "${gl_kjlan}运营商:         ${gl_bai}${isp_info}"
+        [ -n "${ipv4_addr}" ] && echo -e "${gl_kjlan}IPv4地址:       ${gl_bai}${ipv4_addr}"
+        [ -n "${ipv6_addr}" ] && echo -e "${gl_kjlan}IPv6地址:       ${gl_bai}${ipv6_addr}"
+        echo -e "${gl_kjlan}DNS地址:        ${gl_bai}${dns_addresses}"
+        echo -e "${gl_kjlan}地理位置:       ${gl_bai}${country} ${city}"
+        echo -e "${gl_kjlan}系统时间:       ${gl_bai}${timezone} ${current_time}"
+        echo -e "${gl_kjlan}=============="
+        echo -e "${gl_kjlan}运行时长:       ${gl_bai}${runtime}"
+        echo -e "${gl_kjlan}=============="
+        echo -e "${gl_huang}0. 返回主菜单"
+        echo -e "${gl_huang}=============="
+        read -e -p "请输入选择: " menu_choice
+        case "$menu_choice" in 0|"") break ;; *) break ;; esac
+    done
+    return 0
+}
 Kernel_optimize() {
     root_use
     while true; do clear; local cur="未优化"; [ -f /etc/sysctl.d/99-yw-optimize.conf ] && cur=$(grep "^# YW 调优:" /etc/sysctl.d/99-yw-optimize.conf 2>/dev/null | sed 's/^# YW 调优: //' | awk '{print $1}')
-    echo -e "${gl_lv}Linux系统内核参数优化${gl_bai}"; echo "------------------------------------------------"; echo -e "当前模式: ${gl_huang}${cur:-系统优化已启用}${gl_bai}"; echo -e "提供多种系统参数调优模式，用户可以根据自身使用场景进行选择切换。"; echo -e "${gl_huang}提示: ${gl_bai}生产环境请谨慎使用！"; echo -e "--------------------"; echo -e "1. 高性能优化模式：     极限IO聚簇写回，吞吐拉满"; echo -e "2. 均衡优化模式：       稳定至上，内存安全锁"; echo -e "3. 网站优化模式：       极限TW池，抗大促并发"; echo -e "4. 直播优化模式：       UDP极限拉爆+网卡软中断狂暴"; echo -e "5. 游戏服优化模式：     8MB电竞级TCP防Bufferbloat"; echo -e "6. 中转网关模式：       专精V2Ray/SS加密中转防卡顿 ${gl_huang}★${gl_bai}"; echo -e "7. 还原默认设置：       将系统设置还原为默认配置。"; echo -e "8. 自动调优：           根据测试数据自动调优内核参数。${gl_huang}★${gl_bai}"; echo -e "9. 释放内存缓存：      强制清理系统 Cache (谨慎使用)"; echo -e "10. 验证当前网络状态：  查看内核参数是否生效 ${gl_huang}★${gl_bai}"; echo "--------------------"; echo "0. 返回主菜单"; echo "--------------------"; read -e -p "请输入你的选择: " sub_choice
+    echo -e "${gl_lv}Linux系统内核参数优化${gl_bai}"; echo "------------------------------------------------"; echo -e "当前模式: ${gl_huang}${cur:-系统优化已启用}${gl_bai}"; echo -e "提供多种系统参数调优模式，用户可以根据自身使用场景进行选择切换。"; echo -e "${gl_huang}提示: ${gl_bai}生产环境请谨慎使用！"; echo -e "--------------------"
+    echo -e "1. 高性能优化模式：     极限IO聚簇写回，吞吐拉满"
+    echo -e "2. 均衡优化模式：       稳定至上，内存安全锁"
+    echo -e "3. 网站优化模式：       极限TW池，抗大促并发"
+    echo -e "4. 直播优化模式：       UDP极限拉爆+网卡软中断狂暴"
+    echo -e "5. 游戏服优化模式：     8MB电竞级TCP防Bufferbloat"
+    echo -e "6. 中转网关模式：       专精V2Ray/SS加密中转防卡顿 ${gl_huang}★${gl_bai}"
+    echo -e "7. 还原默认设置：       将系统设置还原为默认配置。"
+    echo -e "8. 自动调优：           根据测试数据自动调优内核参数。${gl_huang}★${gl_bai}"
+    echo -e "9. 释放内存缓存：      强制清理系统 Cache (谨慎使用)"
+    echo -e "10. 验证当前网络状态：  查看内核参数是否生效 ${gl_huang}★${gl_bai}"
+    echo "--------------------"; echo "0. 返回主菜单"; echo "--------------------"; read -e -p "请输入你的选择: " sub_choice
     case $sub_choice in 1) cd ~; clear; _kernel_optimize_core "高性能优化模式" "high" ;; 2) cd ~; clear; _kernel_optimize_core "均衡优化模式" "balanced" ;; 3) cd ~; clear; _kernel_optimize_core "网站优化模式" "web" ;; 4) cd ~; clear; _kernel_optimize_core "直播优化模式" "stream" ;; 5) cd ~; clear; _kernel_optimize_core "游戏服优化模式" "game" ;; 6) cd ~; clear; _kernel_optimize_core "中转网关模式" "gateway" ;; 7) cd ~; clear; restore_defaults ;; 8) echo -e "${gl_huang}即将拉取并执行远程网络优化脚本..."; read -e -p "按回车键继续，或按 Ctrl+C 取消: "; curl -sS ${gh_proxy}raw.githubusercontent.com/YW/sh/refs/heads/main/network-optimize.sh | bash ;; 9) echo -e "${gl_red}警告：强制释放内存缓存可能导致短暂 IO 抖动，生产环境请谨慎！${gl_bai}"; read -e -p "确定要执行 echo 3 > /proc/sys/vm/drop_caches 吗？: " drop_choice; if [[ "$drop_choice" =~ ^[Yy]$ ]]; then sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null && echo -e "${gl_lv}✅ 内存缓存已释放${gl_bai}"; else echo "已取消"; fi; read -rs -n 1 -p "按任意键继续..." ;; 10) verify_network_status; read -rs -n 1 -p "按任意键返回菜单..." ;; 0|"") break ;; *) echo -e "${gl_red}无效的选择${gl_bai}" ; read -rs -n 1 -p "按任意键继续..." ;; esac; done
 }
-
-# ============================================================================
-# 模块 5：Sing-Box 落地机节点管理面板
-# ============================================================================
 R="${gl_bai}"; G="${gl_lv}"; Y="${gl_huang}"; H="${gl_hui}"; RED="${gl_red}"; C="\033[36m"; B="\033[97m"
 get_my_ip() { curl -4 -s -f --connect-timeout 3 https://ifconfig.me 2>/dev/null || curl -4 -s -f --connect-timeout 3 https://checkip.amazonaws.com 2>/dev/null || echo "未知IP"; }
 url_encode() { printf '%s' "$1" | sed 's/+/%2B/g; s/\//%2F/g; s/=/%3D/g; s/ /%20/g; s/#/%23/g; s/?/%3F/g; s/&/%26/g; s/@/%40/g'; }
@@ -227,7 +262,6 @@ _del_node_meta() { [ -f "$META_FILE" ] && jq --arg p "$1" 'del(.[$p])' "$META_FI
 _get_node_meta() { [ -f "$META_FILE" ] && jq -r --arg p "$1" --arg f "$2" '.[$p][$f] // empty' "$META_FILE"; }
 open_port() { local o=0 pr=$2; if command -v ufw >/dev/null 2>&1 && ufw status | grep -q active; then ufw allow $1/$pr >/dev/null 2>&1 && o=1; elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then firewall-cmd --permanent --add-port=$1/$pr >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 && o=1; elif command -v iptables >/dev/null 2>&1; then iptables -C INPUT -p $pr --dport $1 -j ACCEPT >/dev/null 2>&1 && o=1 || { iptables -I INPUT -p $pr --dport $1 -j ACCEPT >/dev/null 2>&1 && o=1; }; fi; [ "$o" -eq 1 ] && echo -e "${G}  ✅ 放行 ${pr^^} $1${R}" || echo -e "${Y}  ⚠ 请手动放行 ${pr^^} $1${R}"; }
 open_port_range() { local o=0 pr=${3:-udp}; if command -v ufw >/dev/null 2>&1 && ufw status | grep -q active; then ufw allow $1:$2/$pr >/dev/null 2>&1 && o=1; elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then firewall-cmd --permanent --add-port=$1-$2/$pr >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 && o=1; elif command -v iptables >/dev/null 2>&1; then iptables -C INPUT -p $pr --dport $1:$2 -j ACCEPT >/dev/null 2>&1 && o=1 || { iptables -I INPUT -p $pr --dport $1:$2 -j ACCEPT >/dev/null 2>&1 && o=1; }; fi; [ "$o" -eq 1 ] && echo -e "${G}  ✅ 放行 ${pr^^} $1-$2${R}" || echo -e "${Y}  ⚠ 请手动放行 ${pr^^} $1-$2${R}"; }
-
 sb_manage_menu() {
     local conf="/etc/sing-box/config.json"
     if [ ! -f "$conf" ] || [ ! -s "$conf" ] || ! jq -e . "$conf" >/dev/null 2>&1; then sb_init_conf; systemctl stop sing-box >/dev/null 2>&1; fi
@@ -242,17 +276,10 @@ sb_manage_menu() {
     echo -e "${H}7.${R} 重启/停止/查看日志"
     echo -e "${Y}8.${R} 手动开放端口 (防火墙放行)"
     echo -e "${G}========================================${R}"; echo -e "${H}0.${R} 返回主菜单"; echo -e "${G}========================================${R}"
-    read -e -p "请输入选择: " c; case $c in
-        1) echo -e "${C}正在连接官方源安装...${R}"; if command -v apt >/dev/null 2>&1; then curl -fsSL https://sing-box.app/deb-install.sh | bash; elif command -v yum >/dev/null 2>&1; then curl -fsSL https://sing-box.app/rpm-install.sh | bash; fi; read -rs -n 1 -p "按任意键继续..." ;;
-        2) sb_add_reality ;; 3) sb_add_hy2 ;; 4) sb_add_vless_ws ;; 5) sb_view_nodes ;; 6) sb_del_node ;;
-        7) echo -e "${C}1.重启 2.停止 3.日志:${R}"; read -e -p "选择: " a; case $a in 1) systemctl restart sing-box && echo -e "${G}已重启${R}" ;; 2) systemctl stop sing-box && echo -e "${Y}已停止${R}" ;; 3) journalctl -u sing-box -n 30 --no-pager ;; esac; read -rs -n 1 -p "按任意键继续..." ;;
-        8) read -e -p "端口: " mp; [[ "$mp" =~ ^[0-9]+$ ]] && { open_port "$mp" tcp; open_port "$mp" udp; } || echo -e "${RED}无效${R}"; read -rs -n 1 -p "按任意键继续..." ;;
-        0|"") break ;; *) echo -e "${RED}输入无效${R}"; sleep 1 ;; esac; done
+    read -e -p "请输入选择: " c; case $c in 1) echo -e "${C}正在连接官方源安装...${R}"; if command -v apt >/dev/null 2>&1; then curl -fsSL https://sing-box.app/deb-install.sh | bash; elif command -v yum >/dev/null 2>&1; then curl -fsSL https://sing-box.app/rpm-install.sh | bash; fi; read -rs -n 1 -p "按任意键继续..." ;; 2) sb_add_reality ;; 3) sb_add_hy2 ;; 4) sb_add_vless_ws ;; 5) sb_view_nodes ;; 6) sb_del_node ;; 7) echo -e "${C}1.重启 2.停止 3.日志:${R}"; read -e -p "选择: " a; case $a in 1) systemctl restart sing-box && echo -e "${G}已重启${R}" ;; 2) systemctl stop sing-box && echo -e "${Y}已停止${R}" ;; 3) journalctl -u sing-box -n 30 --no-pager ;; esac; read -rs -n 1 -p "按任意键继续..." ;; 8) read -e -p "端口: " mp; [[ "$mp" =~ ^[0-9]+$ ]] && { open_port "$mp" tcp; open_port "$mp" udp; } || echo -e "${RED}无效${R}"; read -rs -n 1 -p "按任意键继续..." ;; 0|"") break ;; *) echo -e "${RED}输入无效${R}"; sleep 1 ;; esac; done
 }
-
 sb_add_vless_ws() {
-    sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }; echo -e "${C}--- 添加 VLESS+WebSocket 落地节点 ---${R}"
-    read -e -p "监听端口: " port; [[ ! "$port" =~ ^[0-9]+$ ]] && { echo -e "${RED}端口错误${R}"; read -rs -n 1 -p ""; return; }
+    sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }; echo -e "${C}--- 添加 VLESS+WebSocket 落地节点 ---${R}"; read -e -p "监听端口: " port; [[ ! "$port" =~ ^[0-9]+$ ]] && { echo -e "${RED}端口错误${R}"; read -rs -n 1 -p ""; return; }
     local dp=$(openssl rand -hex 4); read -e -p "WS 路径 (回车默认 /${dp}): " ws_path; ws_path="${ws_path:-/$(openssl rand -hex 4)}"; [[ "$ws_path" != /* ]] && ws_path="/${ws_path}"
     local sni; sni=$(select_sni); echo -e "${Y}生成 UUID 和证书...${R}"; local uuid=$(cat /proc/sys/kernel/random/uuid) crt="/etc/sing-box/ws_${port}.crt" key="/etc/sing-box/ws_${port}.key"
     [ ! -f "$crt" ] && openssl req -x509 -nodes -newkey rsa:2048 -keyout "$key" -out "$crt" -subj "/CN=$sni" -days 3650 2>/dev/null; chmod 600 "$key" 2>/dev/null
@@ -265,10 +292,8 @@ sb_add_vless_ws() {
         local ip=$(get_my_ip); echo -e "${G}✅ VLESS+WS 添加成功！${R}\n${Y}链接:${R}\n${B}vless://${uuid}@${ip}:${port}?encryption=none&security=tls&type=ws&host=$(url_encode "$sni")&path=$(url_encode "$ws_path")&sni=$(url_encode "$sni")&allowInsecure=1#$(url_encode "$nn")${R}"
     else echo -e "${RED}校验失败！${R}"; mv "${conf}.bak."* "$conf" 2>/dev/null; rm -f "$crt" "$key"; fi; read -rs -n 1 -p "按任意键继续..."
 }
-
 sb_add_reality() {
-    sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }; echo -e "${C}--- 添加 VLESS Reality 落地节点 ---${R}"
-    read -e -p "端口: " port; [[ ! "$port" =~ ^[0-9]+$ ]] && { echo -e "${RED}端口错误${R}"; read -rs -n 1 -p ""; return; }
+    sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }; echo -e "${C}--- 添加 VLESS Reality 落地节点 ---${R}"; read -e -p "端口: " port; [[ ! "$port" =~ ^[0-9]+$ ]] && { echo -e "${RED}端口错误${R}"; read -rs -n 1 -p ""; return; }
     local sni; sni=$(select_sni); echo -e "${Y}生成密钥对...${R}"; local uuid=$(cat /proc/sys/kernel/random/uuid) keys=$(sing-box generate reality-keypair 2>/dev/null) pk=$(echo "$keys" | grep PrivateKey | awk '{print $2}') pub=$(echo "$keys" | grep PublicKey | awk '{print $2}')
     [ -z "$pub" ] && { echo -e "${RED}生成失败${R}"; read -rs -n 1 -p ""; return; }
     local dn="Reality-${port}"; read -e -p "节点名称 (回车默认 ${dn}): " nn; [ -z "$nn" ] && nn="$dn"
@@ -279,12 +304,9 @@ sb_add_reality() {
         local ip=$(get_my_ip); echo -e "${G}✅ Reality 添加成功！${R}\n${Y}链接:${R}\n${B}vless://${uuid}@${ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=$(url_encode "$pub")&type=tcp#$(url_encode "$nn")${R}"
     else echo -e "${RED}校验失败！${R}"; mv "${conf}.bak."* "$conf" 2>/dev/null; fi; read -rs -n 1 -p "按任意键继续..."
 }
-
 sb_add_hy2() {
-    sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
-    echo -e "${C}--- 添加 Hysteria2 落地节点 ---${R}"; read -e -p "端口: " port; [[ ! "$port" =~ ^[0-9]+$ ]] && { echo -e "${RED}端口错误${R}"; read -rs -n 1 -p ""; return; }
-    local hop=""
-    read -e -p "开启端口跳跃？: " eh; if [[ "$eh" =~ ^[Yy]$ ]]; then read -e -p "起始端口: " hs; read -e -p "结束端口: " he; [[ "$hs" =~ ^[0-9]+$ && "$he" =~ ^[0-9]+$ && "$he" -gt "$hs" ]] && hop="$hs-$he" || echo -e "${Y}范围无效，跳过跳跃。${R}"; fi
+    sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }; echo -e "${C}--- 添加 Hysteria2 落地节点 ---${R}"; read -e -p "端口: " port; [[ ! "$port" =~ ^[0-9]+$ ]] && { echo -e "${RED}端口错误${R}"; read -rs -n 1 -p ""; return; }
+    local hop=""; read -e -p "开启端口跳跃？: " eh; if [[ "$eh" =~ ^[Yy]$ ]]; then read -e -p "起始端口: " hs; read -e -p "结束端口: " he; [[ "$hs" =~ ^[0-9]+$ && "$he" =~ ^[0-9]+$ && "$he" -gt "$hs" ]] && hop="$hs-$he" || echo -e "${Y}范围无效，跳过跳跃。${R}"; fi
     local sni; sni=$(select_sni); echo -e "${Y}生成密码和证书...${R}"; local pass=$(openssl rand -base64 16) crt="/etc/sing-box/hy2_${port}.crt" key="/etc/sing-box/hy2_${port}.key"
     [ ! -f "$crt" ] && openssl req -x509 -nodes -newkey rsa:2048 -keyout "$key" -out "$crt" -subj "/CN=$sni" -days 3650 2>/dev/null; chmod 600 "$key" 2>/dev/null
     local dn="Hy2-${port}"; read -e -p "节点名称 (回车默认 ${dn}): " nn; [ -z "$nn" ] && nn="$dn"
@@ -297,7 +319,6 @@ sb_add_hy2() {
         echo -e "${G}✅ Hysteria2 添加成功！${R}\n${Y}链接:${R}\n${B}${link}${R}\n${H}注意: 请确保云安全组已放行 UDP ${port} ${hop}${R}"
     else echo -e "${RED}校验失败！${R}"; mv "${conf}.bak."* "$conf" 2>/dev/null; rm -f "$crt" "$key"; fi; read -rs -n 1 -p "按任意键继续..."
 }
-
 sb_view_nodes() {
     local conf="/etc/sing-box/config.json"; jq -e '.inbounds | length > 0' "$conf" >/dev/null 2>&1 || { echo -e "${Y}无节点${R}"; read -rs -n 1 -p ""; return; }
     local ip=$(get_my_ip); echo -e "${G}========================================${R}\n${G}           当前节点列表              ${R}\n${G}========================================${R}"
@@ -310,7 +331,6 @@ sb_view_nodes() {
         echo "----------------------------------------"
     done < <(jq -c '.inbounds[]' "$conf"); read -rs -n 1 -p "按任意键继续..."
 }
-
 sb_del_node() {
     sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }; local conf="/etc/sing-box/config.json" ports=$(jq -r '.inbounds[].listen_port' "$conf" 2>/dev/null)
     [ -z "$ports" ] && { echo -e "${Y}无节点${R}"; read -rs -n 1 -p ""; return; }
@@ -319,10 +339,6 @@ sb_del_node() {
     local nt=$(_get_node_meta "$dp" "type"); cp "$conf" "${conf}.bak.$(date +%s)"; jq --argjson p "$dp" 'del(.inbounds[] | select(.listen_port == $p))' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
     if sing-box check -c "$conf" >/dev/null 2>&1; then [ "$nt" = "hysteria2" ] && rm -f "/etc/sing-box/hy2_${dp}.*"; [ "$nt" = "vless-ws" ] && rm -f "/etc/sing-box/ws_${dp}.*"; _del_node_meta "$dp"; systemctl restart sing-box; echo -e "${G}✅ 已删除${R}"; else echo -e "${RED}失败，回滚${R}"; mv "${conf}.bak."* "$conf" 2>/dev/null; fi; read -rs -n 1 -p "按任意键继续..."
 }
-
-# ============================================================================
-# YW 系统优化与管理面板 - 主入口
-# ============================================================================
 main_menu() {
     while true; do clear
     echo -e "${G}========================================${gl_bai}"
@@ -339,8 +355,6 @@ main_menu() {
     read -e -p "请输入选择: " main_choice
     case $main_choice in 1) show_sys_info ;; 2) bbrv3 ;; 3) Kernel_optimize ;; 4) sb_manage_menu ;; 5) change_swap_size ;; 0|"") exit 0 ;; *) echo -e "${gl_red}输入无效${gl_bai}"; sleep 1 ;; esac; done
 }
-
-# ★ 启动逻辑：先查ROOT -> 再装环境 -> 最后进面板
 root_use
 check_env
 main_menu
