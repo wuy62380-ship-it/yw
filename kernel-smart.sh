@@ -45,7 +45,7 @@ change_swap_size() {
     case $c in 1) s=1024;; 2) s=2048;; 3) s=4096;; 4) s=6144;; 5) read -e -p "大小(MB): " s; [[ ! "$s" =~ ^[0-9]+$ ]] && return;; 6) swapoff "$swap_file" 2>/dev/null; rm -f "$swap_file"; sed -i '/swapfile/d' /etc/fstab; return;; 0|"") return;; esac
     [ -z "$s" ] && return
     swapoff "$swap_file" 2>/dev/null; dd if=/dev/zero of="$swap_file" bs=1M count=$s 2>/dev/null; chmod 600 "$swap_file"
-    mkswap "$swap_file" >/dev/null 2>&1; swapon "$swap_file" >/dev/null 2>/dev/null
+    mkswap "$swap_file" >/dev/null 2>&1; swapon "$swap_file" >/dev/null 2>&1
     grep -q "/swapfile" /etc/fstab 2>/dev/null || echo "/swapfile none swap sw 0 0" >> /etc/fstab
     echo -e "${gl_lv}✅ 完成${gl_bai}"; read -rs -n 1 -p ""
 }
@@ -382,8 +382,6 @@ _persist_iptables() {
     command -v iptables-save >/dev/null 2>&1 || return
     iptables-save > /etc/iptables.rules 2>/dev/null; _ensure_rc_local
 }
-
-# ★ 拆分出来的安装、更新、卸载功能
 sb_install() {
     if command -v sing-box >/dev/null 2>&1; then echo -e "${Y}Sing-Box 已安装！如需更新请选择菜单[7]。${R}"; read -rs -n 1 -p ""; return; fi
     local arch=$(uname -m)
@@ -423,7 +421,6 @@ sb_uninstall() {
     rm -rf /etc/sing-box; rm -f /etc/apt/sources.list.d/sagernet.list /etc/apt/keyrings/sagernet.asc
     echo -e "${G}✅ Sing-Box 已完全卸载${R}"; read -rs -n 1 -p ""
 }
-
 sb_add_reality() {
     sb_check || return
     read -e -p "端口: " port; [[ ! "$port" =~ ^[0-9]+$ ]] && { echo -e "${RED}错误${R}"; read -rs -n 1 -p ""; return; }
@@ -524,8 +521,6 @@ sb_add_hysteria2() {
     else echo -e "${RED}❌ 校验失败${R}"; sing-box check -c "$conf" 2>&1; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"; fi
     read -rs -n 1 -p ""
 }
-
-# ★ 修复：显示节点防空白 + 修复：删除节点直接输入端口号
 sb_show_nodes_and_links() {
     sb_check || return
     local conf="/etc/sing-box/config.json"
@@ -597,7 +592,6 @@ sb_del_node() {
     else echo -e "${RED}删除后校验失败，回滚...${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; fi
     read -rs -n 1 -p ""
 }
-
 sb_menu() {
     while true; do
         clear
@@ -643,31 +637,25 @@ main_menu() {
     check_env
     while true; do
         clear
-        local sb_status_text="${gl_hui}未安装${gl_bai}"
-        if command -v sing-box >/dev/null 2>&1; then
-            if systemctl is-active --quiet sing-box 2>/dev/null; then sb_status_text="${gl_lv}● 运行中${gl_bai}"
-            else sb_status_text="${gl_red}○ 未运行${gl_bai}"; fi
-        fi
         echo -e "${gl_lv}╔══════════════════════════════════════╗"
         echo -e "║          YW 服务器优化工具箱            ║"
         echo -e "╚══════════════════════════════════════╝${gl_bai}"
         echo ""
-        echo -e "    ${gl_huang}[1] Linux 内核网络优化${gl_bai}"
+        echo -e "    ${gl_huang}[1] 系统信息查询${gl_bai}"
         echo -e "    ${gl_huang}[2] BBRv3 (XanMod内核)${gl_bai}"
-        echo -e "    ${gl_huang}[3] Swap 管理${gl_bai}"
-        echo -e "    ${gl_huang}[4] Sing-Box 管理面板${gl_bai}"
-        echo -e "          ➔ 状态: ${sb_status_text}"
-        echo -e "    ${gl_huang}[5] 系统信息查询${gl_bai}"
+        echo -e "    ${gl_huang}[3] Sing-Box 管理面板${gl_bai}"
+        echo -e "    ${gl_huang}[4] Linux 内核网络优化${gl_bai}"
+        echo -e "    ${gl_huang}[5] Swap 管理${gl_bai}"
         echo ""
         echo -e "    ${gl_hui}[0] 退出${gl_bai}"
         echo ""
         read -e -p "  请选择: " c
         case $c in
-            1) Kernel_optimize ;;
+            1) show_sys_info ;;
             2) bbrv3 ;;
-            3) change_swap_size ;;
-            4) sb_menu ;;
-            5) show_sys_info ;;
+            3) sb_menu ;;
+            4) Kernel_optimize ;;
+            5) change_swap_size ;;
             0|"") echo -e "${gl_lv}再见！${gl_bai}"; exit 0 ;;
             *) echo -e "${gl_red}无效选择${gl_bai}"; sleep 1 ;;
         esac
