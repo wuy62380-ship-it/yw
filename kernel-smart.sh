@@ -334,6 +334,18 @@ sb_add_vless_ws() {
 sb_add_hysteria2() {
     sb_check || { read -rs -n 1 -p ""; return; }
     read -e -p "主端口: " port; [[ ! "$port" =~ ^[0-9]+$ ]] && { echo -e "${RED}错误${R}"; return; }
+    
+    # ★ 智能防重复：添加前先检查端口是否已被占用
+    if [ -f "/etc/sing-box/config.json" ] && jq -e . "/etc/sing-box/config.json" >/dev/null 2>&1; then
+        local dup_port=$(jq -r --argjson p "$port" '.inbounds[] | select(.listen_port == $p) | .tag' "/etc/sing-box/config.json" 2>/dev/null)
+        if [ -n "$dup_port" ]; then
+            echo -e "${RED}❌ 端口 ${port} 已被节点 [${dup_port}] 占用！${R}"
+            echo -e "${Y}请先在菜单中选择 [6.删除节点] 删掉旧节点，或者换一个端口。${R}"
+            read -rs -n 1 -p "按任意键返回..."
+            return
+        fi
+    fi
+
     local hop_range=""; read -e -p "需要NAT端口跳跃吗？(y/n): " need_hop
     if [[ "$need_hop" =~ ^[Yy]$ ]]; then read -e -p "跳跃范围(如20000-30000): " hop_range; [[ ! "$hop_range" =~ ^[0-9]+-[0-9]+$ ]] && { echo -e "${RED}格式错${R}"; hop_range=""; }; fi
     read -e -p "密码 (回车生成): " pwd; [ -z "$pwd" ] && pwd=$(openssl rand -base64 24 | tr -d '\n/=+' | head -c 32)
@@ -342,7 +354,6 @@ sb_add_hysteria2() {
     case "$tls_choice" in
         1) read -e -p "域名: " domain; [ -z "$domain" ] && { echo -e "${RED}空${R}"; return; }; tls_obj=$(jq -n --arg d "$domain" '{"enabled":true,"server_name":$d,"acme":{"domain":$d,"directory":"/etc/sing-box/acme","email":"admin@\($d)"}}') ;;
         2) read -e -p "证书路径: " c; read -e -p "密钥路径: " k; [ ! -f "$c" ] || [ ! -f "$k" ] && { echo -e "${RED}不存在${R}"; return; }; tls_obj=$(jq -n --arg c "$c" --arg k "$k" '{"enabled":true,"certificate_path":$c,"key_path":$k}') ;;
-        # ★ 修复：去掉了服务端不支持的 "insecure": true 字段
         3) local d="/etc/sing-box/certs/hy2-${port}"; mkdir -p "$d"; openssl req -x509 -nodes -days 3650 -newkey ec:<(openssl ecparam -name prime256v1 2>/dev/null) -keyout "${d}/key.pem" -out "${d}/cert.pem" -subj "/CN=hysteria2" 2>/dev/null; tls_obj=$(jq -n --arg c "${d}/cert.pem" --arg k "${d}/key.pem" '{"enabled":true,"certificate_path":$c,"key_path":$k}') ;;
         *) return ;;
     esac
@@ -361,8 +372,7 @@ sb_add_hysteria2() {
         fi
         _save_node_meta "$port" "$nn" "hysteria2" "" "password=${pwd};hop_range=${hop_range}"; systemctl enable sing-box >/dev/null 2>&1; systemctl restart sing-box; sleep 2
         if ! systemctl is-active --quiet sing-box 2>/dev/null; then echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"; else echo -e "${G}✅ 成功 | 密码: ${pwd} | 跳跃: ${hop_range:-无}${R}"; fi
-    # ★ 修复：把具体的报错原因打印出来，方便排错
-    else echo -e "${RED}❌ 校验失败，具体原因如下：${R}"; sing-box check -c "$conf" 2>&1; echo -e "${Y}正在回滚...${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"; fi; read -rs -n 1 -p "按任意键返回..."
+    else echo -e "${RED}❌ 校验失败，具体原因：${R}"; sing-box check -c "$conf" 2>&1; echo -e "${Y}正在回滚...${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"; fi; read -rs -n 1 -p "按任意键返回..."
 }
 sb_del_node() {
     sb_check || { read -rs -n 1 -p ""; return; }; _init_meta_file
