@@ -3,8 +3,16 @@
 # Linux YW内核与网络调优模块 (YW全场景极限特化 + 中转网关专属)
 # ============================================================================
 
-: "${gl_bai:=\033[0m}"; "${gl_lv:=\033[32m}"; "${gl_huang:=\033[33m}"; "${gl_hui:=\033[90m}"; "${gl_red:=\033[31m}"; "${gl_hong:=\033[31m}"; "${gl_kjlan:=\033[32m}"
-: "${gh_proxy:=https://}"; "${tiaoyou_moshi:=默认优化模式}"
+# 修复1: 补全所有变量的冒号前缀
+: "${gl_bai:=\033[0m}"
+: "${gl_lv:=\033[32m}"
+: "${gl_huang:=\033[33m}"
+: "${gl_hui:=\033[90m}"
+: "${gl_red:=\033[31m}"
+: "${gl_hong:=\033[31m}"
+: "${gl_kjlan:=\033[32m}"
+: "${gh_proxy:=https://}"
+: "${tiaoyou_moshi:=默认优化模式}"
 
 send_stats() { :; return 0; }
 root_use() { [ "$(id -u)" -ne 0 ] && { echo -e "${gl_red}错误：请使用 root 用户运行此脚本${gl_bai}"; exit 1; }; }
@@ -47,7 +55,7 @@ change_swap_size() {
 }
 
 # ============================================================================
-# 核心优化逻辑 (输出已优化，防截断)
+# 核心优化逻辑 (完美输出版)
 # ============================================================================
 _kernel_optimize_core() {
     local mode_name="$1" scene="${2:-high}" CONF="/etc/sysctl.d/99-yw-optimize.conf"
@@ -169,7 +177,7 @@ Kernel_optimize() {
 }
 
 # ============================================================================
-# 模块 5：Sing-Box 落地机节点管理面板 (完整菜单版: 新增VLESS+WS与Hy2端口跳跃)
+# 模块 5：Sing-Box 落地机节点管理面板 (完美版)
 # ============================================================================
 R="${gl_bai}"; G="${gl_lv}"; Y="${gl_huang}"; H="${gl_hui}"; RED="${gl_red}"; C="\033[36m"; B="\033[97m"
 get_my_ip() { curl -4 -s -f --connect-timeout 3 https://ifconfig.me 2>/dev/null || curl -4 -s -f --connect-timeout 3 https://checkip.amazonaws.com 2>/dev/null || echo "未知IP"; }
@@ -183,11 +191,39 @@ _init_meta_file() { [ ! -f "$META_FILE" ] || jq -e . "$META_FILE" >/dev/null 2>&
 _save_node_meta() { _init_meta_file; jq --arg p "$1" --arg n "$2" --arg t "$3" --arg pk "${4:-}" --arg ex "${5:-}" '.[$p] = {name: $n, type: $t, pub_key: $pk, extra: $ex}' "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"; }
 _del_node_meta() { [ -f "$META_FILE" ] && jq --arg p "$1" 'del(.[$p])' "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"; }
 _get_node_meta() { [ -f "$META_FILE" ] && jq -r --arg p "$1" --arg f "$2" '.[$p][$f] // empty' "$META_FILE"; }
-open_port() { local o=0; if command -v ufw >/dev/null 2>&1 && ufw status | grep -q active; then ufw allow $1/$2 >/dev/null 2>&1 && o=1; elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then firewall-cmd --permanent --add-port=$1/$2 >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 && o=1; elif command -v iptables >/dev/null 2>&1; then iptables -C INPUT -p $2 --dport $1 -j ACCEPT >/dev/null 2>&1 || { iptables -I INPUT -p $2 --dport $1 -j ACCEPT >/dev/null 2>&1 && o=1; }; else o=1; fi; [ "$o" -eq 1 ] && echo -e "${G}  ✅ 放行 ${2^^} $1${R}" || echo -e "${Y}  ⚠ 请手动放行 ${2^^} $1${R}"; }
-open_port_range() { local o=0 s=$1 e=$2 p=${3:-udp}; if command -v ufw >/dev/null 2>&1 && ufw status | grep -q active; then ufw allow $s:$e/$p >/dev/null 2>&1 && o=1; elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then firewall-cmd --permanent --add-port=$s-$e/$p >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 && o=1; elif command -v iptables >/dev/null 2>&1; then iptables -C INPUT -p $p --dport $s:$e -j ACCEPT >/dev/null 2>&1 || { iptables -I INPUT -p $p --dport $s:$e -j ACCEPT >/dev/null 2>&1 && o=1; }; else o=1; fi; [ "$o" -eq 1 ] && echo -e "${G}  ✅ 放行 ${p^^} $s-$e${R}" || echo -e "${Y}  ⚠ 请手动放行 ${p^^} $s-$e${R}"; }
+
+# 修复2: 修复 iptables 已存在时无法识别为已放行的逻辑
+open_port() { 
+    local o=0 pr=$2
+    if command -v ufw >/dev/null 2>&1 && ufw status | grep -q active; then 
+        ufw allow $1/$pr >/dev/null 2>&1 && o=1
+    elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then 
+        firewall-cmd --permanent --add-port=$1/$pr >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 && o=1
+    elif command -v iptables >/dev/null 2>&1; then 
+        iptables -C INPUT -p $pr --dport $1 -j ACCEPT >/dev/null 2>&1 && o=1 || { iptables -I INPUT -p $pr --dport $1 -j ACCEPT >/dev/null 2>&1 && o=1; }
+    fi
+    [ "$o" -eq 1 ] && echo -e "${G}  ✅ 放行 ${pr^^} $1${R}" || echo -e "${Y}  ⚠ 请手动放行 ${pr^^} $1${R}"; 
+}
+
+open_port_range() { 
+    local o=0 pr=${3:-udp}
+    if command -v ufw >/dev/null 2>&1 && ufw status | grep -q active; then 
+        ufw allow $1:$2/$pr >/dev/null 2>&1 && o=1
+    elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then 
+        firewall-cmd --permanent --add-port=$1-$2/$pr >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 && o=1
+    elif command -v iptables >/dev/null 2>&1; then 
+        iptables -C INPUT -p $pr --dport $1:$2 -j ACCEPT >/dev/null 2>&1 && o=1 || { iptables -I INPUT -p $pr --dport $1:$2 -j ACCEPT >/dev/null 2>&1 && o=1; }
+    fi
+    [ "$o" -eq 1 ] && echo -e "${G}  ✅ 放行 ${pr^^} $1-$2${R}" || echo -e "${Y}  ⚠ 请手动放行 ${pr^^} $1-$2${R}"; 
+}
 
 sb_manage_menu() {
-    local conf="/etc/sing-box/config.json"; sb_init_conf; systemctl stop sing-box >/dev/null 2>&1
+    local conf="/etc/sing-box/config.json"
+    # 修复3: 只有在配置损坏或不存在时才重置并停止服务，避免每次进菜单都停服务
+    if [ ! -f "$conf" ] || [ ! -s "$conf" ] || ! jq -e . "$conf" >/dev/null 2>&1; then
+        sb_init_conf; systemctl stop sing-box >/dev/null 2>&1
+    fi
+
     while true; do clear; local sb_status="${RED}未安装${R}"; if command -v sing-box >/dev/null 2>&1; then if jq -e '.inbounds | length > 0' "$conf" >/dev/null 2>&1; then systemctl is-active --quiet sing-box 2>/dev/null && sb_status="${G}运行中 ✅${R}" || sb_status="${Y}已停止${R}"; else sb_status="${Y}待配置 (无节点)${R}"; fi; fi
     echo -e "${G}========================================${R}"; echo -e "${G}       Sing-Box 落地节点管理          ${R}"; echo -e "${G}========================================${R}"; echo -e "核心状态: ${sb_status}${R}"; echo -e "${G}----------------------------------------${R}"
     echo -e "${C}1.${R} 安装/更新 Sing-Box 核心"
@@ -278,7 +314,7 @@ sb_del_node() {
 }
 
 # ============================================================================
-# YW 系统优化与管理面板 - 主入口 (完整菜单版)
+# YW 系统优化与管理面板 - 主入口
 # ============================================================================
 main_menu() {
     while true; do clear
