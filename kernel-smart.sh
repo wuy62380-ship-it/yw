@@ -9,8 +9,8 @@ check_env() {
     if ! command -v openssl >/dev/null 2>&1; then echo -e "${gl_huang}安装 openssl...${gl_bai}"; need_update=1; fi
     if [ "$need_update" -eq 1 ]; then
         if command -v apt >/dev/null 2>&1; then apt-get update -y >/dev/null 2>&1; apt-get install -y curl jq openssl >/dev/null 2>&1
-        elif command -v yum >/dev/null 2>&1; then yum install -y curl jq openssl >/dev/null 2>&1
-        elif command -v apk >/dev/null 2>&1; then apk update >/dev/null 2>&1; apk add curl jq openssl >/dev/null 2>&1; fi
+        elif command -v yum >/dev/null 2>&1; then yum install -y curl jq openssl >/dev/null 2>/dev/null
+        elif command -v apk >/dev/null 2>&1; then apk update >/dev/null 2>&1; apk add curl jq openssl >/dev/null 2>/dev/null; fi
         echo -e "${gl_lv}✅ 依赖准备完毕！${gl_bai}"; fi
 }
 check_swap() {
@@ -18,7 +18,7 @@ check_swap() {
     if [ "$swap_total" -ge 512 ] || grep -q "/dev/zram" /proc/swaps 2>/dev/null; then return 0; fi
     if [ -f /swapfile ] && [ "$swap_total" -lt 512 ]; then swapon /swapfile >/dev/null 2>&1; swap_total=$(free -m | awk '/Swap/{print $2}'); [ "$swap_total" -ge 512 ] && return 0; fi
     if df / | grep -q "/$" && [ ! -f /etc/pve/.version ]; then
-        echo -e "${gl_huang}创建 512MB Swap...${gl_bai}"; dd if=/dev/zero of=/swapfile bs=1M count=512 2>/dev/null; chmod 600 /swapfile; mkswap /swapfile >/dev/null 2>&1; swapon /swapfile >/dev/null 2>&1
+        echo -e "${gl_huang}创建 512MB Swap...${gl_bai}"; dd if=/dev/zero of=/swapfile bs=1M count=512 2>/dev/null; chmod 600 /swapfile; mkswap /swapfile >/dev/null 2>&1; swapon /swapfile >/dev/null 2>/dev/null
         grep -q "/swapfile none" /etc/fstab 2>/dev/null || echo "/swapfile none swap sw 0 0" >> /etc/fstab; echo -e "${gl_lv}✅ Swap 完成。${gl_bai}"; fi
 }
 auto_setup_zram() {
@@ -26,7 +26,7 @@ auto_setup_zram() {
     if command -v apt >/dev/null 2>&1; then
         if ! command -v zramctl >/dev/null 2>&1; then apt-get install -y zram-tools >/dev/null 2>&1 || return 1; fi
         sed -i 's/^ALGO=.*/ALGO=zstd/' /etc/default/zramswap 2>/dev/null; sed -i 's/^PERCENT=.*/PERCENT=50/' /etc/default/zramswap 2>/dev/null
-        systemctl enable zramswap >/dev/null 2>&1; systemctl restart zramswap >/dev/null 2>&1; fi
+        systemctl enable zramswap >/dev/null 2>&1; systemctl restart zramswap >/dev/null 2>/dev/null; fi
 }
 check_disk_space() { local available_mb=$(df -m / | tail -1 | awk '{print $4}'); [ "$available_mb" -lt "$1" ] && { echo -e "${gl_red}磁盘不足${gl_bai}"; return 1; }; return 0; }
 install_pkg() {
@@ -45,7 +45,7 @@ change_swap_size() {
     case $c in 1) s=1024;; 2) s=2048;; 3) s=4096;; 4) s=6144;; 5) read -e -p "大小(MB): " s; [[ ! "$s" =~ ^[0-9]+$ ]] && return;; 6) swapoff "$swap_file" 2>/dev/null; rm -f "$swap_file"; sed -i '/swapfile/d' /etc/fstab; return;; 0|"") return;; esac
     [ -z "$s" ] && return
     swapoff "$swap_file" 2>/dev/null; dd if=/dev/zero of="$swap_file" bs=1M count=$s 2>/dev/null; chmod 600 "$swap_file"
-    mkswap "$swap_file" >/dev/null 2>&1; swapon "$swap_file" >/dev/null 2>&1
+    mkswap "$swap_file" >/dev/null 2>&1; swapon "$swap_file" >/dev/null 2>/dev/null
     grep -q "/swapfile" /etc/fstab 2>/dev/null || echo "/swapfile none swap sw 0 0" >> /etc/fstab
     echo -e "${gl_lv}✅ 完成${gl_bai}"; read -rs -n 1 -p ""
 }
@@ -167,6 +167,7 @@ bbrv3() {
         while true; do clear; echo "当前: $(uname -r)\n1.更新 2.卸载 0.返回"; read -e -p "选择: " c
         case $c in 1) check_disk_space 3 && check_swap && xanmod_add_repo && apt update -y && apt install -y --only-upgrade $(xanmod_detect_package) && bbr_on && server_reboot ;; 2) apt purge -y 'linux-*xanmod*' && apt autoremove -y && update-grub && rm -f /etc/apt/sources.list.d/xanmod-release.list && server_reboot ;; *) break ;; esac; done
     else clear; echo "设置BBR3"; read -e -p "继续？: " c; [[ "$c" =~ ^[Yy]$ ]] && check_disk_space 3 && check_swap && xanmod_add_repo && apt update -y && apt install -y $(xanmod_detect_package) && bbr_on && server_reboot; fi
+fi
 }
 restore_defaults() {
     rm -f /etc/sysctl.d/99-yw-optimize.conf /etc/sysctl.d/99-network-optimize.conf; sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf 2>/dev/null; sysctl --system >/dev/null 2>&1
@@ -223,8 +224,8 @@ show_sys_info() {
         local udp_count=$(ss -u state established 2>/dev/null | wc -l)
         local rx=$(awk 'NR>2 && $1 !~ /^lo:/ && $1 !~ /^sit/ {gsub(/:/,""); a+=$2} END{print a+0}' /proc/net/dev)
         local tx=$(awk 'NR>2 && $1 !~ /^lo:/ && $1 !~ /^sit/ {gsub(/:/,""); a+=$10} END{print a+0}' /proc/net/dev)
-        local rx_gb=$(awk "BEGIN{printf \"%.2f\", ${rx}/1024/1024/1024}")
-        local tx_gb=$(awk "BEGIN{printf \"%.2f\", ${tx}/1024/1024/1024}")
+        local rx_gb=$(awk "BEGIN{printf \"%.2f\", ${rx}/1024/1024/1024/1024}")
+        local tx_gb=$(awk "BEGIN{printf \"%.2f\", ${tx}/1024/1024/1024/1024}")
         local ipv4_addr=$(ip -4 addr 2>/dev/null | grep inet | grep -v "127.0.0.1" | awk '{print $2}' | head -1)
         local ipv6_addr=$(ip -6 addr 2>/dev/null | grep inet6 | grep -v "::1" | awk '{print $2}' | head -1)
         clear
@@ -269,15 +270,13 @@ show_sys_info() {
 }
 Kernel_optimize() {
     root_use
-    local scenes=("stream_game" "high" "balanced" "web" "stream" "game" "gateway")
-    local names=("直播+游戏" "高性能" "均衡" "网站" "纯直播" "纯游戏" "中转网关")
+    local scenes=("直播+游戏" "高性能" "均衡" "网站" "纯直播" "纯游戏" "中转网关" "还原默认" "远程脚本" "释放缓存" "验证状态")
+    local names=("直播+游戏" "高性能" "均衡" "网站" "纯直播" "纯游戏" "中转网关" "还原默认" "远程脚本" "释放缓存" "验证状态")
     while true; do
         clear
         local cur_scene=""
         [ -f /etc/sysctl.d/99-yw-optimize.conf ] && cur_scene=$(grep "^# 模式:" /etc/sysctl.d/99-yw-optimize.conf 2>/dev/null | sed 's/^# 模式: //' | awk -F'|' '{print $2}' | tr -d ' \t')
-        echo -e "${gl_lv}╔═══════════════════════════════════╗"
-        echo -e "║       Linux 内核网络优化            ║"
-        echo -e "╚═══════════════════════════════════╝${gl_bai}"
+        echo -e "${gl_lv}╔════════════════════════════════╗\n║       Linux 内核网络优化            ║\n╚════════════════════════╗${gl_bai}"
         echo ""
         local i=0
         while [ $i -lt 7 ]; do
@@ -318,7 +317,7 @@ Kernel_optimize() {
 }
 R="${gl_bai}"; G="${gl_lv}"; Y="${gl_huang}"; H="${gl_hui}"; RED="${gl_red}"; C="\033[36m"
 get_my_ip() { curl -4 -s -f --connect-timeout 3 https://ifconfig.me 2>/dev/null || curl -4 -s -f --connect-timeout 3 https://checkip.amazonaws.com 2>/dev/null || echo "未知IP"; }
-url_encode() { printf '%s' "$1" | sed 's/+/%2B/g; s/\//%2F/g; s/=/%3D/g; s/ /%20/g; s/#/%23/g; s/?/%3F/g; s/&/%26/g; s/@/%40/g'; }
+url_encode() { printf '%s' "$1" | sed 's/+/%2B/g; s/\//%2F/g; s/=/%3D/g; s/ /%20/g; s/#/%23/g; s/?/%3F/g; s/&/%26/g; s/@/%40/g';'; }
 _test_tls_once() {
     local host="$1" t1 t2 ms
     t1=$(date +%s%3N 2>/dev/null)
@@ -350,62 +349,13 @@ _init_meta_file() { [ ! -f "$META_FILE" ] || ! jq -e . "$META_FILE" >/dev/null 2
 _save_node_meta() {
     _init_meta_file
     local tmp="/tmp/sb_meta.json.$$"
-    if [ -n "$4" ]; then jq --arg p "$1" --arg n "$2" --arg t "$3" --arg pk "$4" --arg ex "$5" '.[$p] = {"name": $n, "type": $t, "pub_key": $pk, "extra": $ex}' "$META_FILE" > "$tmp"
-    else jq --arg p "$1" --arg n "$2" --arg t "$3" --arg ex "$5" '.[$p] = {"name": $n, "type": $t, "extra": $ex}' "$META_FILE" > "$tmp"
+    if [ -n "$4" ]; then jq --arg p "$1" --arg n "$2" --arg t "$3" --arg pk "$4" --arg ex "$5" '.[$p] = {"name": $n, "type": $t, "pub_key": $pk, "extra": $ex}' "$META_FILE" > "$tmp" && mv "$tmp" "$META_FILE"
+    else jq --arg p "$1" --arg n "$2" --arg t "$3" --arg ex "$5" '.[$p] = {"name": $n, "type": $t, "extra": $ex}' "$META_FILE" > "$tmp" && mv "$tmp" "$META_FILE"
     fi
     [ -f "$tmp" ] && { mv -f "$tmp" "$META_FILE"; chmod 600 "$META_FILE"; }
 }
 _del_node_meta() { [ -f "$META_FILE" ] && jq --arg p "$1" 'del(.[$p])' "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"; }
 _get_node_meta() { [ -f "$META_FILE" ] && jq -r --arg p "$1" --arg f "$2" '.[$p][$f] // empty' "$META_FILE"; }
-
-# ★ 新增：Sing-Box 安装/更新函数
-sb_install() {
-    local arch=$(uname -m)
-    # 检测系统支持
-    if [ "$arch" != "x86_64" ] && [ "$arch" != "aarch64" ]; then
-        echo -e "${RED}❌ 不支持 ${arch} 架构，仅支持 x86_64 和 aarch64${R}"; read -rs -n 1 -p ""; return 1
-    fi
-    if [ ! -f /etc/debian_version ] && [ ! -f /etc/ubuntu-release ]; then
-        echo -e "${RED}❌ 仅支持 Debian/Ubuntu 系统${R}"; read -r -p "" -t 3; return 1
-    fi
-    # 已安装则提示更新
-    local action="安装"
-    if command -v sing-box >/dev/null 2>&1; then
-        local cur_ver=$(sing-box version 2>/dev/null | head -1)
-        echo -e "${Y}检测到已安装: ${G}${cur_ver}${Y}"
-        read -e -p "是否更新到最新版？: " c; [[ ! "$c" =~ ^[Yy]$ ]] && return
-        action="更新"
-    else
-        echo -e "${Y}即将${action} Sing-Box (${arch})${R}"
-        read -e -p "继续？: " c; [[ ! "$c" =~ ^[Yy]$ ]] && return
-    fi
-    echo -e "${Y}正在${action}...${R}"
-    # 添加官方 GPG 密钥和源
-    install_pkg wget gnupg ca-certificates || { echo -e "${RED}依赖安装失败${R}"; read -rs -n 1 -p ""; return 1; }
-    mkdir -p /etc/apt/keyrings
-    curl -fsSL https://sing-box.app/gpg.key -o /etc/apt/keyrings/sagernet.asc 2>/dev/null
-    if [ $? -ne 0 ] || [ ! -s /etc/apt/keyrings/sagernet.asc ]; then
-        echo -e "${RED}GPG 密钥下载失败，尝试备用源...${R}"
-        curl -fsSL ${gh_proxy}sing-box.app/gpg.key -o /etc/apt/keyrings/sagernet.asc 2>/dev/null
-        if [ $? -ne 0 ] || [ ! -s /etc/apt/keyrings/sagernet.asc ]; then echo -e "${RED}备用源也失败，请检查网络${R}"; read -s -n 1 -p ""; return 1; fi
-    fi
-    chmod a+r /etc/apt/keyrings/sagernet.asc
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/sagernet.asc] https://deb.sagernet.org/ * *" > /etc/apt/sources.list.d/sagernet.list
-    # 安装/更新
-    apt-get update -y 2>&1 | tail -1
-    apt-get install -y sing-box 2>&1 | tail -3
-    if ! command -v sing-box >/dev/null 2>&1; then
-        echo -e "${RED}❌ ${action}失败${R}"; read -rs -n 1 -p ""; return 1
-    fi
-    # 创建配置目录和空配置
-    mkdir -p /etc/sing-box
-    sb_init_conf
-    systemctl enable sing-box >/dev/null 2>&1
-    local ver=$(sing-box version 2>/dev/null | head -1)
-    echo -e "${G}✅ ${action}成功 | 版本: ${ver}${R}"
-    read -rs -n 1 -p ""
-}
-
 _open_single_port() {
     local port=$1 proto="${2:-tcp}" opened=0
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
@@ -429,8 +379,7 @@ open_port_range() {
         if ufw status 2>/dev/null | grep -qE "${start_port}:${end_port}/${proto}[[:space:]]"; then opened=1
         else ufw allow ${start_port}:${end_port}/${proto} >/dev/null 2>&1 && opened=1; fi
     elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
-        firewall-cmd --permanent --add-port=${start_port}-${end_port}/${proto} >/dev/null 2>&1
-        firewall-cmd --reload >/dev/null 2>&1 && opened=1
+        firewall-cmd --permanent --add-port=${start_port}-${end_port}/${proto} >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 && opened=1
     elif command -v iptables >/dev/null 2>&1; then
         iptables -C INPUT -p ${proto} --dport ${start_port}:${end_port} -j ACCEPT >/dev/null 2>&1 && opened=1 || \
         iptables -I INPUT -p ${proto} --dport ${start_port}:${end_port} -j ACCEPT >/dev/null 2>&1 && opened=1
@@ -453,6 +402,45 @@ _ensure_rc_local() {
 _persist_iptables() {
     command -v iptables-save >/dev/null 2>/dev/null || return
     iptables-save > /etc/iptables.rules 2>/dev/null; _ensure_rc_local
+}
+sb_install() {
+    local arch=$(uname -m)
+    if [ "$arch" != "x86_64" ] && [ "$arch" != "aarch64" ]; then
+        echo -e "${RED}❌ 不支持 ${arch} 架构，仅支持 x86_64 和 aarch64${R}"; read -rs -n 1 -p ""; return 1
+    fi
+    if [ ! -f /etc/debian_version ] && [ ! -f /etc/ubuntu-release ]; then
+        echo -e "${RED}❌ 仅支持 Debian/Ubuntu 系统${R}"; read -r -p "" -t 3; return 1
+    fi
+    local action="安装"
+    if command -v sing-box >/dev/null 2>&1; then
+        local cur_ver=$(sing-box version 2>/dev/null | head -1)
+        echo -e "${Y}检测到已安装: ${G}${cur_ver}${Y}"
+        read -e -p "是否更新到最新版？: " c; [[ ! "$c" =~ ^[Yy]$ ]] && return
+        action="更新"
+    else
+        echo -e "${Y}即将${action} Sing-Box (${arch})${R}"
+        read -e -p "继续？: " c; [[ ! "$c" =~ ^[Yy]$ ]] && return
+    fi
+    echo -e "${Y}正在${action}...${R}"
+    install_pkg wget gnupg ca-certificates || { echo -e "${RED}依赖安装失败${R}"; read -s -n 1 -p ""; return 1; }
+    mkdir -p /etc/apt/keyrings
+    curl -fsSL https://sing-box.app/gpg.key -o /etc/apt/keyrings/sagernet.asc 2>/dev/null
+    [ $? -ne 0 ] || [ ! -s /etc/apt/keyrings/sagernet.asc ]; then
+        curl -fsSL ${gh_proxy}sing-box.app/gpg.key -o /etc/apt/keyrings/sagernet.asc 2>/dev/null
+        if [ $? -ne 0 ] || [ ! -s /etc/apt/keyrings/sagernet.asc ]; then echo -e "${RED}GPG 下载失败，检查网络${R}"; read -s -n 1 -p ""; return 1; fi
+    fi
+    chmod a+r /etc/apt/keyrings/sagernet.asc
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/sagernet.asc] https://deb.sagernet.org/ * *" > /etc/apt/sources.list.d/sagernet.list
+    apt-get update -y 2>&1 | tail -1
+    apt-get install -y sing-box 2>&1 | tail -3
+    if ! command -v sing-box >/dev/null 2>&1; then
+        echo -e "${RED}❌ ${action}失败${R}"; read -s -n 1 -p ""; return 1
+    fi
+    mkdir -p /etc/sing-box; sb_init_conf
+    systemctl enable sing-box >/dev/null 2>&1
+    local ver=$(sing-box version 2>/dev/null | head -1)
+    echo -e "${G}✅ ${action}成功 | 版本: ${ver}${R}"
+    read -rs -n 1 -p ""
 }
 sb_add_reality() {
     sb_check || { read -rs -n 1 -p ""; return; }
@@ -519,7 +507,6 @@ sb_add_hysteria2() {
     if [ -f "/etc/sing-box/config.json" ] && jq -e . "/etc/sing-box/config.json" >/dev/null 2>&1; then
         local dup_port=$(jq -r --argjson p "$port" '.inbounds[] | select(.listen_port == $p) | .tag' "/etc/sing-box/config.json" 2>/dev/null)
         if [ -n "$dup_port" ]; then echo -e "${RED}❌ 端口 ${port} 已被 [${dup_port}] 占用！${R}"; read -rs -n 1 -p ""; return; fi
-    fi
     local hop_range=""; read -e -p "需要NAT端口跳跃吗？(y/n): " need_hop
     if [[ "$need_hop" =~ ^[Yy]$ ]]; then
         read -e -p "跳跃范围(如20000-21000): " hop_range
@@ -538,7 +525,7 @@ sb_add_hysteria2() {
         2) local c k; read -e -p "证书路径: " c; read -e -p "密钥路径: " k; [ ! -f "$c" ] || [ ! -f "$k" ] && { echo -e "${RED}不存在${R}"; return; }; tls_obj=$(jq -n --arg c "$c" --arg k "$k" '{"enabled":true,"certificate_path":$c,"key_path":$k}'); tls_method="manual" ;;
         3) local d="/etc/sing-box/certs/hy2-${port}"; mkdir -p "$d"; openssl req -x509 -nodes -days 3650 -newkey rsa:2048 -keyout "${d}/key.pem" -out "${d}/cert.pem" -subj "/CN=hysteria2" 2>/dev/null; if [ ! -f "${d}/cert.pem" ] || [ ! -f "${d}/key.pem" ]; then echo -e "${RED}证书生成失败${R}"; return; fi; tls_obj=$(jq -n --arg c "${d}/cert.pem" --arg k "${d}/key.pem" '{"enabled":true,"certificate_path":$c,"key_path":$k}'); tls_method="selfsign" ;;
         *) return ;;
-    esac
+    fi
     sb_init_conf; local conf="/etc/sing-box/config.json"; cp "$conf" "${conf}.bak.$(date +%s)"
     local ij=$(jq -n --argjson p "$port" --arg pwd "$pwd" --argjson tls "$tls_obj" '{"type":"hysteria2","tag":("hysteria2-"+($p|tostring)),"listen":"::","listen_port":$p,"up_mbps":100,"down_mbps":100,"users":[{"password":$pwd}],"tls":$tls}')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
@@ -554,7 +541,7 @@ sb_add_hysteria2() {
                 fi
                 if [ -n "$hop_range" ] && command -v iptables >/dev/null 2>&1; then
                     modprobe iptable_nat 2>/dev/null
-                    iptables -t nat -A PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${port}
+                    iptables -t nat -A PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${port}"
                     echo -e "${G}✅ NAT跳跃: UDP ${hop_start}-${hop_end} -> ${port}${R}"
                     _persist_iptables
                 fi
@@ -623,9 +610,9 @@ sb_show_nodes_and_links() {
                         link="vless://${uuid}@${server_ip}:${port}?encryption=none${flow_param}&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp#$(url_encode "$nn")"
                     else
                         ws_path=$(echo "$obj" | jq -r '.transport.path // empty' 2>/dev/null)
-                        link="vless://${uuid}@${server_ip}:${port}?encryption=none&security=none&type=ws&path=$(url_encode "${ws_path:-/}")#$(url_encode "$nn")"
+                        link="vless://${uuid}@${server_ip}:${port}?encryption=none&security=none&type=ws&path=$(url_encode "${ws_path:-/}")#$(url_encode "$nn")${R}"
                     fi
-                }
+                fi
                 ;;
             hysteria2)
                 local pwd sni insecure="0" sni_param=""
@@ -634,8 +621,8 @@ sb_show_nodes_and_links() {
                     sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null)
                     echo "$ex" | grep -q "tls_method=selfsign" && insecure="1"
                     [ -n "$sni" ] && sni_param="&sni=${sni}"
-                    link="hysteria2://$(url_encode "$pwd")@${server_ip}:${port}?insecure=${insecure}${sni_param}#$(url_encode "$nn")"
-                }
+                    link="hysteria2://$(url_encode "$pwd")@${server_ip}:${port}?insecure=${insecure}${sni_param}#$(url_encode "$nn")${R}"
+                fi
                 ;;
         esac
         [ -n "$link" ] && echo -e "${C}${link}${R}"
@@ -646,11 +633,11 @@ sb_show_nodes_and_links() {
     read -rs -n 1 -p ""
 }
 sb_del_node() {
-    sb_check || { read -rs -n 1 -p ""; return; }
+    sb_check || { read -s -n 1 -p ""; return; }
     local conf="/etc/sing-box/config.json"
-    [ ! -f "$conf" ] || ! jq -e . "$conf" >/dev/null 2>&1 && { echo -e "${Y}无节点${R}"; read -rs -n 1 -p ""; return; }
+    [ ! -f "$conf" ] || ! jq -e . "$conf" >/dev/null 2>&1 && { echo -e "${Y}无节点${R}"; read -s -n 1 -p ""; return; }
     echo -e "${Y}===== 删除节点 =====${R}"
-    local idx=1
+    local idx=1 ports=()
     while IFS= read -r b64_obj; do
         local obj; obj=$(echo "$b64_obj" | base64 -d 2>/dev/null); [ -z "$obj" ] && continue
         local port; port=$(echo "$obj" | jq -r '.listen_port // empty' 2>/dev/null); [ -z "$port" ] && continue
@@ -665,7 +652,7 @@ sb_del_node() {
         echo -e "${G}[${idx}] 端口: ${port}${hop_info} | ${nn}${R}"
         idx=$((idx + 1))
     done < <(jq -r '.inbounds[] | @base64' "$conf" 2>/dev/null)
-    [ $idx -eq 1 ] && { echo -e "${Y}无节点${R}"; read -rs -n 1 -p ""; return; }
+    [ $idx -eq 1 ] && { echo -e "${Y}无节点${R}"; read -s -n 1 -p ""; return; }
     echo -e "${H}输入端口号或编号直接删除，0返回${R}"
     read -e -p "删除: " del_input
     [ -z "$del_input" ] && return
@@ -673,8 +660,7 @@ sb_del_node() {
     local del_port=""
     if [[ "$del_input" =~ ^[0-9]+$ ]]; then
         local found_port=$(jq -r --argjson p "$del_input" '.inbounds[] | select(.listen_port == $p) | .listen_port' "$conf" 2>/dev/null | head -1)
-        if [ -n "$found_port" ]; then
-            del_port="$found_port"
+        if [ -n "$found_port" ]; then del_port="$found_port"
         else
             local idx2=1
             while IFS= read -r b64_obj; do
@@ -696,7 +682,7 @@ sb_del_node() {
         local old_hop=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+')
         if [ -n "$old_hop" ] && [[ "$old_hop" =~ ^[0-9]+-[0-9]+$ ]]; then
             local hop_start="${old_hop%-*}" hop_end="${old_hop#*-}" main_nic=$(ip route | grep default | awk '{print $5}' | head -1)
-            if [ -n "$main_nic" ] && command -v iptables >/dev/null 2>/dev/null; then
+            if [ -n "$main_nic" ] && command -v iptables >/dev/null 2>&1; then
                 iptables -t nat -D PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${del_port} 2>/dev/null
                 iptables -D INPUT -p udp --dport ${hop_start}:${hop_end} -j ACCEPT 2>/dev/null
                 echo -e "${Y}已清理 NAT 规则 (UDP ${hop_start}-${hop_end})${R}"
@@ -704,75 +690,72 @@ sb_del_node() {
             fi
         fi
     fi
-    if jq --argjson p "$del_port" '.inbounds = [.inbounds[] | select(.listen_port != $p)]' "$conf" > /tmp/sb_cfg.json 2>/dev/null; then
-        mv -f /tmp/sb_cfg.json "$conf"
-        _del_node_meta "$del_port"
-        if jq -e '.inbounds | length > 0' "$conf" >/dev/null 2>&1; then
-            systemctl restart sing-box 2>/dev/null
-        else
-            systemctl stop sing-box 2>/dev/null
-            systemctl disable sing-box 2>/dev/null
-        fi
-        echo -e "${G}✅ 已删除端口 ${del_port} 的节点 [${del_nn}]${R}"
+    if jq --argjson p "$del_port" '.inbounds = [.inbounds[] | select(.listen_port != $p)]' "$conf" > /tmp/sb_cfg.json 2>/dev/null && mv -f /tmp/sb_cfg.json "$conf"
+    _del_node_meta "$del_port"
+    if jq -e '.inbounds | length > 0' "$conf" >/dev/null 2>&1; then
+        systemctl restart sing-box 2>/dev/null
     else
-        echo -e "${RED}❌ 删除失败${R}"
+        systemctl stop sing-box 2>/dev/null; systemctl disable sing-box 2>/dev/null
     fi
+    echo -e "${G}✅ 已删除端口 ${del_port} 的节点 [${del_nn}]${R}"
+else
+    echo -e "${RED}❌ 删除失败${R}"
     read -rs -n 1 -p "按任意键返回..."
 }
-
-# ★ 重写菜单：未安装时高亮提示，已安装显示版本号
-singbox_manager() {
-    root_use
+# ★ 通用上下键菜单选择器 - 支持方向键 + 数字 + 0/Q 返回
+# 参数: items 数组 (整个数组引用)
+# 返回: 选中的索引，-1 表示返回上一级
+menu_select() {
+    local -n items=("$@")
+    local total=${#items[@]}
+    [ "$total" -eq 0 ] && return -1
+    local cur=0
+    local use_arrows=0
+    [ -t 0 ] && use_arrows=1
     while true; do
-        clear
-        local sb_installed=0 sb_version="" sb_status="${RED}未安装${R}" sb_ver_line=""
-        if command -v sing-box >/dev/null 2>&1; then
-            sb_installed=1
-            sb_version=$(sing-box version 2>/dev/null | head -1)
-            if systemctl is-active --quiet sing-box 2>/dev/null; then sb_status="${G}运行中${R}"
-            else sb_status="${Y}已停止${R}"
+        local i=0
+        while [ $i -lt "$total" ]; do
+            if [ "$i" -eq "$cur" ]; then
+                printf "  \033[33m▶ \033[32m%s \033[33m◀\033[0m\n" "${items[$i]}"
+            else
+                printf "    \033[90m%s\033[0m\n" "${items[$i]}"
             fi
-            sb_ver_line=" | 版本: ${Y}${sb_version}${R}"
-        fi
-
-        echo -e "${C}╔═══════════════════════════════════╗"
-        echo -e "║       Sing-Box 节点管理              ║"
-        echo -e "╚═══════════════════════════════════╝${gl_bai}"
-        echo -e "  状态: ${sb_status}${sb_ver_line}"
-        echo ""
-
-        if [ "$sb_installed" -eq 0 ]; then
-            # 未安装：高亮安装选项
-            echo -e "  ${gl_huang}▶ ${gl_lv}[0] 安装 Sing-Box  ◀${gl_bai}"
-            echo -e "    ${gl_hui}─────────────────────────────${gl_bai}"
+            i=$((i + 1))
+        done
+        if [ "$use_arrows" -eq 1 ]; then
+            printf "    \033[90m↑↓ 选择  回车确认  0/Q 返回\033[0m\n"
         else
-            echo -e "  ${gl_hui}[0] 安装/更新 Sing-Box${gl_bai}"
+            printf "    \033[90m输入编号选择，回车确认，0/Q 返回\033[0m\n"
         fi
-
-        echo -e "  ${gl_hui}[1] VLESS Reality${gl_bai}"
-        echo -e "  ${gl_hui}[2] VLESS+WS${gl_bai}"
-        echo -e "  ${gl_hui}[3] Hysteria2${gl_bai}"
-        echo -e "  ${gl_hui}[4] 节点与链接${gl_bai}"
-        echo -e "  ${gl_hui}[5] 删除节点${gl_bai}"
-        echo -e "  ${gl_hui}─────────────────────────────${gl_bai}"
-        echo -e "  ${gl_hui}[6] 重启服务${gl_bai}"
-        echo -e "  ${gl_hui}[7] 停止服务${gl_bai}"
-        echo -e "  ${gl_hui}[8] 查看日志${gl_bai}"
-        echo ""
-        echo -e "    ${gl_hui}[Q] 返回${gl_bai}"
-        echo ""
-        read -e -p "  选择: " c
-        case $c in
-            0|Q|q|"") break ;;
-            1) sb_install ;; 2) sb_add_reality ;; 3) sb_add_vless_ws ;; 4) sb_add_hysteria2 ;; 5) sb_show_nodes_and_links ;; 6) sb_del_node ;; 7) systemctl restart sing-box && echo -e "${G}✅ 已重启${R}" ;; 8) systemctl stop sing-box && echo -e "${Y}已停止${R}" ;; 9) journalctl -u sing-box -n 30 --no-pager ;;
-            *) echo -e "${H}无效选项${H}" ;;
+        local key=""
+        read -r key
+        case "$key" in
+            A|k) cur=$((cur - 1)); [ "$cur" -lt 0 ] && cur=$((total - 1)) ;;
+            B|j) cur=$((cur + 1)); [ "$cur" -ge "$total" ] && cur=0 ;;
+            "") return "$cur" ;;
+            0|q|Q) return -1 ;;
+            [0-9]*)
+                local num="${key##0}"; [ -n "$num" ] && [ "$num" -ge 0 ] && [ "$num" -lt "$total" ] && { cur=$num; continue; }
+                ;;
         esac
-        read -rs -n 1 -p ""
     done
 }
 main_menu() {
-    while true; do clear; echo -e "${gl_lv}╔═══════════════════════════════════╗\n║       服务器综合管理                    ║\n╚═══════════════════════════════════╝${gl_bai}\n\n  1. 系统信息\n  2. 内核优化\n  3. BBRv3/XanMod\n  4. Swap管理\n  ${gl_hong}  5. Sing-Box节点管理${gl_bai}\n  0. 退出${gl_lv}\n"
-        read -e -p "  选择: " c
-        case $c in 1) show_sys_info ;; 2) Kernel_optimize ;; 3) bbrv3 ;; 4) change_swap_size ;; 5) singbox_manager ;; 0|"") exit 0 ;; esac; done
+    while true; do
+        clear
+        local items=("系统信息" "内核优化" "BBRv3/XanMod" "Swap管理" "Sing-Box节点管理" "退出")
+        local sel
+        sel=$(menu_select "${items[@]}")
+        [ "$sel" -eq -1 ] && break
+        case "$sel" in
+            0|5) exit 0 ;;
+            1) show_sys_info ;;
+            2) Kernel_optimize ;;
+            3) bbrv3 ;;
+            4) change_swap_size ;;
+            5) singbox_manager ;;
+        esac
+        read -rs -n 1 -p ""
+    done
 }
 check_env; main_menu
