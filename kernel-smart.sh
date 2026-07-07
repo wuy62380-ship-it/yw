@@ -345,18 +345,10 @@ sb_add_vless_ws() {
 sb_add_hysteria2() {
     sb_check || { read -rs -n 1 -p ""; return; }
     read -e -p "主端口: " port; [[ ! "$port" =~ ^[0-9]+$ ]] && { echo -e "${RED}错误${R}"; return; }
-    
-    # ★ 智能防重复：添加前先检查端口是否已被占用
     if [ -f "/etc/sing-box/config.json" ] && jq -e . "/etc/sing-box/config.json" >/dev/null 2>&1; then
         local dup_port=$(jq -r --argjson p "$port" '.inbounds[] | select(.listen_port == $p) | .tag' "/etc/sing-box/config.json" 2>/dev/null)
-        if [ -n "$dup_port" ]; then
-            echo -e "${RED}❌ 端口 ${port} 已被节点 [${dup_port}] 占用！${R}"
-            echo -e "${Y}请先在菜单中选择 [6.删除节点] 删掉旧节点，或者换一个端口。${R}"
-            read -rs -n 1 -p "按任意键返回..."
-            return
-        fi
+        if [ -n "$dup_port" ]; then echo -e "${RED}❌ 端口 ${port} 已被 [${dup_port}] 占用！${R}"; read -rs -n 1 -p ""; return; fi
     fi
-
     local hop_range=""; read -e -p "需要NAT端口跳跃吗？(y/n): " need_hop
     if [[ "$need_hop" =~ ^[Yy]$ ]]; then read -e -p "跳跃范围(如20000-30000): " hop_range; [[ ! "$hop_range" =~ ^[0-9]+-[0-9]+$ ]] && { echo -e "${RED}格式错${R}"; hop_range=""; }; fi
     read -e -p "密码 (回车生成): " pwd; [ -z "$pwd" ] && pwd=$(openssl rand -base64 24 | tr -d '\n/=+' | head -c 32)
@@ -393,9 +385,7 @@ sb_del_node() {
     [ "$del_idx" -lt 1 ] || [ "$del_idx" -gt ${#ports[@]} ] && { echo -e "${RED}超范围${R}"; return; }
     local del_port="${ports[$((del_idx - 1))]}" del_type=$(_get_node_meta "$del_port" "type") del_tag=""
     case "$del_type" in vless-reality) del_tag="vless-reality-${del_port}" ;; vless-ws) del_tag="vless-ws-${del_port}" ;; hysteria2) del_tag="hysteria2-${del_port}" ;; esac
-    local conf="/etc/sing-box/config.json"; cp "$conf" "${conf}.bak.$(date +%s)"
-    
-    # 清理 NAT 规则
+    local conf="/etc/sing-box/config.json"
     local ex=$(_get_node_meta "$del_port" "extra")
     if echo "$ex" | grep -q "hop_range="; then
         local old_hop=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+')
@@ -404,25 +394,11 @@ sb_del_node() {
             [ -n "$main_nic" ] && { iptables -t nat -D PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${del_port} 2>/dev/null; echo -e "${Y}已清理 NAT 规则${R}"; command -v iptables-save >/dev/null 2>&1 && iptables-save > /etc/iptables.rules 2>/dev/null; }
         fi
     fi
-
-    # ★ 核心修复：只要 jq 成功把节点从配置里剔除，就坚决生效，绝不用备份覆盖回来！
     local jq_ok=0
-    if [ -n "$del_tag" ]; then
-        if jq --arg t "$del_tag" '.inbounds = [.inbounds[] | select(.tag != $t)]' "$conf" > /tmp/sb_cfg.json 2>/dev/null; then
-            mv /tmp/sb_cfg.json "$conf"
-            jq_ok=1
-        fi
-    else
-        jq_ok=1
-    fi
-
-    if [ "$jq_ok" -eq 1 ]; then
-        _del_node_meta "$del_port"
-        systemctl restart sing-box 2>/dev/null
-        echo -e "${G}✅ 已彻底删除${R}"
-    else
-        echo -e "${RED}❌ 删除失败，配置可能损坏${R}"
-    fi
+    if [ -n "$del_tag" ] && [ -f "$conf" ]; then
+        if jq --arg t "$del_tag" '.inbounds = [.inbounds[] | select(.tag != $t)]' "$conf" > /tmp/sb_cfg.json 2>/dev/null; then mv /tmp/sb_cfg.json "$conf"; jq_ok=1; fi
+    else jq_ok=1; fi
+    if [ "$jq_ok" -eq 1 ]; then _del_node_meta "$del_port"; systemctl restart sing-box 2>/dev/null; echo -e "${G}✅ 已彻底删除${R}"; else echo -e "${RED}❌ 删除失败${R}"; fi
     read -rs -n 1 -p "按任意键返回..."
 }
 sb_list_nodes() {
@@ -443,8 +419,6 @@ sb_gen_links() {
     local server_ip; server_ip=$(get_my_ip); [ "$server_ip" = "未知IP" ] && { read -e -p "无法获取IP，手动输入: " server_ip; [ -z "$server_ip" ] && return; }
     echo -e "${Y}===== 客户端链接 =====\n服务器: ${G}${server_ip}${R}\n${Y}========================${R}\n"
     local link_count=0
-    
-    # ★ 核心修复：把 while 前面的管道符改成 < <(进程替换)，这样 link_count 才能正确累加！
     while IFS= read -r b64_obj; do
         local obj; obj=$(echo "$b64_obj" | base64 -d 2>/dev/null); [ -z "$obj" ] && continue
         local inb_type; inb_type=$(echo "$obj" | jq -r '.type // empty' 2>/dev/null); [ -z "$inb_type" ] && continue
@@ -471,7 +445,6 @@ sb_gen_links() {
         esac
         if [ -n "$link" ]; then echo -e "${G}[$((link_count + 1))] ${node_name}${R}\n${H}${link}${R}\n"; link_count=$((link_count + 1)); fi
     done < <(jq -r '.inbounds[] | @base64' "$conf" 2>/dev/null)
-    
     [ "$link_count" -eq 0 ] && echo -e "${Y}无链接${R}" || echo -e "${Y}===== 共 ${link_count} 条 =====${R}"; read -rs -n 1 -p "按任意键返回..."
 }
 singbox_manager() {
