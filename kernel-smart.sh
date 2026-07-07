@@ -44,7 +44,7 @@ change_swap_size() {
     read -e -p "选择: " c; local s=""
     case $c in 1) s=1024;; 2) s=2048;; 3) s=4096;; 4) s=6144;; 5) read -e -p "大小(MB): " s; [[ ! "$s" =~ ^[0-9]+$ ]] && return;; 6) swapoff "$swap_file" 2>/dev/null; rm -f "$swap_file"; sed -i '/swapfile/d' /etc/fstab; return;; 0|"") return;; esac
     [ -z "$s" ] && return
-    swapoff "$swap_file" 2>/dev/null; dd if=/dev/zero of="$swap_file" bs=1M count=$s 2>/dev/null; chmod 600 "$swap_file"; mkswap "$swap_file" >/dev/null 2>&1; swapon "$swap_file" >/dev/null 2>&1
+    swapoff "$swap_file" 2>/dev/null; dd if=/dev/zero of="$swap_file" bs=1M count=$s 2>/dev/null; chmod 600 "$swap_file"; mkswap "$swapfile" >/dev/null 2>&1; swapon "$swapfile" >/dev/null 2>&1
     grep -q "/swapfile" /etc/fstab 2>/dev/null || echo "/swapfile none swap sw 0 0" >> /etc/fstab; echo -e "${gl_lv}✅ 完成${gl_bai}"; read -rs -n 1 -p ""
 }
 _kernel_optimize_core() {
@@ -410,58 +410,41 @@ sb_add_hysteria2() {
         if [ -n "$hop_range" ]; then
             local hop_start="${hop_range%-*}" hop_end="${hop_range#*-}" main_nic=$(ip route | grep default | awk '{print $5}' | head -1)
             open_port_range "$hop_start" "$hop_end" "udp"
-            # ★ 修复：先检测 iptables 是否存在，不存在则安装或提示
             if [ -n "$main_nic" ]; then
                 if ! command -v iptables >/dev/null 2>&1; then
                     echo -e "${Y}  ⚠ 未安装 iptables，正在自动安装...${R}"
-                    if install_pkg iptables; then
-                        echo -e "${G}  ✅ iptables 安装成功${R}"
-                    else
-                        echo -e "${RED}  ❌ iptables 安装失败，NAT 端口跳跃将不生效，请手动安装: apt install iptables${R}"
-                        hop_range=""
-                    fi
+                    if install_pkg iptables; then echo -e "${G}  ✅ iptables 安装成功${R}"; else echo -e "${RED}  ❌ iptables 安装失败，NAT 端口跳跃将不生效${R}"; hop_range=""; fi
                 fi
                 if [ -n "$hop_range" ] && command -v iptables >/dev/null 2>&1; then
-                    # 加载 nat 表模块
                     modprobe iptable_nat 2>/dev/null
                     iptables -t nat -A PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${port}
                     echo -e "${G}✅ NAT跳跃: UDP ${hop_start}-${hop_end} -> ${port}${R}"
                     command -v iptables-save >/dev/null 2>&1 && { iptables-save > /etc/iptables.rules 2>/dev/null; grep -q "iptables-restore" /etc/rc.local 2>/dev/null || sed -i '/^exit 0/i iptables-restore < /etc/iptables.rules' /etc/rc.local 2>/dev/null; }
                 fi
-            else
-                echo -e "${Y}  ⚠ 未检测到默认网卡，NAT 规则未添加${R}"
-                hop_range=""
-            fi
+            else echo -e "${Y}  ⚠ 未检测到默认网卡，NAT 规则未添加${R}"; hop_range=""; fi
         fi
         _save_node_meta "$port" "$nn" "hysteria2" "" "password=${pwd};hop_range=${hop_range};tls_method=${tls_method}"
         systemctl enable sing-box >/dev/null 2>&1; systemctl restart sing-box; sleep 2
         if ! systemctl is-active --quiet sing-box 2>/dev/null; then
             echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"
-        else
-            echo -e "${G}✅ 成功 | 密码: ${pwd} | 跳跃: ${hop_range:-无}${R}"
-        fi
+        else echo -e "${G}✅ 成功 | 密码: ${pwd} | 跳跃: ${hop_range:-无}${R}"; fi
     else
         echo -e "${RED}❌ 校验失败，具体原因：${R}"; sing-box check -c "$conf" 2>&1; echo -e "${Y}正在回滚...${R}"
         local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"
     fi
     read -rs -n 1 -p "按任意键返回..."
 }
-
-# ★ 合并：节点列表 + 链接生成 = 一个函数
 sb_show_nodes_and_links() {
     sb_check || { read -rs -n 1 -p ""; return; }
     local conf="/etc/sing-box/config.json"
     [ ! -f "$conf" ] || ! jq -e . "$conf" >/dev/null 2>&1 && { echo -e "${Y}无节点${R}"; read -rs -n 1 -p ""; return; }
-
     local server_ip=$(get_my_ip)
     if [ "$server_ip" = "未知IP" ]; then
         read -e -p "无法自动获取IP，请输入服务器IP或域名: " server_ip
         [ -z "$server_ip" ] && { echo -e "${RED}地址不能为空${R}"; read -rs -n 1 -p ""; return; }
     fi
-
     echo -e "\n${Y}===== 节点列表与链接 =====${R}"
     echo -e "${H}服务器地址: ${server_ip}${R}\n"
-
     local idx=1 has_any=0
     while IFS= read -r b64_obj; do
         local obj; obj=$(echo "$b64_obj" | base64 -d 2>/dev/null); [ -z "$obj" ] && continue
@@ -469,11 +452,8 @@ sb_show_nodes_and_links() {
         local inb_type; inb_type=$(echo "$obj" | jq -r '.type // empty' 2>/dev/null)
         local tag; tag=$(echo "$obj" | jq -r '.tag // empty' 2>/dev/null)
         local nn=$(_get_node_meta "$port" "name"); [ -z "$nn" ] && nn="$tag"
-
         local display="$inb_type"
         case "$inb_type" in vless) display="VLESS" ;; hysteria2) display="Hysteria2" ;; vmess) display="VMess" ;; trojan) display="Trojan" ;; esac
-
-        # 跳跃端口信息
         local ex=$(_get_node_meta "$port" "extra")
         local hop_info=""
         local hop_range_val=""
@@ -481,11 +461,8 @@ sb_show_nodes_and_links() {
             hop_range_val=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+')
             [ -n "$hop_range_val" ] && hop_info=" | 跳跃: ${hop_range_val}"
         fi
-
         echo -e "${G}━━━ [${idx}] ${display} | 端口: ${port}${hop_info} | ${nn} ━━━${R}"
         has_any=1
-
-        # 生成链接
         local link=""
         case "$inb_type" in
             vless)
@@ -513,18 +490,11 @@ sb_show_nodes_and_links() {
                     local insecure="0"
                     if echo "$ex" | grep -q "tls_method=selfsign"; then insecure="1"; fi
                     local sni_param=""; [ -n "$sni" ] && sni_param="&sni=${sni}"
-
-                    # ★ 主链接：始终用主端口，兼容 v2rayN / NekoBox 等所有客户端
                     link="hysteria2://$(url_encode "$pwd")@${server_ip}:${port}?insecure=${insecure}${sni_param}#$(url_encode "$nn")"
                 fi
                 ;;
         esac
-
-        if [ -n "$link" ]; then
-            echo -e "${C}${link}${R}"
-        fi
-
-        # ★ 如果有跳跃端口，额外输出一条范围端口链接（仅原版 Hysteria2 客户端支持）
+        if [ -n "$link" ]; then echo -e "${C}${link}${R}"; fi
         if [ -n "$hop_range_val" ] && [ "$inb_type" = "hysteria2" ]; then
             local pwd; pwd=$(echo "$obj" | jq -r '.users[0].password // empty' 2>/dev/null)
             if [ -n "$pwd" ]; then
@@ -537,20 +507,20 @@ sb_show_nodes_and_links() {
                 echo -e "${H}${hop_link}${R}"
             fi
         fi
-
         echo ""
         idx=$((idx + 1))
     done < <(jq -r '.inbounds[] | @base64' "$conf" 2>/dev/null)
-
     [ "$has_any" -eq 0 ] && echo -e "${Y}无节点${R}"
     read -rs -n 1 -p ""
 }
 
+# ★ 重写：支持输入端口号直接删除，也支持输入编号
 sb_del_node() {
     sb_check || { read -rs -n 1 -p ""; return; }
     local conf="/etc/sing-box/config.json"
     [ ! -f "$conf" ] || ! jq -e . "$conf" >/dev/null 2>&1 && { echo -e "${Y}无节点${R}"; read -rs -n 1 -p ""; return; }
-    echo -e "${Y}===== 删除节点 =====${R}"; local idx=1 ports=()
+    echo -e "${Y}===== 删除节点 =====${R}"
+    local idx=1
     while IFS= read -r b64_obj; do
         local obj; obj=$(echo "$b64_obj" | base64 -d 2>/dev/null); [ -z "$obj" ] && continue
         local port; port=$(echo "$obj" | jq -r '.listen_port // empty' 2>/dev/null); [ -z "$port" ] && continue
@@ -563,13 +533,42 @@ sb_del_node() {
             [ -n "$hr" ] && hop_info=" | 跳跃: ${hr}"
         fi
         echo -e "${G}[${idx}] 端口: ${port}${hop_info} | ${nn}${R}"
-        ports+=("$port")
         idx=$((idx + 1))
     done < <(jq -r '.inbounds[] | @base64' "$conf" 2>/dev/null)
     [ $idx -eq 1 ] && { echo -e "${Y}无节点${R}"; read -rs -n 1 -p ""; return; }
-    read -e -p "删除编号(0返回): " del_idx; [[ ! "$del_idx" =~ ^[0-9]+$ ]] && return; [ "$del_idx" -eq 0 ] && return
-    [ "$del_idx" -lt 1 ] || [ "$del_idx" -gt ${#ports[@]} ] && { echo -e "${RED}超范围${R}"; return; }
-    local del_port="${ports[$((del_idx - 1))]}"
+    echo -e "${H}输入端口号或编号直接删除，0返回${R}"
+    read -e -p "删除: " del_input
+    [ -z "$del_input" ] && return
+    [[ "$del_input" == "0" ]] && return
+
+    local del_port=""
+    # 判断输入的是端口号还是编号
+    if [[ "$del_input" =~ ^[0-9]+$ ]]; then
+        # 先当端口号查，直接从 config 精确匹配
+        local found_port=$(jq -r --argjson p "$del_input" '.inbounds[] | select(.listen_port == $p) | .listen_port' "$conf" 2>/dev/null | head -1)
+        if [ -n "$found_port" ]; then
+            # 输入的就是端口号，直接命中
+            del_port="$found_port"
+        else
+            # 当编号查
+            local idx2=1
+            while IFS= read -r b64_obj; do
+                local obj; obj=$(echo "$b64_obj" | base64 -d 2>/dev/null); [ -z "$obj" ] && continue
+                local port; port=$(echo "$obj" | jq -r '.listen_port // empty' 2>/dev/null); [ -z "$port" ] && continue
+                if [ "$idx2" -eq "$del_input" ]; then del_port="$port"; break; fi
+                idx2=$((idx2 + 1))
+            done < <(jq -r '.inbounds[] | @base64' "$conf" 2>/dev/null)
+        fi
+    fi
+
+    [ -z "$del_port" ] && { echo -e "${RED}未找到匹配的节点${R}"; read -rs -n 1 -p ""; return; }
+
+    # 确认删除
+    local del_nn=$(_get_node_meta "$del_port" "name")
+    [ -z "$del_nn" ] && del_nn=$(jq -r --argjson p "$del_port" '.inbounds[] | select(.listen_port == $p) | .tag // "未知"' "$conf" 2>/dev/null)
+    echo -ne "${Y}确认删除 [端口:${del_port}] ${del_nn}？(y/n): ${R}"
+    read -e -p "" confirm
+    [[ ! "$confirm" =~ ^[Yy]$ ]] && { echo -e "${H}已取消${R}"; read -rs -n 1 -p ""; return; }
 
     # 清理 NAT 端口跳跃规则
     local ex=$(_get_node_meta "$del_port" "extra")
@@ -596,7 +595,7 @@ sb_del_node() {
             systemctl stop sing-box 2>/dev/null
             systemctl disable sing-box 2>/dev/null
         fi
-        echo -e "${G}✅ 已彻底删除端口 ${del_port} 的节点${R}"
+        echo -e "${G}✅ 已删除端口 ${del_port} 的节点 [${del_nn}]${R}"
     else
         echo -e "${RED}❌ 删除失败${R}"
     fi
@@ -605,7 +604,6 @@ sb_del_node() {
 singbox_manager() {
     root_use
     while true; do clear; local sb_s="${RED}未运行${R}"; systemctl is-active --quiet sing-box 2>/dev/null && sb_s="${G}运行中${R}"
-        # ★ 菜单精简：去掉重复的"节点列表"，只保留"节点与链接"
         echo -e "${C}===== Sing-Box 节点管理 =====\n状态: ${sb_s}\n1.VLESS Reality\n2.VLESS+WS\n3.Hysteria2\n4.节点与链接\n5.删除节点\n6.重启\n7.停止\n8.日志\n0.返回${R}"
         read -e -p "选择: " c
         case $c in 1) sb_add_reality ;; 2) sb_add_vless_ws ;; 3) sb_add_hysteria2 ;; 4) sb_show_nodes_and_links ;; 5) sb_del_node ;; 6) systemctl restart sing-box && echo -e "${G}已重启${R}" ;; 7) systemctl stop sing-box && echo -e "${Y}已停止${R}" ;; 8) journalctl -u sing-box -n 30 --no-pager ;; 0|"") break ;; esac; read -rs -n 1 -p ""; done
