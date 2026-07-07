@@ -378,27 +378,41 @@ sb_add_hysteria2() {
     else echo -e "${RED}❌ 校验失败，具体原因：${R}"; sing-box check -c "$conf" 2>&1; echo -e "${Y}正在回滚...${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"; fi; read -rs -n 1 -p "按任意键返回..."
 }
 sb_del_node() {
-    sb_check || { read -rs -n 1 -p ""; return; }; _init_meta_file
-    local cnt=$(jq 'length' "$META_FILE" 2>/dev/null || echo 0); [ "$cnt" -eq 0 ] && { echo -e "${Y}无节点${R}"; read -rs -n 1 -p ""; return; }
-    local idx=1 ports=(); while IFS= read -r port; do echo -e "${G}[${idx}] ${port} | $(_get_node_meta "$port" "name")${R}"; ports+=("$port"); idx=$((idx + 1)); done < <(jq -r 'keys[]' "$META_FILE" 2>/dev/null)
+    sb_check || { read -rs -n 1 -p ""; return; }
+    local conf="/etc/sing-box/config.json"
+    [ ! -f "$conf" ] || ! jq -e . "$conf" >/dev/null 2>&1 && { echo -e "${Y}无节点${R}"; read -rs -n 1 -p ""; return; }
+    echo -e "${Y}===== 删除节点 =====${R}"; local idx=1 ports=()
+    while IFS= read -r b64_obj; do
+        local obj; obj=$(echo "$b64_obj" | base64 -d 2>/dev/null); [ -z "$obj" ] && continue
+        local port; port=$(echo "$obj" | jq -r '.listen_port // empty' 2>/dev/null); [ -z "$port" ] && continue
+        local tag; tag=$(echo "$obj" | jq -r '.tag // empty' 2>/dev/null)
+        local nn=$(_get_node_meta "$port" "name"); [ -z "$nn" ] && nn="$tag"
+        echo -e "${G}[${idx}] 端口: ${port} | ${nn}${R}"
+        ports+=("$port")
+        idx=$((idx + 1))
+    done < <(jq -r '.inbounds[] | @base64' "$conf" 2>/dev/null)
+    [ $idx -eq 1 ] && { echo -e "${Y}无节点${R}"; read -rs -n 1 -p ""; return; }
     read -e -p "删除编号(0返回): " del_idx; [[ ! "$del_idx" =~ ^[0-9]+$ ]] && return; [ "$del_idx" -eq 0 ] && return
     [ "$del_idx" -lt 1 ] || [ "$del_idx" -gt ${#ports[@]} ] && { echo -e "${RED}超范围${R}"; return; }
-    local del_port="${ports[$((del_idx - 1))]}" del_type=$(_get_node_meta "$del_port" "type") del_tag=""
-    case "$del_type" in vless-reality) del_tag="vless-reality-${del_port}" ;; vless-ws) del_tag="vless-ws-${del_port}" ;; hysteria2) del_tag="hysteria2-${del_port}" ;; esac
-    local conf="/etc/sing-box/config.json"
+    local del_port="${ports[$((del_idx - 1))]}"
+    
+    # 清理 NAT
     local ex=$(_get_node_meta "$del_port" "extra")
     if echo "$ex" | grep -q "hop_range="; then
         local old_hop=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+')
         if [ -n "$old_hop" ]; then
             local hop_start="${old_hop%-*}" hop_end="${old_hop#*-}" main_nic=$(ip route | grep default | awk '{print $5}' | head -1)
-            [ -n "$main_nic" ] && { iptables -t nat -D PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${del_port} 2>/dev/null; echo -e "${Y}已清理 NAT 规则${R}"; command -v iptables-save >/dev/null 2>&1 && iptables-save > /etc/iptables.rules 2>/dev/null; }
+            [ -n "$main_nic" ] && { iptables -t nat -D PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${del_port} 2>/dev/null; echo -e "${Y}已清理 NAT${R}"; command -v iptables-save >/dev/null 2>&1 && iptables-save > /etc/iptables.rules 2>/dev/null; }
         fi
     fi
-    local jq_ok=0
-    if [ -n "$del_tag" ] && [ -f "$conf" ]; then
-        if jq --arg t "$del_tag" '.inbounds = [.inbounds[] | select(.tag != $t)]' "$conf" > /tmp/sb_cfg.json 2>/dev/null; then mv /tmp/sb_cfg.json "$conf"; jq_ok=1; fi
-    else jq_ok=1; fi
-    if [ "$jq_ok" -eq 1 ]; then _del_node_meta "$del_port"; systemctl restart sing-box 2>/dev/null; echo -e "${G}✅ 已彻底删除${R}"; else echo -e "${RED}❌ 删除失败${R}"; fi
+    
+    # ★ 终极修复：放弃匹配 tag(容易有隐藏字符坑)，直接用 --argjson 匹配纯数字的端口号，绝对精准！
+    if jq --argjson p "$del_port" '.inbounds = [.inbounds[] | select(.listen_port != $p)]' "$conf" > /tmp/sb_cfg.json 2>/dev/null; then
+        mv -f /tmp/sb_cfg.json "$conf"
+        _del_node_meta "$del_port"
+        systemctl restart sing-box 2>/dev/null
+        echo -e "${G}✅ 已彻底删除${R}"
+    else echo -e "${RED}❌ 删除失败${R}"; fi
     read -rs -n 1 -p "按任意键返回..."
 }
 sb_list_nodes() {
