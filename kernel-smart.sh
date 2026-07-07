@@ -953,25 +953,17 @@ sb_add_vless_ws() {
 }
 
 # ============================================================================
-# ★ 添加 Hysteria2 节点 (修复版: 兼容 sing-box 1.10+，不再使用 port_hop)
+# ★ 添加 Hysteria2 节点 (终极修复版: 强制纯数字端口，兼容所有版本)
 # ============================================================================
 sb_add_hysteria2() {
     sb_check || { read -rs -n 1 -p "按任意键返回..."; return; }
     echo -e "${C}========================================${R}"
     echo -e "${C}     添加 Hysteria2 落地节点            ${R}"
     echo -e "${C}========================================${R}"
-    read -e -p "起始端口: " port
+    read -e -p "监听端口: " port
     [[ ! "$port" =~ ^[0-9]+$ ]] || [[ "$port" -lt 1 ]] || [[ "$port" -gt 65535 ]] && {
         echo -e "${RED}端口错误${R}"; read -rs -n 1 -p "按任意键返回..."; return
     }
-    local listen_port_str="$port"
-    read -e -p "端口跳跃结束端口 (留空=不启用): " hop_end
-    if [[ -n "$hop_end" && "$hop_end" =~ ^[0-9]+$ && "$hop_end" -gt "$port" && "$hop_end" -le 65535 ]]; then
-        listen_port_str="${port}-${hop_end}"
-        echo -e "${G}  ✅ 端口跳跃范围: ${port} - ${hop_end}${R}"
-    else
-        echo -e "${Y}  ⚠ 不启用端口跳跃，仅监听 ${port}${R}"
-    fi
     read -e -p "密码 (回车自动生成): " pwd
     if [ -z "$pwd" ]; then
         pwd=$(openssl rand -base64 24 | tr -d '\n/=+' | head -c 32)
@@ -1010,22 +1002,25 @@ sb_add_hysteria2() {
     sb_init_conf
     local conf="/etc/sing-box/config.json"
     cp "$conf" "${conf}.bak.$(date +%s)"
-    # ★ 核心修复: listen_port 使用字符串端口范围，不再使用 port_hop 字段
+    
+    # ★ 核心修复: 使用 --argjson 将端口解析为纯数字(uint16)，彻底解决类型报错
     local ij
-    ij=$(jq -n --arg lp "$listen_port_str" --arg pwd "$pwd" --argjson tls "$tls_obj" '{
-        "type": "hysteria2", "tag": ("hysteria2-" + ($lp | split("-")[0])), "listen": "::", "listen_port": $lp,
-        "up_mbps": 100, "down_mbps": 100, "users": [{"password": $pwd}], "tls": $tls
+    ij=$(jq -n --argjson p "$port" --arg pwd "$pwd" --argjson tls "$tls_obj" '{
+        "type": "hysteria2",
+        "tag": ("hysteria2-" + ($p|tostring)),
+        "listen": "::",
+        "listen_port": $p,
+        "up_mbps": 100,
+        "down_mbps": 100,
+        "users": [{"password": $pwd}],
+        "tls": $tls
     }')
+    
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
     if sing-box check -c "$conf" >/dev/null 2>&1; then
         echo -e "${Y}----------------------------------------${R}"
         open_port_both "$port"
-        if [[ "$listen_port_str" == *-* ]]; then
-            local hop_end_val="${listen_port_str#*-}"
-            open_port_range "$port" "$hop_end_val" "tcp"
-            open_port_range "$port" "$hop_end_val" "udp"
-        fi
-        _save_node_meta "$port" "$nn" "hysteria2" "" "listen_port_range=${listen_port_str};password=${pwd}"
+        _save_node_meta "$port" "$nn" "hysteria2" "" "password=${pwd}"
         systemctl enable sing-box >/dev/null 2>&1; systemctl restart sing-box; sleep 2
         if ! systemctl is-active --quiet sing-box 2>/dev/null; then
             echo -e "${RED}❌ 服务启动失败！错误日志如下：${R}"; journalctl -u sing-box -n 15 --no-pager 2>/dev/null
@@ -1035,7 +1030,7 @@ sb_add_hysteria2() {
             _del_node_meta "$port"; read -rs -n 1 -p "按任意键返回..."; return
         fi
         echo -e "${G}✅ Hysteria2 节点添加成功！${R}"
-        echo -e "${G}  端口范围: ${listen_port_str}${R}"
+        echo -e "${G}  端口: ${port}${R}"
         echo -e "${G}  密码: ${pwd}${R}"
         echo -e "${G}  名称: ${nn}${R}"
     else
