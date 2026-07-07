@@ -174,7 +174,6 @@ EOF
     echo -e "${gl_lv}${mode_name} 完成！内存: ${MEM_MB_VAL}MB | 算法: ${CC}${gl_bai}"; read -rs -n 1 -p ""
 }
 
-# 直播承载能力评估 (内置真实测速)
 estimate_stream_capacity() {
     clear
     echo -e "${gl_huang}===== 直播承载能力评估 =====${gl_bai}"
@@ -185,19 +184,19 @@ estimate_stream_capacity() {
     local up_bw=0 down_bw=0
     
     if [ "$speed_choice" = "2" ]; then
-        echo -e "${Y}正在测试下行带宽...${R}"
+        echo -e "${gl_huang}正在测试下行带宽...${gl_bai}"
         local down_speed_bps=$(curl -o /dev/null -s -w "%{speed_download}" --max-time 15 "https://speed.cloudflare.com/__down?bytes=10000000")
         down_bw=$(awk "BEGIN{printf \"%.0f\", ${down_speed_bps:-0} * 8 / 1000000}")
         
-        echo -e "${Y}正在测试上行带宽...${R}"
+        echo -e "${gl_huang}正在测试上行带宽...${gl_bai}"
         local up_speed_bps=$(head -c 10000000 /dev/zero 2>/dev/null | curl -o /dev/null -s -w "%{speed_upload}" --max-time 15 -X POST -H "Content-Type: application/octet-stream" --data-binary @- "https://speed.cloudflare.com/__up")
         up_bw=$(awk "BEGIN{printf \"%.0f\", ${up_speed_bps:-0} * 8 / 1000000}")
         
         if [ "$up_bw" -eq 0 ] || [ "$down_bw" -eq 0 ]; then
-            echo -e "${RED}自动测速失败 (可能被云商限制或接口拦截)，请改用手动输入。${R}"
+            echo -e "${gl_red}自动测速失败 (可能被云商限制或接口拦截)，请改用手动输入。${gl_bai}"
             speed_choice="1"
         else
-            echo -e "${G}实测完成！ 上行: ${up_bw}Mbps | 下行: ${down_bw}Mbps${R}"
+            echo -e "${gl_lv}实测完成！ 上行: ${up_bw}Mbps | 下行: ${down_bw}Mbps${gl_bai}"
         fi
     fi
     
@@ -258,19 +257,19 @@ estimate_stream_capacity() {
 
 nic_extreme_optimize() {
     root_use || return
-    command -v ethtool >/dev/null 2>&1 || install_pkg ethtool || { echo -e "${RED}缺少 ethtool，无法优化${R}"; read -rs -n 1 -p ""; return; }
+    command -v ethtool >/dev/null 2>&1 || install_pkg ethtool || { echo -e "${gl_red}缺少 ethtool，无法优化${gl_bai}"; read -rs -n 1 -p ""; return; }
     
     local main_nic=$(ip route | grep default | awk '{print $5}' | head -1)
-    if [ -z "$main_nic" ]; then echo -e "${RED}未检测到默认网卡${R}"; read -rs -n 1 -p ""; return; fi
+    if [ -z "$main_nic" ]; then echo -e "${gl_red}未检测到默认网卡${gl_bai}"; read -rs -n 1 -p ""; return; fi
     
-    echo -e "${Y}正在对网卡 [${main_nic}] 进行极速满载优化...${R}"
+    echo -e "${gl_huang}正在对网卡 [${main_nic}] 进行极速满载优化...${gl_bai}"
     
     local max_rx=$(ethtool -g "$main_nic" 2>/dev/null | grep -i "RX MAX" | awk '{print $3}')
     local max_tx=$(ethtool -g "$main_nic" 2>/dev/null | grep -i "TX MAX" | awk '{print $3}')
-    if [ -n "$max_rx" ] && [ "$max_rx" -gt 0 ]; then ethtool -G "$main_nic" rx "$max_rx" tx "$max_tx" 2>/dev/null && echo -e "${G}✅ 网卡队列拉满 (RX: $max_rx, TX: $max_tx)${R}"; fi
+    if [ -n "$max_rx" ] && [ "$max_rx" -gt 0 ]; then ethtool -G "$main_nic" rx "$max_rx" tx "$max_tx" 2>/dev/null && echo -e "${gl_lv}✅ 网卡队列拉满 (RX: $max_rx, TX: $max_tx)${gl_bai}"; fi
     
-    ethtool -K "$main_nic" tso on gso on gro on 2>/dev/null && echo -e "${G}✅ 硬件卸载已开启 (TSO/GSO/GRO)${R}"
-    if ethtool -C "$main_nic" rx-usecs 50 tx-usecs 50 2>/dev/null; then echo -e "${G}✅ 中断合并优化 (50us)${R}"; fi
+    ethtool -K "$main_nic" tso on gso on gro on 2>/dev/null && echo -e "${gl_lv}✅ 硬件卸载已开启 (TSO/GSO/GRO)${gl_bai}"
+    if ethtool -C "$main_nic" rx-usecs 50 tx-usecs 50 2>/dev/null; then echo -e "${gl_lv}✅ 中断合并优化 (50us)${gl_bai}"; fi
     
     local cpu_count=$(nproc)
     local hex_len=$(( (cpu_count + 3) / 4 ))
@@ -278,7 +277,7 @@ nic_extreme_optimize() {
     for f in /sys/class/net/"$main_nic"/queues/rx-*/rps_cpus; do [ -f "$f" ] && echo "$rps_mask" > "$f" 2>/dev/null; done
     for f in /sys/class/net/"$main_nic"/queues/rx-*/rps_flow_cnt; do [ -f "$f" ] && echo "32768" > "$f" 2>/dev/null; done
     [ -f /proc/sys/net/core/rps_sock_flow_entries ] && echo "32768" > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null
-    echo -e "${G}✅ 多核 RPS/RFS 负载分发已开启 ($cpu_count 核)${R}"
+    echo -e "${gl_lv}✅ 多核 RPS/RFS 负载分发已开启 ($cpu_count 核)${gl_bai}"
 
     cat > /usr/local/bin/yw-nic-optimize.sh << EOF
 #!/bin/bash
@@ -307,8 +306,8 @@ WantedBy=multi-user.target
 EOF
     systemctl enable yw-nic-optimize.service >/dev/null 2>&1
     systemctl start yw-nic-optimize.service >/dev/null 2>&1
-    echo -e "${G}✅ 已写入开机自启守护服务${R}"
-    echo -e "${Y}建议配合内核优化 [1] 直播+游戏混合模式 食用效果最佳！${R}"
+    echo -e "${gl_lv}✅ 已写入开机自启守护服务${gl_bai}"
+    echo -e "${gl_huang}建议配合内核优化 [1] 直播+游戏混合模式 食用效果最佳！${gl_bai}"
     read -rs -n 1 -p ""
 }
 
@@ -903,13 +902,6 @@ sb_del_node() {
         fi
     fi
     del_port_both "$del_input"
-    if [ -n "$ex" ] && echo "$ex" | grep -q "hop_range="; then
-        local hop_range=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+')
-        if [ -n "$hop_range" ]; then
-            local hop_start="${hop_range%-*}" hop_end="${hop_range#*-}"
-            _del_port_range "$hop_start" "$hop_end" "tcp"
-        fi
-    fi
     
     cp "$conf" "${conf}.bak.$(date +%s)"
     jq --arg t "$found_tag" 'del(.inbounds[] | select(.tag == $t))' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
