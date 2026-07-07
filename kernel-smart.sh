@@ -255,48 +255,40 @@ estimate_stream_capacity() {
     read -rs -n 1 -p ""
 }
 
-# 专家级极速网卡优化 (强化反馈机制)
 nic_extreme_optimize() {
     root_use || return
-    echo -e "${gl_huang}正在检测网卡硬件信息...${gl_bai}"
-    command -v ethtool >/dev/null 2>&1 || install_pkg ethtool
+    clear
+    echo -e "${gl_huang}===== 极速网卡通挂满载优化 =====${gl_bai}"
+    
     if ! command -v ethtool >/dev/null 2>&1; then
-        echo -e "${gl_red}缺少 ethtool 工具且安装失败，无法优化网卡硬件层${gl_bai}"
-        read -rs -n 1 -p ""; return
+        echo -e "${gl_huang}正在安装 ethtool...${gl_bai}"
+        install_pkg ethtool >/dev/null 2>&1
+    fi
+    if ! command -v ethtool >/dev/null 2>&1; then
+        echo -e "${gl_red}缺少 ethtool 且安装失败，无法优化硬件层${gl_bai}"
+        read -rs -n 1 -p "按任意键返回..."; return
     fi
     
-    local main_nic=$(ip route | awk '$1=="default" {print $5}' | head -1)
+    local main_nic=$(ip route show default 2>/dev/null | awk '{print $5}' | head -1)
     if [ -z "$main_nic" ]; then
         echo -e "${gl_red}未检测到默认网卡，无法优化${gl_bai}"
-        read -rs -n 1 -p ""; return
+        read -rs -n 1 -p "按任意键返回..."; return
     fi
     
-    echo -e "${gl_huang}正在对网卡 [${main_nic}] 进行极速满载优化...${gl_bai}"
+    echo -e "目标网卡: ${gl_lv}${main_nic}${gl_bai}"
     
-    # 1. Ring Buffer 网卡队列拉满
     local max_rx=$(ethtool -g "$main_nic" 2>/dev/null | grep -i "RX MAX" | awk '{print $3}')
     local max_tx=$(ethtool -g "$main_nic" 2>/dev/null | grep -i "TX MAX" | awk '{print $3}')
     if [ -n "$max_rx" ] && [ "$max_rx" -gt 0 ]; then 
-        ethtool -G "$main_nic" rx "$max_rx" tx "$max_tx" 2>/dev/null && echo -e "${gl_lv}✅ 网卡队列拉满 (RX: $max_rx, TX: $max_tx)${gl_bai}"
+        ethtool -G "$main_nic" rx "$max_rx" tx "$max_tx" 2>/dev/null && echo -e "${gl_lv}✅ 网卡队列拉满${gl_bai}" || echo -e "${gl_hui}⚠ 虚拟网卡不支持调整队列${gl_bai}"
     else
-        echo -e "${gl_hui}⚠ 网卡不支持调整队列长度 (虚拟网卡常见)${gl_bai}"
+        echo -e "${gl_hui}⚠ 虚拟网卡不支持调整队列${gl_bai}"
     fi
     
-    # 2. 硬件卸载强制开启
-    if ethtool -K "$main_nic" tso on gso on gro on 2>/dev/null; then 
-        echo -e "${gl_lv}✅ 硬件卸载已开启 (TSO/GSO/GRO)${gl_bai}"
-    else
-        echo -e "${gl_hui}⚠ 网卡不支持调整硬件卸载 (虚拟网卡常见)${gl_bai}"
-    fi
+    ethtool -K "$main_nic" tso on gso on gro on 2>/dev/null && echo -e "${gl_lv}✅ 硬件卸载已开启${gl_bai}" || echo -e "${gl_hui}⚠ 虚拟网卡不支持硬件卸载${gl_bai}"
     
-    # 3. 中断合并调优
-    if ethtool -C "$main_nic" rx-usecs 50 tx-usecs 50 2>/dev/null; then 
-        echo -e "${gl_lv}✅ 中断合并优化 (50us)${gl_bai}"
-    else
-        echo -e "${gl_hui}⚠ 网卡不支持中断合并调整 (虚拟网卡常见)${gl_bai}"
-    fi
+    ethtool -C "$main_nic" rx-usecs 50 tx-usecs 50 2>/dev/null && echo -e "${gl_lv}✅ 中断合并优化${gl_bai}" || echo -e "${gl_hui}⚠ 虚拟网卡不支持中断合并${gl_bai}"
     
-    # 4. RPS/RFS 多核负载分发 (单核也会设置掩码1，无副作用)
     local cpu_count=$(nproc)
     local hex_len=$(( (cpu_count + 3) / 4 ))
     local rps_mask=$(printf 'f%.0s' $(seq 1 $hex_len))
@@ -306,49 +298,41 @@ nic_extreme_optimize() {
             echo "$rps_mask" > "$f" 2>/dev/null && rps_applied=1
         fi
     done
-    for f in /sys/class/net/"$main_nic"/queues/rx-*/rps_flow_cnt; do 
-        [ -f "$f" ] && echo "32768" > "$f" 2>/dev/null
-    done
     [ -f /proc/sys/net/core/rps_sock_flow_entries ] && echo "32768" > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null
     
     if [ "$rps_applied" -eq 1 ]; then
         echo -e "${gl_lv}✅ 多核 RPS/RFS 负载分发已开启 ($cpu_count 核)${gl_bai}"
     else
-        echo -e "${gl_hui}⚠ 未找到 RPS 配置接口 (可能宿主机限制)${gl_bai}"
+        echo -e "${gl_hui}⚠ 未找到 RPS 接口 (宿主机限制)${gl_bai}"
     fi
 
-    # 5. 持久化配置
-    cat > /usr/local/bin/yw-nic-optimize.sh << EOF
-#!/bin/bash
-NIC="\$(ip route | awk '\$1==\"default\" {print \$5}' | head -1)"
-[ -z "\$NIC" ] && exit 0
-ethtool -G \$NIC rx $max_rx tx $max_tx 2>/dev/null
-ethtool -K \$NIC tso on gso on gro on 2>/dev/null
-ethtool -C \$NIC rx-usecs 50 tx-usecs 50 2>/dev/null
-for f in /sys/class/net/\$NIC/queues/rx-*/rps_cpus; do [ -f "\$f" ] && echo "$rps_mask" > "\$f" 2>/dev/null; done
-for f in /sys/class/net/\$NIC/queues/rx-*/rps_flow_cnt; do [ -f "\$f" ] && echo "32768" > "\$f" 2>/dev/null; done
-echo "32768" > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null
-EOF
+    # 持久化配置 (简化版防截断)
+    echo "#!/bin/bash" > /usr/local/bin/yw-nic-optimize.sh
+    echo "NIC=\$(ip route show default 2>/dev/null | awk '{print \$5}' | head -1)" >> /usr/local/bin/yw-nic-optimize.sh
+    echo "[ -z \"\$NIC\" ] && exit 0" >> /usr/local/bin/yw-nic-optimize.sh
+    echo "ethtool -G \$NIC rx $max_rx tx $max_tx 2>/dev/null" >> /usr/local/bin/yw-nic-optimize.sh
+    echo "ethtool -K \$NIC tso on gso on gro on 2>/dev/null" >> /usr/local/bin/yw-nic-optimize.sh
+    echo "ethtool -C \$NIC rx-usecs 50 tx-usecs 50 2>/dev/null" >> /usr/local/bin/yw-nic-optimize.sh
+    echo "for f in /sys/class/net/\$NIC/queues/rx-*/rps_cpus; do [ -f \"\$f\" ] && echo \"$rps_mask\" > \"\$f\" 2>/dev/null; done" >> /usr/local/bin/yw-nic-optimize.sh
+    echo "echo 32768 > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null" >> /usr/local/bin/yw-nic-optimize.sh
     chmod +x /usr/local/bin/yw-nic-optimize.sh
-    cat > /etc/systemd/system/yw-nic-optimize.service << EOF
-[Unit]
-Description=YW NIC Extreme Optimize
-After=network.target
 
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/yw-nic-optimize.sh
-RemainAfterExit=yes
+    echo "[Unit]" > /etc/systemd/system/yw-nic-optimize.service
+    echo "Description=YW NIC Extreme Optimize" >> /etc/systemd/system/yw-nic-optimize.service
+    echo "After=network.target" >> /etc/systemd/system/yw-nic-optimize.service
+    echo "[Service]" >> /etc/systemd/system/yw-nic-optimize.service
+    echo "Type=oneshot" >> /etc/systemd/system/yw-nic-optimize.service
+    echo "ExecStart=/usr/local/bin/yw-nic-optimize.sh" >> /etc/systemd/system/yw-nic-optimize.service
+    echo "RemainAfterExit=yes" >> /etc/systemd/system/yw-nic-optimize.service
+    echo "[Install]" >> /etc/systemd/system/yw-nic-optimize.service
+    echo "WantedBy=multi-user.target" >> /etc/systemd/system/yw-nic-optimize.service
 
-[Install]
-WantedBy=multi-user.target
-EOF
     systemctl daemon-reload >/dev/null 2>&1
     systemctl enable yw-nic-optimize.service >/dev/null 2>&1
     echo -e "${gl_lv}✅ 已写入开机自启守护服务${gl_bai}"
     
     echo -e "${gl_huang}极速网卡通挂满载优化执行完毕！${gl_bai}"
-    read -rs -n 1 -p ""
+    read -rs -n 1 -p "按任意键返回..."
 }
 
 xanmod_add_repo() {
@@ -521,8 +505,16 @@ Kernel_optimize() {
             9) curl -sS ${gh_proxy}raw.githubusercontent.com/YW/sh/refs/heads/main/network-optimize.sh | bash ;;
             10) read -e -p "确定释放缓存？: " d; [[ "$d" =~ ^[Yy]$ ]] && sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null ;;
             11) verify_network_status ;;
-            12) clear; nic_extreme_optimize ;;
+            12) 
+                clear
+                if ! type nic_extreme_optimize &>/dev/null; then
+                    echo -e "${gl_red}错误：核心函数未加载！\n这通常是因为网络不稳定导致脚本下载不完整。\n请重新运行脚本。${gl_bai}"
+                else
+                    nic_extreme_optimize
+                fi
+                ;;
             0|"") break ;;
+            *) echo -e "${RED}无效选择${gl_bai}"; sleep 1 ;;
         esac
     done
 }
