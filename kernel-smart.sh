@@ -73,6 +73,7 @@ _kernel_optimize_core() {
     [ "$scene" = "web" ] && [ "$MEM_MB_VAL" -ge 2048 ] && TW_BUCKETS=524288; [ "$TW_BUCKETS" -gt 524288 ] && TW_BUCKETS=524288; [ "$MAX_ORPHANS" -gt 131072 ] && MAX_ORPHANS=131072
     [ -f "$CONF" ] && cp "$CONF" "${CONF}.bak.$(date +%s)"
     cat > "$CONF" << EOF
+# 模式: ${mode_name}|${scene}
 net.core.default_qdisc = $QDISC
 net.ipv4.tcp_congestion_control = $CC
 net.core.rmem_max = $RMEM_MAX
@@ -264,24 +265,63 @@ show_sys_info() {
     done
     return 0
 }
+
+# ★ 重写：带当前选项高亮的菜单
 Kernel_optimize() {
     root_use
-    while true; do clear; local cur="未优化"; [ -f /etc/sysctl.d/99-yw-optimize.conf ] && cur=$(grep "^# 模式:" /etc/sysctl.d/99-yw-optimize.conf 2>/dev/null | sed 's/^# 模式: //' | awk -F'|' '{print $1}' | xargs)
-        echo -e "${gl_lv}Linux内核优化 | 当前: ${gl_huang}${cur}${gl_bai}\n
-        1.直播+游戏 
-        2.高性能 
-        3.均衡 
-        4.网站 
-        5.纯直播 
-        6.纯游戏 
-        7.中转网关
-        8.还原默认 
-        9.远程脚本 
-        10.释放缓存 
-        11.验证状态\n0.返回"
-        read -e -p "选择: " c
-        case $c in 1) clear; _kernel_optimize_core "直播+游戏" "stream_game" ;; 2) clear; _kernel_optimize_core "高性能" "high" ;; 3) clear; _kernel_optimize_core "均衡" "balanced" ;; 4) clear; _kernel_optimize_core "网站" "web" ;; 5) clear; _kernel_optimize_core "直播" "stream" ;; 6) clear; _kernel_optimize_core "游戏" "game" ;; 7) clear; _kernel_optimize_core "网关" "gateway" ;; 8) clear; restore_defaults ;; 9) curl -sS ${gh_proxy}raw.githubusercontent.com/YW/sh/refs/heads/main/network-optimize.sh | bash ;; 10) read -e -p "确定释放缓存？: " d; [[ "$d" =~ ^[Yy]$ ]] && sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null ;; 11) verify_network_status ;; 0|"") break ;; esac; done
+    local scenes=("stream_game" "high" "balanced" "web" "stream" "game" "gateway")
+    local names=("直播+游戏" "高性能" "均衡" "网站" "纯直播" "纯游戏" "中转网关")
+
+    while true; do
+        clear
+        # 从配置文件读取当前场景标识
+        local cur_scene=""
+        [ -f /etc/sysctl.d/99-yw-optimize.conf ] && cur_scene=$(grep "^# 模式:" /etc/sysctl.d/99-yw-optimize.conf 2>/dev/null | sed 's/^# 模式: //' | awk -F'|' '{print $2}' | tr -d ' \t')
+
+        echo -e "${gl_lv}╔═══════════════════════════════════╗"
+        echo -e "║       Linux 内核网络优化            ║"
+        echo -e "╚═══════════════════════════════════╝${gl_bai}"
+        echo ""
+
+        local i=0
+        while [ $i -lt 7 ]; do
+            local num=$((i + 1))
+            local scene="${scenes[$i]}"
+            local name="${names[$i]}"
+            if [ "$cur_scene" = "$scene" ]; then
+                echo -e "  ${gl_huang}▶ ${gl_lv}[${num}] ${name}  ◀ 当前${gl_bai}"
+            else
+                echo -e "    ${gl_hui}[${num}] ${name}${gl_bai}"
+            fi
+            i=$((i + 1))
+        done
+
+        echo -e "    ${gl_hui}─────────────────────────────${gl_bai}"
+        echo -e "    ${gl_hui}[8]  还原默认${gl_bai}"
+        echo -e "    ${gl_hui}[9]  远程脚本${gl_bai}"
+        echo -e "    ${gl_hui}[10] 释放缓存${gl_bai}"
+        echo -e "    ${gl_hui}[11] 验证状态${gl_bai}"
+        echo ""
+        echo -e "    ${gl_hui}[0]  返回${gl_bai}"
+        echo ""
+        read -e -p "  选择: " c
+        case $c in
+            1) clear; _kernel_optimize_core "直播+游戏" "stream_game" ;;
+            2) clear; _kernel_optimize_core "高性能" "high" ;;
+            3) clear; _kernel_optimize_core "均衡" "balanced" ;;
+            4) clear; _kernel_optimize_core "网站" "web" ;;
+            5) clear; _kernel_optimize_core "直播" "stream" ;;
+            6) clear; _kernel_optimize_core "游戏" "game" ;;
+            7) clear; _kernel_optimize_core "网关" "gateway" ;;
+            8) clear; restore_defaults ;;
+            9) curl -sS ${gh_proxy}raw.githubusercontent.com/YW/sh/refs/heads/main/network-optimize.sh | bash ;;
+            10) read -e -p "确定释放缓存？: " d; [[ "$d" =~ ^[Yy]$ ]] && sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null ;;
+            11) verify_network_status ;;
+            0|"") break ;;
+        esac
+    done
 }
+
 R="${gl_bai}"; G="${gl_lv}"; Y="${gl_huang}"; H="${gl_hui}"; RED="${gl_red}"; C="\033[36m"
 get_my_ip() { curl -4 -s -f --connect-timeout 3 https://ifconfig.me 2>/dev/null || curl -4 -s -f --connect-timeout 3 https://checkip.amazonaws.com 2>/dev/null || echo "未知IP"; }
 url_encode() { printf '%s' "$1" | sed 's/+/%2B/g; s/\//%2F/g; s/=/%3D/g; s/ /%20/g; s/#/%23/g; s/?/%3F/g; s/&/%26/g; s/@/%40/g'; }
@@ -366,7 +406,6 @@ sb_add_reality() {
             echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"
         else
             echo -e "${G}✅ 成功 | PublicKey: ${pub_key} | short_id: ${short_id}${R}"
-            # ★ 创建成功后直接显示链接
             local link_ip=$(get_my_ip)
             if [ "$link_ip" != "未知IP" ]; then
                 echo -e "${Y}节点链接:${R}"
@@ -458,7 +497,6 @@ sb_add_hysteria2() {
             echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"
         else
             echo -e "${G}✅ 成功 | 密码: ${pwd} | 跳跃: ${hop_range:-无}${R}"
-            # ★ 创建成功后直接显示链接
             local link_ip=$(get_my_ip)
             if [ "$link_ip" != "未知IP" ]; then
                 local insecure="0"; [ "$tls_method" = "selfsign" ] && insecure="1"
