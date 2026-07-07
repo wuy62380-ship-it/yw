@@ -175,6 +175,74 @@ EOF
     echo -e "${gl_lv}${mode_name} 完成！内存: ${MEM_MB_VAL}MB | 算法: ${CC}${gl_bai}"; read -rs -n 1 -p ""
 }
 
+# 直播承载能力评估
+estimate_stream_capacity() {
+    clear
+    echo -e "${gl_huang}===== 直播承载能力评估 =====${gl_bai}"
+    echo -e "由于云服务器内部无法直接读取公网带宽限制，请手动输入："
+    read -e -p "服务器上行带宽 (Mbps, 如100): " up_bw
+    read -e -p "服务器下行带宽 (Mbps, 如100): " down_bw
+    
+    if [[ ! "$up_bw" =~ ^[0-9]+$ ]] || [[ ! "$down_bw" =~ ^[0-9]+$ ]]; then
+        echo -e "${gl_red}输入无效${gl_bai}"
+        read -rs -n 1 -p ""
+        return
+    fi
+
+    # 硬件瓶颈评估
+    local cpu_cores=$(nproc)
+    local mem_mb=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo)
+    
+    # 理论带宽评估 (假设保留20%带宽用于游戏/控制信令)
+    local effective_up=$((up_bw * 8 / 10))
+    local effective_down=$((down_bw * 8 / 10))
+    
+    # 直播需求：1080P@60fps 约需 6Mbps 上行，2Mbps 下行
+    local bw_up_1080p=$((effective_up / 6))
+    local bw_down_1080p=$((effective_down / 2))
+    local bw_limit_1080=$bw_up_1080p
+    [ "$bw_down_1080p" -lt "$bw_limit_1080" ] && bw_limit_1080=$bw_down_1080p
+
+    # 直播需求：720P@30fps 约需 3Mbps 上行，1Mbps 下行
+    local bw_up_720p=$((effective_up / 3))
+    local bw_down_720p=$((effective_down / 1))
+    local bw_limit_720=$bw_up_720p
+    [ "$bw_down_720p" -lt "$bw_limit_720" ] && bw_limit_720=$bw_down_720p
+
+    # CPU瓶颈评估 (Sing-box加解密，单核约带3-5路1080P，这里保守按 2路/核)
+    local cpu_limit=$((cpu_cores * 2))
+    
+    # 内存瓶颈评估 (1路代理约耗100MB内存，留出512MB给系统)
+    local mem_limit=$(( (mem_mb - 512) / 100 ))
+    [ "$mem_limit" -lt 0 ] && mem_limit=0
+
+    # 综合得出推荐值
+    local rec_1080=$bw_limit_1080
+    [ "$cpu_limit" -lt "$rec_1080" ] && rec_1080=$cpu_limit
+    [ "$mem_limit" -lt "$rec_1080" ] && rec_1080=$mem_limit
+
+    local rec_720=$bw_limit_720
+    [ "$cpu_limit" -lt "$rec_720" ] && rec_720=$cpu_limit
+    [ "$mem_limit" -lt "$rec_720" ] && rec_720=$mem_limit
+
+    echo -e "\n${gl_lv}===== 评估结果 =====${gl_bai}"
+    echo -e "硬件配置: ${gl_huang}${cpu_cores}核 CPU / ${mem_mb}MB 内存${gl_bai}"
+    echo -e "网络带宽: ${gl_huang}上行 ${up_bw}Mbps / 下行 ${down_bw}Mbps${gl_bai}"
+    echo -e "------------------------"
+    echo -e "${gl_kjlan}理论上限 (仅考虑带宽):${gl_bai}"
+    echo -e "  - 1080P直播: 约 ${gl_lv}${bw_limit_1080}${gl_bai} 路"
+    echo -e "  - 720P直播 : 约 ${gl_lv}${bw_limit_720}${gl_bai} 路"
+    echo -e "${gl_kjlan}硬件瓶颈 (CPU/内存):${gl_bai}"
+    echo -e "  - CPU瓶颈 : 约 ${gl_lv}${cpu_limit}${gl_bai} 路"
+    echo -e "  - 内存瓶颈: 约 ${gl_lv}${mem_limit}${gl_bai} 路"
+    echo -e "------------------------"
+    echo -e "${gl_huang}🌟 综合推荐带货量 (取最短板):${gl_bai}"
+    echo -e "  - 推荐 1080P 主播数: ${gl_lv}${rec_1080}${gl_bai} 个"
+    echo -e "  - 推荐 720P 主播数 : ${gl_lv}${rec_720}${gl_bai} 个"
+    echo -e "${gl_hui}注: 评估已预留20%带宽用于游戏/网页, 并考虑了加解密损耗。${gl_bai}"
+    read -rs -n 1 -p ""
+}
+
 # 专家级极速网卡优化 (针对单核/多核小鸡大幅降低CPU占用)
 nic_extreme_optimize() {
     root_use || return
@@ -846,6 +914,7 @@ main_menu() {
         echo -e "    ${gl_huang}[3] Sing-Box 管理面板${gl_bai}"
         echo -e "    ${gl_huang}[4] Linux 内核网络优化${gl_bai}"
         echo -e "    ${gl_huang}[5] Swap 管理${gl_bai}"
+        echo -e "    ${gl_huang}[6] 直播承载能力评估${gl_bai}"
         echo ""
         echo -e "    ${gl_hui}[0] 退出${gl_bai}"
         echo ""
@@ -857,6 +926,7 @@ main_menu() {
             3) sb_menu ;;
             4) Kernel_optimize ;;
             5) change_swap_size ;;
+            6) clear; estimate_stream_capacity ;;
             0|"") echo -e "${gl_lv}再见！${gl_bai}"; exit 0 ;;
             *) echo -e "${gl_red}无效选择${gl_bai}"; sleep 1 ;;
         esac
