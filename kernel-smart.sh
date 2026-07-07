@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ============================================================================
-# Linux YW内核与网络调优模块
+# Linux YW内核与网络调优模块 + Sing-Box节点管理 (终极修复版)
 # 主场景: 直播推流 | 辅场景: 游戏服
+# 特性: 自动内存检测防OOM + TCP/UDP全开 + 密钥生成容错
 # ============================================================================
 
 : "${gl_bai:=\033[0m}"
@@ -185,7 +186,7 @@ change_swap_size() {
 }
 
 # ============================================================================
-# 核心优化逻辑 (直播为主 + 游戏为辅 特化版)
+# 核心优化逻辑 (直播为主 + 游戏为辅 + 小内存防OOM特化版)
 # ============================================================================
 _kernel_optimize_core() {
     local mode_name="$1"
@@ -207,7 +208,6 @@ _kernel_optimize_core() {
 
     case "$scene" in
         stream_game)
-            # ★ 直播为主、游戏为辅：大UDP缓冲 + 低延迟TCP + 高网卡吞吐
             SWAPPINESS=10; DIRTY_RATIO=20; DIRTY_BG_RATIO=8; OVERCOMMIT=1; VFS_PRESSURE=50
             MIN_FREE_KB=131072; RMEM_MAX=134217728; WMEM_MAX=134217728
             TCP_RMEM="4096 87380 67108864"; TCP_WMEM="4096 65536 67108864"
@@ -279,30 +279,60 @@ _kernel_optimize_core() {
     local MEM_MB_VAL=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
     local HAS_SWAP=$(free -m | awk '/Swap/{print $2}')
 
-    if [ "$MEM_MB_VAL" -ge 16384 ]; then
+    # ============================================================================
+    # ★ 核心防御：根据物理内存动态压榨缓冲区，防止 OOM
+    # ============================================================================
+    if [ "$MEM_MB_VAL" -ge 4096 ]; then
+        # [ 4GB 及以上 ] 原始狂暴模式，拉满直播+游戏
         MIN_FREE_KB=131072
         [ "$scene" != "balanced" ] && SWAPPINESS=5
-    elif [ "$MEM_MB_VAL" -ge 4096 ]; then
+        
+    elif [ "$MEM_MB_VAL" -ge 2048 ]; then
+        # [ 2GB - 4GB ] 折中模式：TCP 降至 32MB，UDP 降至 8MB，队列降至 5万
         MIN_FREE_KB=65536
-    elif [ "$MEM_MB_VAL" -ge 1024 ]; then
-        MIN_FREE_KB=32768
-        if [ "$scene" != "balanced" ] && [ "$scene" != "game" ] && [ "$scene" != "gateway" ]; then
-            RMEM_MAX=16777216; WMEM_MAX=16777216
-            TCP_RMEM="4096 87380 16777216"; TCP_WMEM="4096 65536 16777216"
+        RMEM_MAX=33554432; WMEM_MAX=33554432
+        TCP_RMEM="4096 87380 33554432"; TCP_WMEM="4096 65536 33554432"
+        BACKLOG=50000
+        
+        if [ "$scene" = "stream_game" ] || [ "$scene" = "stream" ]; then
+            STREAM_GAME_EXTRA=$'net.ipv4.udp_rmem_min = 65536\nnet.ipv4.udp_wmem_min = 65536\nnet.ipv4.udp_rmem_max = 8388608\nnet.ipv4.udp_wmem_max = 8388608\nnet.core.netdev_budget = 800\nnet.core.netdev_max_backlog = 50000\nnet.core.optmem_max = 20480'
         fi
+        
+    elif [ "$MEM_MB_VAL" -ge 1024 ]; then
+        # [ 1GB - 2GB ] 安全模式：TCP 降至 16MB，UDP 降至 4MB，队列降至 1万
+        MIN_FREE_KB=32768
+        RMEM_MAX=16777216; WMEM_MAX=16777216
+        TCP_RMEM="4096 87380 16777216"; TCP_WMEM="4096 65536 16777216"
+        BACKLOG=10000
+        
+        if [ "$scene" = "stream_game" ] || [ "$scene" = "stream" ]; then
+            STREAM_GAME_EXTRA=$'net.ipv4.udp_rmem_min = 16384\nnet.ipv4.udp_wmem_min = 16384\nnet.ipv4.udp_rmem_max = 4194304\nnet.ipv4.udp_wmem_max = 4194304\nnet.core.netdev_budget = 600\nnet.core.netdev_max_backlog = 10000\nnet.core.optmem_max = 20480'
+        fi
+        
     else
+        # [ < 1GB ] 极限保命模式：强制 4MB，关闭所有大内存变量
         MIN_FREE_KB=16384; OVERCOMMIT=0; SWAPPINESS=10
         RMEM_MAX=4194304; WMEM_MAX=4194304; SOMAXCONN=1024; BACKLOG=1000
         TCP_RMEM="4096 32768 4194304"; TCP_WMEM="4096 32768 4194304"
+        
+        # 彻底清空所有场景的额外变量，防止任何大内存参数漏网
         HIGH_EXTRA=""; WEB_EXTRA=""; STREAM_EXTRA=""; GAME_EXTRA=""; BALANCED_EXTRA=""; GATEWAY_EXTRA=""; STREAM_GAME_EXTRA=""
+        
         [ -f /sys/module/zswap/parameters/enabled ] && echo N > /sys/module/zswap/parameters/enabled 2>/dev/null
+        
         if [ "$scene" = "game" ] || [ "$scene" = "gateway" ] || [ "$scene" = "stream" ] || [ "$scene" = "stream_game" ]; then
             SOMAXCONN=512; BACKLOG=500; CONNTRACK_MULT=4; MIN_FREE_KB=16384
-            echo -e "${gl_huang}检测极小内存(${MEM_MB_VAL}MB)，已启动极限省内存模式。${gl_bai}"
+            echo -e "${gl_huang}检测极小内存(${MEM_MB_VAL}MB)，已启动极限保命模式(强制4MB缓冲)。${gl_bai}"
+            if lsmod | grep -q nf_conntrack; then
+                echo -e "${gl_red}⚠ 警告: nf_conntrack 模块已加载，将吃掉约10-15MB内存！${gl_bai}"
+                echo -e "${gl_red}建议执行: rmmod nf_conntrack 以释放内存。${gl_bai}"
+            fi
         fi
+
         if [ "$HAS_SWAP" -gt 0 ]; then
             SWAPPINESS=60
         else
+            echo -e "${gl_red}检测极小内存(${MEM_MB_VAL}MB)无Swap！${gl_bai}"
             check_swap
         fi
         auto_setup_zram
@@ -558,6 +588,7 @@ verify_network_status() {
                 mode="电竞级游戏模式 (8MB 绝杀缓冲)"
             fi ;;
         16777216) mode="通用游戏/中等内存 (16MB)" ;;
+        33554432) mode="2GB-4GB折中直播模式 (32MB)" ;;
         4194304) mode="极限低内存保护 (4MB)" ;;
         67108864|134217728)
             if sysctl -n net.core.netdev_budget 2>/dev/null | grep -q "1200"; then
