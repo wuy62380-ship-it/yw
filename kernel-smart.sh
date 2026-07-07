@@ -186,13 +186,22 @@ estimate_stream_capacity() {
     
     if [ "$speed_choice" = "2" ]; then
         echo -e "${Y}正在测试下行带宽...${R}"
-        local down_speed_bps=$(curl -o /dev/null -s -w "%{speed_download}" --max-time 10 https://speed.cloudflare.com/__down?bytes=10000000)
-        down_bw=$(awk "BEGIN{printf \"%.0f\", ${down_speed_bps} * 8 / 1000000}")
+        local down_speed_bps=$(curl -o /dev/null -s -w "%{speed_download}" --max-time 15 "https://speed.cloudflare.com/__down?bytes=10000000")
+        down_bw=$(awk "BEGIN{printf \"%.0f\", ${down_speed_bps:-0} * 8 / 1000000}")
+        
         echo -e "${Y}正在测试上行带宽...${R}"
-        local up_speed_bps=$(dd if=/dev/zero bs=1M count=10 2>/dev/null | curl -o /dev/null -s -w "%{speed_upload}" --max-time 10 -X POST -d @- https://speed.cloudflare.com/__up)
-        up_bw=$(awk "BEGIN{printf \"%.0f\", ${up_speed_bps} * 8 / 1000000}")
-        echo -e "${G}实测完成！ 上行: ${up_bw}Mbps | 下行: ${down_bw}Mbps${R}"
-    else
+        local up_speed_bps=$(head -c 10000000 /dev/zero 2>/dev/null | curl -o /dev/null -s -w "%{speed_upload}" --max-time 15 -X POST -H "Content-Type: application/octet-stream" --data-binary @- "https://speed.cloudflare.com/__up")
+        up_bw=$(awk "BEGIN{printf \"%.0f\", ${up_speed_bps:-0} * 8 / 1000000}")
+        
+        if [ "$up_bw" -eq 0 ] || [ "$down_bw" -eq 0 ]; then
+            echo -e "${RED}自动测速失败 (可能被云商限制或接口拦截)，请改用手动输入。${R}"
+            speed_choice="1"
+        else
+            echo -e "${G}实测完成！ 上行: ${up_bw}Mbps | 下行: ${down_bw}Mbps${R}"
+        fi
+    fi
+    
+    if [ "$speed_choice" != "2" ]; then
         read -e -p "服务器上行带宽 (Mbps, 如100): " up_bw
         read -e -p "服务器下行带宽 (Mbps, 如100): " down_bw
     fi
@@ -521,7 +530,6 @@ _save_node_meta() {
 _del_node_meta() { [ -f "$META_FILE" ] && jq --arg p "$1" 'del(.[$p])' "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"; }
 _get_node_meta() { [ -f "$META_FILE" ] && jq -r --arg p "$1" --arg f "$2" '.[$p][$f] // empty' "$META_FILE"; }
 
-# Sing-Box OOM 免杀与自启守护
 _harden_singbox_service() {
     mkdir -p /etc/systemd/system/sing-box.service.d
     cat > /etc/systemd/system/sing-box.service.d/override.conf << EOF
@@ -555,7 +563,6 @@ _open_single_port() {
     fi
 }
 
-# 删除单端口防火墙规则
 _del_single_port() {
     local port=$1 proto="${2:-tcp}"
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
@@ -594,7 +601,6 @@ open_port_range() {
     fi
 }
 
-# 删除端口范围防火墙规则
 _del_port_range() {
     local start_port=$1 end_port=$2 proto="${3:-udp}"
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
@@ -666,7 +672,7 @@ sb_install() {
     apt-get update -y 2>&1 | tail -1; apt-get install -y sing-box 2>&1 | tail -3
     if ! command -v sing-box >/dev/null 2>&1; then echo -e "${RED}❌ 安装失败${R}"; read -rs -n 1 -p ""; return 1; fi
     mkdir -p /etc/sing-box; sb_init_conf; systemctl enable sing-box >/dev/null 2>&1
-    _harden_singbox_service # 写入 OOM 免杀
+    _harden_singbox_service
     echo -e "${G}✅ 安装成功 | 版本: $(sing-box version 2>/dev/null | head -1)${R}"; read -rs -n 1 -p ""
 }
 
@@ -879,7 +885,6 @@ sb_del_node() {
     [ -z "$del_input" ] || [[ "$del_input" == "0" ]] && return
     if ! [[ "$del_input" =~ ^[0-9]+$ ]]; then echo -e "${RED}无效输入${R}"; read -rs -n 1 -p ""; return; fi
     
-    # 删除前获取节点信息用于清理防火墙
     local ex=$(_get_node_meta "$del_input" "extra")
     local main_nic=$(ip route | grep default | awk '{print $5}' | head -1)
     
@@ -887,7 +892,6 @@ sb_del_node() {
     if [ -z "$found_tag" ]; then echo -e "${RED}未找到端口 ${del_input} 对应的节点${R}"; read -rs -n 1 -p ""; return; fi
     
     echo -e "${Y}正在清理相关防火墙规则...${R}"
-    # 清理 NAT 跳跃规则
     if [ -n "$ex" ] && echo "$ex" | grep -q "hop_range="; then
         local hop_range=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+')
         if [ -n "$hop_range" ] && [ -n "$main_nic" ] && command -v iptables >/dev/null 2>&1; then
@@ -898,7 +902,6 @@ sb_del_node() {
             echo -e "${G}  ✅ 已清理 NAT 跳跃规则 ${hop_range}${R}"
         fi
     fi
-    # 清理端口放行规则
     del_port_both "$del_input"
     if [ -n "$ex" ] && echo "$ex" | grep -q "hop_range="; then
         local hop_range=$(echo "$ex" | grep -oP 'hop_range=\K[^;]+')
