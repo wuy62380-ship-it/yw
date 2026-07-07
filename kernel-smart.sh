@@ -16,7 +16,6 @@ check_env() {
         echo -e "${gl_huang}正在准备基础环境...${gl_bai}"
         if command -v apt >/dev/null 2>&1; then 
             apt-get update -y >/dev/null 2>&1
-            # 适配 Debian/Ubuntu，安装基础网络工具包
             apt-get install -y curl jq openssl iptables iproute2 >/dev/null 2>&1
         elif command -v yum >/dev/null 2>&1; then 
             yum install -y curl jq openssl iptables iproute >/dev/null 2>&1
@@ -28,13 +27,10 @@ check_env() {
     fi
 }
 
-# [FIX] 适配 Debian/Ubuntu 时间同步机制
 sync_time() {
-    # 优先尝试启用系统自带的 systemd-timesyncd
     if command -v timedatectl >/dev/null 2>&1; then
         timedatectl set-ntp true >/dev/null 2>&1
         if ! timedatectl status 2>/dev/null | grep -q "NTP service: active"; then
-            # 如果自带服务不可用，降级安装 chrony
             echo -e "${gl_huang}正在安装时间同步服务以防节点TLS握手失败...${gl_bai}"
             if command -v apt >/dev/null 2>&1; then 
                 apt-get install -y chrony >/dev/null 2>&1; systemctl enable --now chrony >/dev/null 2>&1
@@ -115,11 +111,25 @@ _kernel_optimize_core() {
 
     local KVER=$(uname -r | grep -oP '^\d+\.\d+'); CC="cubic"; QDISC="fq_codel"
     if [ -n "$KVER" ] && { [ "$KVER" \> "4.9" ] || [ "$KVER" = "4.9" ]; }; then modprobe tcp_bbr 2>/dev/null; sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q bbr && { CC="bbr"; QDISC="fq"; }; fi
+    
     local TCP_MEM_MIN=$((MEM_MB_VAL * 256)) TCP_MEM_DEF=$((MEM_MB_VAL * 512)) TCP_MEM_MAX=$((MEM_MB_VAL * 1024))
-    [ "$TCP_MEM_MIN" -lt 8192 ] && TCP_MEM_MIN=8192; [ "$TCP_MEM_DEF" -lt 16384 ] && TCP_MEM_DEF=16384; [ "$TCP_MEM_MAX" -lt 32768 ] && TCP_MEM_MAX=32768
-    [ "$scene" = "stream" ] || [ "$scene" = "stream_game" ] && [ "$MEM_MB_VAL" -ge 1024 ] && STREAM_GAME_EXTRA="${STREAM_GAME_EXTRA:-${STREAM_EXTRA}}"$'\nnet.ipv4.udp_mem = '"$((MEM_MB_VAL * 128)) $((MEM_MB_VAL * 256)) $((MEM_MB_VAL * 512))"`
+    [ "$TCP_MEM_MIN" -lt 8192 ] && TCP_MEM_MIN=8192
+    [ "$TCP_MEM_DEF" -lt 16384 ] && TCP_MEM_DEF=16384
+    [ "$TCP_MEM_MAX" -lt 32768 ] && TCP_MEM_MAX=32768
+    
+    # [FIX] 修复导致语法错误的反引号，重构拼接逻辑
+    if [ "$scene" = "stream" ] || [ "$scene" = "stream_game" ]; then
+        if [ "$MEM_MB_VAL" -ge 1024 ]; then
+            local udp_mem_str="$((MEM_MB_VAL * 128)) $((MEM_MB_VAL * 256)) $((MEM_MB_VAL * 512))"
+            STREAM_GAME_EXTRA="${STREAM_GAME_EXTRA:-${STREAM_EXTRA}}"$'\n'"net.ipv4.udp_mem = $udp_mem_str"
+        fi
+    fi
+
     local TW_BUCKETS=$((SOMAXCONN * 4)) MAX_ORPHANS=$((SOMAXCONN * 2))
-    [ "$scene" = "web" ] && [ "$MEM_MB_VAL" -ge 2048 ] && TW_BUCKETS=524288; [ "$TW_BUCKETS" -gt 524288 ] && TW_BUCKETS=524288; [ "$MAX_ORPHANS" -gt 131072 ] && MAX_ORPHANS=131072
+    [ "$scene" = "web" ] && [ "$MEM_MB_VAL" -ge 2048 ] && TW_BUCKETS=524288
+    [ "$TW_BUCKETS" -gt 524288 ] && TW_BUCKETS=524288
+    [ "$MAX_ORPHANS" -gt 131072 ] && MAX_ORPHANS=131072
+
     [ -f "$CONF" ] && cp "$CONF" "${CONF}.bak.$(date +%s)"
     cat > "$CONF" << EOF
 # 模式: ${mode_name}|${scene}
@@ -164,10 +174,8 @@ vm.min_free_kbytes = $MIN_FREE_KB
 vm.vfs_cache_pressure = $VFS_PRESSURE
 kernel.sched_autogroup_enabled = $SCHED_AUTOGROUP
  $( [ -f /proc/sys/kernel/numa_balancing ] && echo "kernel.numa_balancing = $NUMA" || echo "# numa不支持" )
-# 修复 rp_filter 为松散模式，避免中转/代理丢包
 net.ipv4.conf.all.rp_filter = 2
 net.ipv4.conf.default.rp_filter = 2
-# 开启转发，支持 Hysteria2 端口跳跃 NAT 和中转网关
 net.ipv4.ip_forward = 1
 net.ipv6.conf.all.forwarding = 1
 net.ipv4.icmp_echo_ignore_broadcasts = 1
@@ -277,13 +285,11 @@ estimate_stream_capacity() {
     read -rs -n 1 -p ""
 }
 
-# [FIX] 修复 XanMod 源对 Debian 12 / Ubuntu 22.04 的支持判断
 xanmod_add_repo() {
     local keyring="/usr/share/keyrings/xanmod-archive-keyring.gpg" list_file="/etc/apt/sources.list.d/xanmod-release.list" os_codename=""
     if command -v lsb_release >/dev/null 2>&1; then os_codename=$(lsb_release -sc); elif [ -r /etc/os-release ]; then os_codename=$(. /etc/os-release && echo "$VERSION_CODENAME"); fi
-    # 兼容 Debian 12(bookworm), Debian 13(trixie), Ubuntu 22.04(jammy), Ubuntu 24.04(noble)
     if ! echo "bookworm trixie forky sid noble plucky jammy" | grep -qw "$os_codename"; then 
-        os_codename="releases" # 对于未明确列出的版本，回退到通用 releases 仓库
+        os_codename="releases"
     fi
     install_pkg wget gnupg ca-certificates || return 1; mkdir -p /usr/share/keyrings /etc/apt/sources.list.d
     wget -qO - "https://dl.xanmod.org/archive.key" | gpg --dearmor -o "$keyring" --yes 2>/dev/null; chmod 644 "$keyring"
@@ -610,7 +616,6 @@ manual_open_port() {
     done
 }
 
-# 修复 rc-local 在现代系统未启用导致 NAT 持久化失败的问题
 _ensure_rc_local() {
     if [ ! -f /etc/rc.local ]; then printf '#!/bin/bash\nexit 0\n' > /etc/rc.local; chmod +x /etc/rc.local; fi
     if ! grep -q "iptables-restore" /etc/rc.local 2>/dev/null; then sed -i '/^exit 0/i iptables-restore < /etc/iptables.rules 2>/dev/null' /etc/rc.local 2>/dev/null; fi
@@ -678,7 +683,7 @@ sb_add_reality() {
     local short_ids=("aabbccdd" "11223344" "deadbeef" "12345678" "abcdef01"); short_id=${short_ids[$((RANDOM % ${#short_ids[@]}))]}
     read -e -p "名称 (回车默认): " nn; [ -z "$nn" ] && nn="VLESS-Reality-${port}"
     sb_init_conf; local conf="/etc/sing-box/config.json"; cp "$conf" "${conf}.bak.$(date +%s)"
-    local ij=$(jq -n --argjson p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" '{"type":"vless","tag":("vless-reality-"+($p|tostring)),"listen":"::","listen_port":$p,"users":[{"uuid":$u,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$s,"reality":{"enabled":true,"handshake":{"server":$s,"server_port":443},"private_key":$pk,"short_id":[$sid]}}}'})
+    local ij=$(jq -n --argjson p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" '{"type":"vless","tag":("vless-reality-"+($p|tostring)),"listen":"::","listen_port":$p,"users":[{"uuid":$u,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$s,"reality":{"enabled":true,"handshake":{"server":$s,"server_port":443},"private_key":$pk,"short_id":[$sid]}}}')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
     if sing-box check -c "$conf" >/dev/null 2>&1; then
         open_port_both "$port"; _save_node_meta "$port" "$nn" "vless-reality" "$pub_key" "short_id=${short_id}"
@@ -741,7 +746,6 @@ sb_add_hysteria2() {
     esac
     sb_init_conf; local conf="/etc/sing-box/config.json"; cp "$conf" "${conf}.bak.$(date +%s)"
     
-    # 修复 Hysteria2 带宽硬编码过高导致 UDP 丢包不通的问题，改为 0(自适应)
     local ij=$(jq -n --argjson p "$port" --arg pwd "$pwd" --argjson tls "$tls_obj" '{"type":"hysteria2","tag":("hysteria2-"+($p|tostring)),"listen":"::","listen_port":$p,"up_mbps":0,"down_mbps":0,"users":[{"password":$pwd}],"tls":$tls}')
     
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
@@ -757,7 +761,6 @@ sb_add_hysteria2() {
             elif ! iptables -t nat -L PREROUTING -n >/dev/null 2>&1; then
                 echo -e "${Y}  ⚠ iptables nat 表不可用（可能是 nftables-only 环境），NAT 跳跃未添加${R}"
             else
-                # 兼容 Debian 12/Ubuntu 24.04，尝试加载 iptable_nat 模块
                 modprobe iptable_nat 2>/dev/null
                 if iptables -t nat -C PREROUTING -i "$main_nic" -p udp --dport ${hop_start}:${hop_end} -j DNAT --to-destination :${port} 2>/dev/null; then
                     echo -e "${G}  ✅ NAT 规则已存在${R}"
@@ -933,7 +936,7 @@ sb_menu() {
 
 main_menu() {
     check_env
-    sync_time # 启动时自动执行时间同步
+    sync_time
     while true; do
         clear
         echo -e "${gl_lv}╔══════════════════════════════════════╗"
