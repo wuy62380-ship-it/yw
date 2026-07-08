@@ -389,11 +389,10 @@ _open_single_port() {
     elif command -v iptables >/dev/null 2>&1; then
         if iptables -C INPUT -p ${proto} --dport ${port} -j ACCEPT >/dev/null 2>&1; then
             opened=1
-        elif iptables -I INPUT -p ${proto} --dport ${port} -j ACCEPT >/dev/null 2>&1; then
+        elif iptables -I INPUT -p ${proto} --dport ${port} -j ACCEPT 2>/dev/null; then
             opened=1
         fi
     fi
-
     if [ "$opened" -eq 1 ]; then
         echo -e "${G}  ✅ 已放行 ${proto^^} ${port}${R}"
     else
@@ -415,11 +414,10 @@ open_port_range() {
     elif command -v iptables >/dev/null 2>&1; then
         if iptables -C INPUT -p ${proto} --dport ${start_port}:${end_port} -j ACCEPT >/dev/null 2>&1; then
             opened=1
-        elif iptables -I INPUT -p ${proto} --dport ${start_port}:${end_port} -j ACCEPT >/dev/null 2>&1; then
+        elif iptables -I INPUT -p ${proto} --dport ${start_port}:${end_port} -j ACCEPT 2>/dev/null; then
             opened=1
         fi
     fi
-
     if [ "$opened" -eq 1 ]; then
         echo -e "${G}  ✅ 已放行 ${proto^^} ${start_port}-${end_port}${R}"
     else
@@ -513,7 +511,20 @@ sb_uninstall() {
 
 sb_add_reality() {
     sb_check || return
-    read -e -p "端口: " port; [[ ! "$port" =~ ^[0-9]+$ ]] && { echo -e "${RED}错误${R}"; read -rs -n 1 -p ""; return; }
+    local current_year=$(date +%Y)
+    if [ "$current_year" -gt 2025 ]; then
+        echo -e "${RED}警告：检测到服务器时间异常（当前年份: $current_year）。${R}"
+        echo -e "${RED}VLESS-Reality 协议依赖真实证书校验时间，时间错误将导致 Reality 节点 100% 无法连通！${R}"
+        echo -e "${Y}建议：请使用 Hysteria2 或 VLESS-WS 协议代替。${R}"
+        read -e -p "是否继续添加 Reality？: " rc
+        [[ ! "$rc" =~ ^[Yy]$ ]] && return
+    fi
+    
+    local port; port=$(shuf -i 10000-65535 -n 1)
+    echo -e "${Y}提示：如果云服务器有安全组限制，请输入已在安全组放行的端口${R}"
+    read -e -p "端口 (回车默认随机 $port): " input_port
+    [[ "$input_port" =~ ^[0-9]+$ ]] && port="$input_port"
+    
     local sni; sni=$(select_sni)
     local uuid; uuid=$(cat /proc/sys/kernel/random/uuid 2>/dev/null); [ -z "$uuid" ] && { echo -e "${RED}UUID生成失败${R}"; read -rs -n 1 -p ""; return; }
     local keys_output priv_key pub_key; keys_output=$(sing-box generate reality-keypair 2>&1)
@@ -541,7 +552,11 @@ sb_add_reality() {
 
 sb_add_vless_ws() {
     sb_check || return
-    read -e -p "端口: " port; [[ ! "$port" =~ ^[0-9]+$ ]] && { echo -e "${RED}错误${R}"; read -rs -n 1 -p ""; return; }
+    local port; port=$(shuf -i 10000-65535 -n 1)
+    echo -e "${Y}提示：如果云服务器有安全组限制，请输入已在安全组放行的端口${R}"
+    read -e -p "端口 (回车默认随机 $port): " input_port
+    [[ "$input_port" =~ ^[0-9]+$ ]] && port="$input_port"
+    
     local ws_path="/$(openssl rand -hex 8)"; read -e -p "WS Path (回车默认): " wp; [ -n "$wp" ] && ws_path="$wp"
     read -e -p "名称 (回车默认): " nn; [ -z "$nn" ] && nn="VLESS-WS-${port}"
     local uuid; uuid=$(cat /proc/sys/kernel/random/uuid 2>/dev/null); [ -z "$uuid" ] && { echo -e "${RED}UUID失败${R}"; read -rs -n 1 -p ""; return; }
@@ -564,7 +579,11 @@ sb_add_vless_ws() {
 
 sb_add_hysteria2() {
     sb_check || return
-    read -e -p "主端口: " port; [[ ! "$port" =~ ^[0-9]+$ ]] && { echo -e "${RED}错误${R}"; read -rs -n 1 -p ""; return; }
+    local port; port=$(shuf -i 10000-65535 -n 1)
+    echo -e "${Y}提示：如果云服务器有安全组限制，请输入已在安全组放行的端口${R}"
+    read -e -p "主端口 (回车默认随机 $port): " input_port
+    [[ "$input_port" =~ ^[0-9]+$ ]] && port="$input_port"
+    
     if [ -f "/etc/sing-box/config.json" ] && jq -e . "/etc/sing-box/config.json" >/dev/null 2>&1; then
         local dup_port=$(jq -r --argjson p "$port" '.inbounds[] | select(.listen_port == $p) | .tag' "/etc/sing-box/config.json" 2>/dev/null)
         if [ -n "$dup_port" ]; then echo -e "${RED}❌ 端口 ${port} 已被 [${dup_port}] 占用！${R}"; read -rs -n 1 -p ""; return; fi
@@ -579,9 +598,9 @@ sb_add_hysteria2() {
     read -e -p "名称 (回车默认): " nn; [ -z "$nn" ] && nn="Hysteria2-${port}"
     echo -e "${Y}1.Let's Encrypt 2.手动证书 3.自签${R}"; read -e -p "TLS选择: " tls_choice; local tls_obj="" domain="" tls_method=""
     case "$tls_choice" in
-        1) read -e -p "域名: " domain; [ -z "$domain" ] && { echo -e "${RED}空${R}"; read -rs -n 1 -p ""; return; }; tls_obj=$(jq -n --arg d "$domain" '{"enabled":true,"server_name":$d,"acme":{"domain":$d,"directory":"/etc/sing-box/acme","email":"admin@\($d)"}}'); tls_method="acme" ;;
-        2) local c k; read -e -p "证书路径: " c; read -e -p "密钥路径: " k; [ ! -f "$c" ] || [ ! -f "$k" ] && { echo -e "${RED}不存在${R}"; read -rs -n 1 -p ""; return; }; tls_obj=$(jq -n --arg c "$c" --arg k "$k" '{"enabled":true,"certificate_path":$c,"key_path":$k}'); tls_method="manual" ;;
-        3) local d="/etc/sing-box/certs/hy2-${port}"; mkdir -p "$d"; openssl req -x509 -nodes -days 3650 -newkey rsa:2048 -keyout "${d}/key.pem" -out "${d}/cert.pem" -subj "/CN=hysteria2" 2>/dev/null; if [ ! -f "${d}/cert.pem" ]; then echo -e "${RED}证书生成失败${R}"; read -rs -n 1 -p ""; return; fi; tls_obj=$(jq -n --arg c "${d}/cert.pem" --arg k "${d}/key.pem" '{"enabled":true,"certificate_path":$c,"key_path":$k}'); tls_method="selfsign" ;;
+        1) read -e -p "域名: " domain; [ -z "$domain" ] && { echo -e "${RED}空${R}"; read -rs -n 1 -p ""; return; }; tls_obj=$(jq -n --arg d "$domain" '{"enabled":true,"server_name":$d,"alpn":["h3"],"acme":{"domain":$d,"directory":"/etc/sing-box/acme","email":"admin@\($d)"}}'); tls_method="acme" ;;
+        2) local c k; read -e -p "证书路径: " c; read -e -p "密钥路径: " k; [ ! -f "$c" ] || [ ! -f "$k" ] && { echo -e "${RED}不存在${R}"; read -rs -n 1 -p ""; return; }; tls_obj=$(jq -n --arg c "$c" --arg k "$k" '{"enabled":true,"alpn":["h3"],"certificate_path":$c,"key_path":$k}'); tls_method="manual" ;;
+        3) local d="/etc/sing-box/certs/hy2-${port}"; mkdir -p "$d"; openssl ecparam -genkey -name prime256v1 -out "${d}/key.pem" 2>/dev/null; openssl req -new -x509 -days 3650 -key "${d}/key.pem" -out "${d}/cert.pem" -subj "/CN=www.bing.com" 2>/dev/null; if [ ! -f "${d}/cert.pem" ]; then echo -e "${RED}证书生成失败${R}"; read -rs -n 1 -p ""; return; fi; tls_obj=$(jq -n --arg c "${d}/cert.pem" --arg k "${d}/key.pem" '{"enabled":true,"alpn":["h3"],"certificate_path":$c,"key_path":$k}'); tls_method="selfsign" ;;
         *) return ;;
     esac
     sb_init_conf; local conf="/etc/sing-box/config.json"; cp "$conf" "${conf}.bak.$(date +%s)"
@@ -620,8 +639,13 @@ sb_add_hysteria2() {
             local link_ip=$(get_my_ip)
             if [ "$link_ip" != "未知IP" ]; then
                 local insecure="0"; [ "$tls_method" = "selfsign" ] && insecure="1"
-                local sni_param=""; [ -n "$domain" ] && sni_param="&sni=${domain}"
-                echo -e "${Y}节点链接:${R}"; echo -e "${C}hysteria2://$(url_encode "$pwd")@${link_ip}:${port}?insecure=${insecure}${sni_param}#$(url_encode "$nn")${R}"
+                local sni_param=""
+                if [ "$tls_method" = "selfsign" ]; then
+                    sni_param="&sni=www.bing.com"
+                elif [ -n "$domain" ]; then
+                    sni_param="&sni=${domain}"
+                fi
+                echo -e "${Y}节点链接:${R}"; echo -e "${C}hysteria2://$(url_encode "$pwd")@${link_ip}:${port}?insecure=${insecure}&alpn=h3${sni_param}#$(url_encode "$nn")${R}"
             fi
         fi
     else echo -e "${RED}❌ 校验失败${R}"; sing-box check -c "$conf" 2>&1; local latest_bak=$(ls -t "${conf}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$conf"; _del_node_meta "$port"; fi
@@ -665,7 +689,12 @@ sb_show_nodes_and_links() {
                 } ;;
             hysteria2) local pwd sni insecure="0" sni_param=""
                 pwd=$(echo "$obj" | jq -r '.users[0].password // empty' 2>/dev/null)
-                [ -n "$pwd" ] && { sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null); echo "$ex" | grep -q "tls_method=selfsign" && insecure="1"; [ -n "$sni" ] && sni_param="&sni=${sni}"; link="hysteria2://$(url_encode "$pwd")@${server_ip}:${port}?insecure=${insecure}${sni_param}#$(url_encode "$nn")"; } ;;
+                [ -n "$pwd" ] && {
+                    sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null)
+                    echo "$ex" | grep -q "tls_method=selfsign" && insecure="1" && [ -z "$sni" ] && sni="www.bing.com"
+                    [ -n "$sni" ] && sni_param="&sni=${sni}"
+                    link="hysteria2://$(url_encode "$pwd")@${server_ip}:${port}?insecure=${insecure}&alpn=h3${sni_param}#$(url_encode "$nn")"
+                } ;;
         esac
         [ -n "$link" ] && echo -e "${C}${link}${R}"; echo ""; idx=$((idx + 1))
     done < <(jq -r '.inbounds[] | @base64' "$conf" 2>/dev/null)
