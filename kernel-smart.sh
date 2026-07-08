@@ -298,7 +298,7 @@ show_sys_info() {
         echo -e "${C}系统信息查询${R}"
         echo -e "${C}=============="
         echo -e "${C}主机名:         ${R}${hostname_val}"
-        echo -e "${C}系统版本:       ${R}${os_info}
+        echo -e "${C}系统版本:       ${R}${os_info}"
         echo -e "${C}Linux版本:      ${R}${kernel_version}"
         echo -e "${C}=============="
         echo -e "${C}CPU架构:        ${R}${cpu_arch}"
