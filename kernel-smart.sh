@@ -526,8 +526,8 @@ sb_check() {
 sb_init_conf() { 
     if [ ! -f "$SB_CONF" ] || ! jq -e . "$SB_CONF" >/dev/null 2>&1; then 
         mkdir -p /etc/sing-box
-        # 适配 sing-box 1.11.0+ 规范，将 sniff 移至 route.rules
-        echo '{"log":{"level":"error"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"rules":[{"action":"sniff"},{"action":"resolve"}],"final":"direct"}}' > "$SB_CONF"
+        # 修复出站路由配置，防止连得上但无网
+        echo '{"log":{"level":"error"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct","domain_strategy":"prefer_ipv4"}],"route":{"rules":[{"action":"sniff"},{"action":"resolve","strategy":"prefer_ipv4"}],"final":"direct","auto_detect_interface":true}}' > "$SB_CONF"
     fi
     [ ! -f "$META_FILE" ] && echo '{}' > "$META_FILE" && chmod 600 "$META_FILE"
 }
@@ -605,8 +605,8 @@ sb_add_reality() {
     local sni="www.microsoft.com"
     local uuid=$(/etc/sing-box/sing-box generate uuid 2>/dev/null)
     local keys=$(/etc/sing-box/sing-box generate reality-keypair 2>/dev/null)
-    local priv_key=$(echo "$keys" | awk '/PrivateKey/{print $2}')
-    local pub_key=$(echo "$keys" | awk '/PublicKey/{print $2}')
+    local priv_key=$(echo "$keys" | awk '/PrivateKey/{print $2}' | tr -d '"')
+    local pub_key=$(echo "$keys" | awk '/PublicKey/{print $2}' | tr -d '"')
     local short_id=$(/etc/sing-box/sing-box generate rand --hex 4 2>/dev/null || echo "aabbccdd")
     
     if [ -z "$uuid" ] || [ -z "$priv_key" ] || [ -z "$pub_key" ]; then
@@ -619,7 +619,6 @@ sb_add_reality() {
     readp "名称 (回车默认): " nn; [ -z "$nn" ] && nn="VLESS-Reality-${port}"
 
     sb_init_conf; cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
-    # 移除 sniff 字段，适配 1.11.0+ 规范
     local ij=$(jq -n --argjson p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" '{"type":"vless","tag":("vless-reality-"+($p|tostring)),"listen":"::","listen_port":$p,"users":[{"uuid":$u,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$s,"reality":{"enabled":true,"handshake":{"server":$s,"server_port":443},"private_key":$pk,"short_id":[$sid]}}}')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$SB_CONF" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$SB_CONF"
     
@@ -653,8 +652,7 @@ sb_add_vless_ws() {
     fi
 
     sb_init_conf; cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
-    # 移除 sniff 字段，适配 1.11.0+ 规范
-    local ij=$(jq -n --argjson p "$port" --arg u "$uuid" --arg wp "$ws_path" '{"type":"vless","tag":("vless-ws-"+($p|tostring)),"listen":"::","listen_port":$p,"users":[{"uuid":$u}],"transport":{"type":"ws","path":$wp}}')
+    local ij=$(jq -n --argjson p "$port" --arg u "$uuid" --arg wp "$ws_path" '{"type":"vless","tag":("vless-ws-"+($p|tostring)),"listen":"::","listen_port":$p,"users":[{"uuid":$u}],"transport":{"type":"ws","path":$wp,"max_early_data":2048,"early_data_header_name":"Sec-WebSocket-Protocol"}}')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$SB_CONF" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$SB_CONF"
     
     if /etc/sing-box/sing-box check -c "$SB_CONF" 2>/tmp/sb_err.log; then
@@ -676,22 +674,25 @@ sb_add_hysteria2() {
     readp "端口 (回车随机): " port; [[ -z "$port" ]] && port=$(shuf -i 10000-65535 -n 1)
     while ss -tunlp | grep -w ":$port" >/dev/null 2>&1; do readp "端口 $port 被占用，请重新输入: " port; [[ -z "$port" ]] && port=$(shuf -i 10000-65535 -n 1); done
     local pwd=$(openssl rand -base64 24 | tr -d '\n/=+' | head -c 32)
+    local hy2_sni="www.bing.com"
     readp "名称 (回车默认): " nn; [ -z "$nn" ] && nn="Hysteria2-${port}"
     
     local cert_dir="/etc/sing-box/certs/hy2-${port}"; mkdir -p "$cert_dir"
-    openssl req -x509 -nodes -days 3650 -newkey rsa:2048 -keyout "${cert_dir}/key.pem" -out "${cert_dir}/cert.pem" -subj "/CN=hysteria2" 2>/dev/null
+    # 改用 ECC 证书，CN 设为 www.bing.com
+    openssl ecparam -genkey -name prime256v1 -out "${cert_dir}/key.pem" 2>/dev/null
+    openssl req -new -x509 -days 3650 -key "${cert_dir}/key.pem" -out "${cert_dir}/cert.pem" -subj "/CN=${hy2_sni}" 2>/dev/null
     
     sb_init_conf; cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
-    # 移除 sniff 字段，适配 1.11.0+ 规范
-    local ij=$(jq -n --argjson p "$port" --arg pwd "$pwd" --arg c "${cert_dir}/cert.pem" --arg k "${cert_dir}/key.pem" '{"type":"hysteria2","tag":("hysteria2-"+($p|tostring)),"listen":"::","listen_port":$p,"users":[{"password":$pwd}],"ignore_client_bandwidth":false,"tls":{"enabled":true,"alpn":["h3"],"certificate_path":$c,"key_path":$k}}')
+    local ij=$(jq -n --argjson p "$port" --arg pwd "$pwd" --arg c "${cert_dir}/cert.pem" --arg k "${cert_dir}/key.pem" --arg s "${hy2_sni}" '{"type":"hysteria2","tag":("hysteria2-"+($p|tostring)),"listen":"::","listen_port":$p,"users":[{"password":$pwd}],"ignore_client_bandwidth":false,"tls":{"enabled":true,"alpn":["h3"],"certificate_path":$c,"key_path":$k}}')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$SB_CONF" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$SB_CONF"
     
     if /etc/sing-box/sing-box check -c "$SB_CONF" 2>/tmp/sb_err.log; then
-        open_port_both "$port"; _save_node_meta "$port" "$nn" "hysteria2" "" "password=${pwd};tls_method=selfsign"
+        open_port_both "$port"; _save_node_meta "$port" "$nn" "hysteria2" "" "password=${pwd};tls_method=selfsign;sni=${hy2_sni}"
         systemctl restart sing-box 2>/dev/null || rc-service sing-box restart 2>/dev/null; sleep 2
-        echo -e "${G}✅ 成功 | 密码: ${pwd}${R}"
+        echo -e "${G}✅ 成功 | 密码: ${pwd} | SNI: ${hy2_sni}${R}"
         local link_ip=$(get_my_ip)
-        [ "$link_ip" != "未知IP" ] && echo -e "${C}hysteria2://$(url_encode "$pwd")@${link_ip}:${port}?insecure=1#$(url_encode "$nn")${R}"
+        # 链接里补全 sni 参数，确保客户端能正确发起握手
+        [ "$link_ip" != "未知IP" ] && echo -e "${C}hysteria2://$(url_encode "$pwd")@${link_ip}:${port}?insecure=1&sni=${hy2_sni}&alpn=h3#$(url_encode "$nn")${R}"
     else
         echo -e "${RED}校验失败，回滚配置。错误信息如下：${R}"
         cat /tmp/sb_err.log
@@ -725,8 +726,10 @@ sb_show_nodes_and_links() {
                         link="vless://${uuid}@${server_ip}:${port}?encryption=none${flow_param}&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp#$(url_encode "$nn")"
                     else ws_path=$(echo "$obj" | jq -r '.transport.path // empty' 2>/dev/null); link="vless://${uuid}@${server_ip}:${port}?encryption=none&security=none&type=ws&path=$(url_encode "${ws_path:-/}")#$(url_encode "$nn")"; fi
                 } ;;
-            hysteria2) local pwd; pwd=$(echo "$obj" | jq -r '.users[0].password // empty' 2>/dev/null)
-                [ -n "$pwd" ] && link="hysteria2://$(url_encode "$pwd")@${server_ip}:${port}?insecure=1#$(url_encode "$nn")"; ;;
+            hysteria2) local pwd sni; 
+                pwd=$(echo "$obj" | jq -r '.users[0].password // empty' 2>/dev/null)
+                sni="www.bing.com"
+                [ -n "$pwd" ] && link="hysteria2://$(url_encode "$pwd")@${server_ip}:${port}?insecure=1&sni=${sni}&alpn=h3#$(url_encode "$nn")"; ;;
         esac
         [ -n "$link" ] && echo -e "${C}${link}${R}"; echo ""; idx=$((idx + 1))
     done < <(jq -r '.inbounds[] | @base64' "$SB_CONF" 2>/dev/null)
