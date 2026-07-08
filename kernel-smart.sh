@@ -338,27 +338,123 @@ xanmod_add_repo() {
     local keyring="/usr/share/keyrings/xanmod-archive-keyring.gpg" list_file="/etc/apt/sources.list.d/xanmod-release.list" os_codename=""
     if command -v lsb_release >/dev/null 2>&1; then os_codename=$(lsb_release -sc); elif [ -r /etc/os-release ]; then os_codename=$(. /etc/os-release && echo "$VERSION_CODENAME"); fi
     if ! echo "bookworm trixie forky sid noble plucky" | grep -qw "$os_codename"; then os_codename="releases"; fi
-    if echo "jammy focal bullseye buster releases" | grep -qw "$os_codename"; then echo -e "${RED}XanMod 已停止支持${R}"; return 1; fi
-    [ -z "$os_codename" ] && { echo "无法获取代号"; return 1; }
+    if echo "jammy focal bullseye buster releases" | grep -qw "$os_codename"; then echo -e "${RED}XanMod 已停止支持当前系统版本${R}"; return 1; fi
+    [ -z "$os_codename" ] && { echo -e "${RED}无法获取系统代号${R}"; return 1; }
     apt-get install -y wget gnupg ca-certificates >/dev/null 2>&1; mkdir -p /usr/share/keyrings /etc/apt/sources.list.d
     wget -qO - "https://dl.xanmod.org/archive.key" | gpg --dearmor -o "$keyring" --yes 2>/dev/null; chmod 644 "$keyring"
     echo "deb [signed-by=$keyring] http://deb.xanmod.org $os_codename main" > "$list_file"
+    return 0
 }
 
 xanmod_detect_package() {
     local psabi_level=$(awk 'BEGIN{ while(!/flags/) if(getline<"/proc/cpuinfo"!=1) exit 1; if(/lm/&&/cmov/&&/cx8/&&/fpu/&&/fxsr/&&/mmx/&&/syscall/&&/sse2/) level=1; if(level==1&&/cx16/&&/lahf/&&/popcnt/&&/sse4_1/&&/sse4_2/&&/ssse3/) level=2; if(level==2&&/avx/&&/avx2/&&/bmi1/&&/bmi2/&&/f16c/&&/fma/&&/abm/&&/movbe/&&/xsave/) level=3; if(level>0){print level;exit}}' /proc/cpuinfo 2>/dev/null) || return 1
-    [ "$psabi_level" -gt 3 ] && psabi_level=3; apt update -y >/dev/null 2>&1
-    for prefix in linux-xanmod linux-xanmod-lts; do local l="$psabi_level"; while [ "$l" -ge 1 ]; do local p="${prefix}-x64v${l}"; if apt-cache policy "$p" 2>/dev/null | grep -q 'Candidate: [^ ]'; then printf '%s\n' "$p"; return 0; fi; l=$((l-1)); done; done; return 1
+    [ "$psabi_level" -gt 3 ] && psabi_level=3
+    for prefix in linux-xanmod linux-xanmod-lts; do 
+        local l="$psabi_level"; 
+        while [ "$l" -ge 1 ]; do 
+            local p="${prefix}-x64v${l}"; 
+            if apt-cache policy "$p" 2>/dev/null | grep -q 'Candidate: [^ ]'; then 
+                echo "$p"; return 0; 
+            fi; 
+            l=$((l-1)); 
+        done; 
+    done; 
+    return 1
 }
 
 bbrv3() {
     root_use
-    if [ "$(uname -m)" = "aarch64" ]; then echo -e "${Y}ARM架构请使用系统默认BBR${R}"; read -rs -n 1 -p ""; return 0; fi
-    if [ -r /etc/os-release ]; then . /etc/os-release; if [ "$ID" != "debian" ] && [ "$ID" != "ubuntu" ]; then echo "仅支持Debian/Ubuntu"; return 0; fi; else return 0; fi
-    if dpkg-query -W -f='${Package}\n' 'linux-*xanmod*' 2>/dev/null | grep -q '^linux-.*xanmod'; then
-        while true; do clear; echo "当前: $(uname -r)\n1.更新 2.卸载 0.返回"; readp "选择: " c
-        case $c in 1) check_swap && xanmod_add_repo && apt update -y && apt install -y --only-upgrade $(xanmod_detect_package) && bbr_on && { readp "是否现在重启？: " rc; [[ "$rc" =~ ^[Yy]$ ]] && reboot; } ;; 2) apt purge -y 'linux-*xanmod*' && apt autoremove -y && update-grub && rm -f /etc/apt/sources.list.d/xanmod-release.list && { readp "是否现在重启？: " rc; [[ "$rc" =~ ^[Yy]$ ]] && reboot; } ;; 0|"") break ;; *) break ;; esac; done
-    else clear; echo "设置BBR3"; readp "继续？: " c; [[ "$c" =~ ^[Yy]$ ]] && check_swap && xanmod_add_repo && apt update -y && apt install -y $(xanmod_detect_package) && bbr_on && { readp "是否现在重启？: " rc; [[ "$rc" =~ ^[Yy]$ ]] && reboot; }; fi
+    while true; do
+        clear
+        echo -e "${G}╔═══════════════════════════════════╗"
+        echo -e "║          BBRv3 (XanMod) 管理         ║"
+        echo -e "╚═══════════════════════════════════╝${R}"
+        
+        local current_kernel=$(uname -r)
+        local current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+        
+        if echo "$current_kernel" | grep -q "xanmod"; then
+            echo -e "当前内核: ${G}${current_kernel}${R}"
+            echo -e "当前算法: ${G}${current_cc}${R}"
+            echo -e "状态: ${G}已安装 XanMod 内核${R}"
+        else
+            echo -e "当前内核: ${Y}${current_kernel}${R}"
+            echo -e "当前算法: ${Y}${current_cc}${R}"
+            echo -e "状态: ${Y}未安装 XanMod 内核${R}"
+        fi
+        echo -e "----------------------------------------------"
+        
+        if [ "$(uname -m)" = "aarch64" ]; then 
+            echo -e "${Y}ARM架构不支持 XanMod，请使用系统默认BBR${R}"
+            read -rs -n 1 -p "按任意键返回..."
+            return 0
+        fi
+        
+        if [ -r /etc/os-release ]; then 
+            . /etc/os-release
+            if [ "$ID" != "debian" ] && [ "$ID" != "ubuntu" ]; then 
+                echo -e "${RED}XanMod 内核仅支持 Debian/Ubuntu 系统${R}"
+                read -rs -n 1 -p "按任意键返回..."
+                return 0
+            fi
+        else 
+            return 0
+        fi
+
+        if echo "$current_kernel" | grep -q "xanmod"; then
+            echo -e "    ${H}[1] 更新 XanMod 内核${R}"
+            echo -e "    ${H}[2] 卸载 XanMod 内核${R}"
+        else
+            echo -e "    ${H}[1] 安装 XanMod 内核并开启 BBRv3${R}"
+        fi
+        echo -e "    ${H}[0] 返回主菜单${R}"
+        echo ""
+        readp "  请选择: " c
+        c=$(echo "$c" | tr -d '[:space:]')
+        
+        case "$c" in
+            1)
+                echo -e "${Y}正在准备环境...${R}"
+                check_swap >/dev/null 2>&1
+                if ! xanmod_add_repo; then
+                    read -rs -n 1 -p "添加 XanMod 源失败，按任意键返回..."
+                    continue
+                fi
+                apt update -y >/dev/null 2>&1
+                local pkg=$(xanmod_detect_package)
+                if [ -z "$pkg" ]; then
+                    echo -e "${RED}未检测到适合当前 CPU 的内核包${R}"
+                    read -rs -n 1 -p "按任意键返回..."
+                    continue
+                fi
+                
+                echo -e "${Y}开始下载并安装/更新 ${pkg} ...${R}"
+                if echo "$current_kernel" | grep -q "xanmod"; then
+                    apt install -y --only-upgrade "$pkg"
+                else
+                    apt install -y "$pkg"
+                fi
+                
+                bbr_on
+                echo -e "${G}✅ 操作完成！${R}"
+                readp "是否现在重启系统以应用新内核？: " rc
+                [[ "$rc" =~ ^[Yy]$ ]] && reboot
+                ;;
+            2)
+                readp "确认卸载 XanMod 内核并恢复系统默认？: " uc
+                if [[ "$uc" =~ ^[Yy]$ ]]; then
+                    apt purge -y 'linux-*xanmod*'
+                    apt autoremove -y
+                    update-grub 2>/dev/null
+                    rm -f /etc/apt/sources.list.d/xanmod-release.list
+                    echo -e "${G}✅ 卸载完成！${R}"
+                    readp "必须重启系统才能生效，是否现在重启？: " rc
+                    [[ "$rc" =~ ^[Yy]$ ]] && reboot
+                fi
+                ;;
+            0|"") break ;;
+        esac
+    done
 }
 
 # ================= 直播承载能力评估 =================
@@ -688,12 +784,18 @@ main_menu() {
     check_env
     while true; do
         clear
+        local current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+        local bbr_status="${H}[当前: ${current_cc:-未知}]${R}"
+        if echo "$(uname -r)" | grep -q "xanmod"; then
+            bbr_status="${G}[已装 XanMod: ${current_cc:-未知}]${R}"
+        fi
+
         echo -e "${G}╔══════════════════════════════════════╗"
         echo -e "║          YW 服务器优化工具箱            ║"
         echo -e "╚══════════════════════════════════════╝${R}"
         echo ""
         echo -e "    ${Y}[1] 系统信息查询${R}"
-        echo -e "    ${Y}[2] BBRv3 (XanMod内核)${R}"
+        echo -e "    ${Y}[2] BBRv3 (XanMod内核) ${bbr_status}"
         echo -e "    ${Y}[3] Sing-Box 管理面板${R}"
         echo -e "    ${Y}[4] Linux 内核网络优化${R}"
         echo -e "    ${Y}[5] Swap 管理${R}"
