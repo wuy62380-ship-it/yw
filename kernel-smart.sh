@@ -526,7 +526,8 @@ sb_check() {
 sb_init_conf() { 
     if [ ! -f "$SB_CONF" ] || ! jq -e . "$SB_CONF" >/dev/null 2>&1; then 
         mkdir -p /etc/sing-box
-        echo '{"log":{"level":"error"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct"}}' > "$SB_CONF"
+        # 适配 sing-box 1.11.0+ 规范，将 sniff 移至 route.rules
+        echo '{"log":{"level":"error"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"rules":[{"action":"sniff"},{"action":"resolve"}],"final":"direct"}}' > "$SB_CONF"
     fi
     [ ! -f "$META_FILE" ] && echo '{}' > "$META_FILE" && chmod 600 "$META_FILE"
 }
@@ -618,7 +619,8 @@ sb_add_reality() {
     readp "名称 (回车默认): " nn; [ -z "$nn" ] && nn="VLESS-Reality-${port}"
 
     sb_init_conf; cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
-    local ij=$(jq -n --argjson p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" '{"type":"vless","tag":("vless-reality-"+($p|tostring)),"listen":"::","listen_port":$p,"sniff":true,"sniff_override_destination":true,"users":[{"uuid":$u,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$s,"reality":{"enabled":true,"handshake":{"server":$s,"server_port":443},"private_key":$pk,"short_id":[$sid]}}}')
+    # 移除 sniff 字段，适配 1.11.0+ 规范
+    local ij=$(jq -n --argjson p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" '{"type":"vless","tag":("vless-reality-"+($p|tostring)),"listen":"::","listen_port":$p,"users":[{"uuid":$u,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$s,"reality":{"enabled":true,"handshake":{"server":$s,"server_port":443},"private_key":$pk,"short_id":[$sid]}}}')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$SB_CONF" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$SB_CONF"
     
     if /etc/sing-box/sing-box check -c "$SB_CONF" 2>/tmp/sb_err.log; then
@@ -651,7 +653,8 @@ sb_add_vless_ws() {
     fi
 
     sb_init_conf; cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
-    local ij=$(jq -n --argjson p "$port" --arg u "$uuid" --arg wp "$ws_path" '{"type":"vless","tag":("vless-ws-"+($p|tostring)),"listen":"::","listen_port":$p,"sniff":true,"sniff_override_destination":true,"users":[{"uuid":$u}],"transport":{"type":"ws","path":$wp}}')
+    # 移除 sniff 字段，适配 1.11.0+ 规范
+    local ij=$(jq -n --argjson p "$port" --arg u "$uuid" --arg wp "$ws_path" '{"type":"vless","tag":("vless-ws-"+($p|tostring)),"listen":"::","listen_port":$p,"users":[{"uuid":$u}],"transport":{"type":"ws","path":$wp}}')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$SB_CONF" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$SB_CONF"
     
     if /etc/sing-box/sing-box check -c "$SB_CONF" 2>/tmp/sb_err.log; then
@@ -679,7 +682,8 @@ sb_add_hysteria2() {
     openssl req -x509 -nodes -days 3650 -newkey rsa:2048 -keyout "${cert_dir}/key.pem" -out "${cert_dir}/cert.pem" -subj "/CN=hysteria2" 2>/dev/null
     
     sb_init_conf; cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
-    local ij=$(jq -n --argjson p "$port" --arg pwd "$pwd" --arg c "${cert_dir}/cert.pem" --arg k "${cert_dir}/key.pem" '{"type":"hysteria2","tag":("hysteria2-"+($p|tostring)),"listen":"::","listen_port":$p,"sniff":true,"sniff_override_destination":true,"users":[{"password":$pwd}],"ignore_client_bandwidth":false,"tls":{"enabled":true,"alpn":["h3"],"certificate_path":$c,"key_path":$k}}')
+    # 移除 sniff 字段，适配 1.11.0+ 规范
+    local ij=$(jq -n --argjson p "$port" --arg pwd "$pwd" --arg c "${cert_dir}/cert.pem" --arg k "${cert_dir}/key.pem" '{"type":"hysteria2","tag":("hysteria2-"+($p|tostring)),"listen":"::","listen_port":$p,"users":[{"password":$pwd}],"ignore_client_bandwidth":false,"tls":{"enabled":true,"alpn":["h3"],"certificate_path":$c,"key_path":$k}}')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$SB_CONF" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$SB_CONF"
     
     if /etc/sing-box/sing-box check -c "$SB_CONF" 2>/tmp/sb_err.log; then
