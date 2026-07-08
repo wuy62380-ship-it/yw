@@ -10,34 +10,19 @@ check_env() {
     if ! command -v jq >/dev/null 2>&1; then need_update=1; fi
     if ! command -v openssl >/dev/null 2>&1; then need_update=1; fi
     if ! command -v iptables >/dev/null 2>&1; then need_update=1; fi
-    if ! command -v ip >/dev/null 2>&1; then need_update=1; fi
     
     if [ "$need_update" -eq 1 ]; then
         echo -e "${gl_huang}正在准备基础环境...${gl_bai}"
         if command -v apt >/dev/null 2>&1; then 
             apt-get update -y >/dev/null 2>&1
-            apt-get install -y curl jq openssl iptables iproute2 >/dev/null 2>&1
+            apt-get install -y curl jq openssl iptables >/dev/null 2>&1
         elif command -v yum >/dev/null 2>&1; then 
-            yum install -y curl jq openssl iptables iproute >/dev/null 2>&1
+            yum install -y curl jq openssl iptables >/dev/null 2>&1
         elif command -v apk >/dev/null 2>&1; then 
             apk update >/dev/null 2>&1
-            apk add curl jq openssl iptables iproute2 >/dev/null 2>&1
+            apk add curl jq openssl iptables >/dev/null 2>&1
         fi
         echo -e "${gl_lv}✅ 基础环境准备完毕！${gl_bai}"
-    fi
-}
-
-sync_time() {
-    if command -v timedatectl >/dev/null 2>&1; then
-        timedatectl set-ntp true >/dev/null 2>&1
-        if ! timedatectl status 2>/dev/null | grep -q "NTP service: active"; then
-            echo -e "${gl_huang}正在安装时间同步服务以防节点TLS握手失败...${gl_bai}"
-            if command -v apt >/dev/null 2>&1; then 
-                apt-get install -y chrony >/dev/null 2>&1; systemctl enable --now chrony >/dev/null 2>&1
-            elif command -v yum >/dev/null 2>&1; then 
-                yum install -y chrony >/dev/null 2>&1; systemctl enable --now chronyd >/dev/null 2>&1
-            fi
-        fi
     fi
 }
 
@@ -86,7 +71,7 @@ change_swap_size() {
 
 _kernel_optimize_core() {
     local mode_name="$1" scene="${2:-stream_game}" CONF="/etc/sysctl.d/99-yw-optimize.conf"
-    local SWAPPINESS DIRTY_RATIO DIRTY_BG_RATIO OVERCOMMIT MIN_FREE_KB VFS_PRESSURE RMEM_MAX WMEM_MAX TCP_RMEM TCP_WMEM SOMAXCONN BACKLOG SYN_BACKLOG PORT_RANGE SCHED_AUTOGROUP THP NUMA FIN_TIMEOUT KEEPALIVE_TIME KEEPALIVE_INTVL KEEPALIVE_PROBES CC="bbr" QDISC="fq" UDP_RMEM_MIN=131072 TCP_NOTSENT_LOWAT=16384 TCP_FASTOPEN=3 TCP_TW_REUSE=1 TCP_MTU_PROBING=1 HIGH_EXTRA="" STREAM_EXTRA="" WEB_EXTRA="" BALANCED_EXTRA="" GATEWAY_EXTRA="" STREAM_GAME_EXTRA="" TCP_SLOW_START_AFTER_IDLE=0 TCP_ECN=0 CONNTRACK_MULT=32
+    local SWAPPINESS DIRTY_RATIO DIRTY_BG_RATIO OVERCOMMIT MIN_FREE_KB VFS_PRESSURE RMEM_MAX WMEM_MAX TCP_RMEM TCP_WMEM SOMAXCONN BACKLOG SYN_BACKLOG PORT_RANGE SCHED_AUTOGROUP THP NUMA FIN_TIMEOUT KEEPALIVE_TIME KEEPALIVE_INTVL KEEPALIVE_PROBES CC="bbr" QDISC="fq" UDP_RMEM_MIN=131072 TCP_NOTSENT_LOWAT=16384 TCP_FASTOPEN=3 TCP_TW_REUSE=1 TCP_MTU_PROBING=1 HIGH_EXTRA="" STREAM_EXTRA="" GAME_EXTRA="" WEB_EXTRA="" BALANCED_EXTRA="" GATEWAY_EXTRA="" STREAM_GAME_EXTRA="" TCP_SLOW_START_AFTER_IDLE=0 TCP_ECN=0 CONNTRACK_MULT=32
     case "$scene" in
         stream_game) SWAPPINESS=10; DIRTY_RATIO=20; DIRTY_BG_RATIO=8; OVERCOMMIT=1; VFS_PRESSURE=50; MIN_FREE_KB=131072; RMEM_MAX=134217728; WMEM_MAX=134217728; TCP_RMEM="4096 87380 67108864"; TCP_WMEM="4096 65536 67108864"; SOMAXCONN=65535; BACKLOG=500000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"; SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=10; KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5; UDP_RMEM_MIN=131072; STREAM_GAME_EXTRA=$'net.ipv4.udp_rmem_min = 131072\nnet.ipv4.udp_wmem_min = 131072\nnet.ipv4.udp_rmem_max = 16777216\nnet.ipv4.udp_wmem_max = 16777216\nnet.core.netdev_budget = 1200\nnet.core.netdev_max_backlog = 500000\nnet.core.optmem_max = 40960' ;;
         high) SWAPPINESS=10; OVERCOMMIT=1; VFS_PRESSURE=50; DIRTY_RATIO=40; DIRTY_BG_RATIO=10; MIN_FREE_KB=131072; RMEM_MAX=134217728; WMEM_MAX=134217728; TCP_RMEM="4096 87380 67108864"; TCP_WMEM="4096 65536 67108864"; SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"; SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=10; KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5; HIGH_EXTRA=$'vm.dirty_ratio = 40\nvm.dirty_background_ratio = 10' ;;
@@ -111,25 +96,11 @@ _kernel_optimize_core() {
 
     local KVER=$(uname -r | grep -oP '^\d+\.\d+'); CC="cubic"; QDISC="fq_codel"
     if [ -n "$KVER" ] && { [ "$KVER" \> "4.9" ] || [ "$KVER" = "4.9" ]; }; then modprobe tcp_bbr 2>/dev/null; sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q bbr && { CC="bbr"; QDISC="fq"; }; fi
-    
     local TCP_MEM_MIN=$((MEM_MB_VAL * 256)) TCP_MEM_DEF=$((MEM_MB_VAL * 512)) TCP_MEM_MAX=$((MEM_MB_VAL * 1024))
-    [ "$TCP_MEM_MIN" -lt 8192 ] && TCP_MEM_MIN=8192
-    [ "$TCP_MEM_DEF" -lt 16384 ] && TCP_MEM_DEF=16384
-    [ "$TCP_MEM_MAX" -lt 32768 ] && TCP_MEM_MAX=32768
-    
-    # [FIX] 修复导致语法错误的反引号，重构拼接逻辑
-    if [ "$scene" = "stream" ] || [ "$scene" = "stream_game" ]; then
-        if [ "$MEM_MB_VAL" -ge 1024 ]; then
-            local udp_mem_str="$((MEM_MB_VAL * 128)) $((MEM_MB_VAL * 256)) $((MEM_MB_VAL * 512))"
-            STREAM_GAME_EXTRA="${STREAM_GAME_EXTRA:-${STREAM_EXTRA}}"$'\n'"net.ipv4.udp_mem = $udp_mem_str"
-        fi
-    fi
-
+    [ "$TCP_MEM_MIN" -lt 8192 ] && TCP_MEM_MIN=8192; [ "$TCP_MEM_DEF" -lt 16384 ] && TCP_MEM_DEF=16384; [ "$TCP_MEM_MAX" -lt 32768 ] && TCP_MEM_MAX=32768
+    [ "$scene" = "stream" ] || [ "$scene" = "stream_game" ] && [ "$MEM_MB_VAL" -ge 1024 ] && STREAM_GAME_EXTRA="${STREAM_GAME_EXTRA:-${STREAM_EXTRA}}"$'\nnet.ipv4.udp_mem = '"$((MEM_MB_VAL * 128)) $((MEM_MB_VAL * 256)) $((MEM_MB_VAL * 512))"
     local TW_BUCKETS=$((SOMAXCONN * 4)) MAX_ORPHANS=$((SOMAXCONN * 2))
-    [ "$scene" = "web" ] && [ "$MEM_MB_VAL" -ge 2048 ] && TW_BUCKETS=524288
-    [ "$TW_BUCKETS" -gt 524288 ] && TW_BUCKETS=524288
-    [ "$MAX_ORPHANS" -gt 131072 ] && MAX_ORPHANS=131072
-
+    [ "$scene" = "web" ] && [ "$MEM_MB_VAL" -ge 2048 ] && TW_BUCKETS=524288; [ "$TW_BUCKETS" -gt 524288 ] && TW_BUCKETS=524288; [ "$MAX_ORPHANS" -gt 131072 ] && MAX_ORPHANS=131072
     [ -f "$CONF" ] && cp "$CONF" "${CONF}.bak.$(date +%s)"
     cat > "$CONF" << EOF
 # 模式: ${mode_name}|${scene}
@@ -174,10 +145,8 @@ vm.min_free_kbytes = $MIN_FREE_KB
 vm.vfs_cache_pressure = $VFS_PRESSURE
 kernel.sched_autogroup_enabled = $SCHED_AUTOGROUP
  $( [ -f /proc/sys/kernel/numa_balancing ] && echo "kernel.numa_balancing = $NUMA" || echo "# numa不支持" )
-net.ipv4.conf.all.rp_filter = 2
-net.ipv4.conf.default.rp_filter = 2
-net.ipv4.ip_forward = 1
-net.ipv6.conf.all.forwarding = 1
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
 net.ipv4.icmp_echo_ignore_broadcasts = 1
 net.ipv4.icmp_ignore_bogus_error_responses = 1
 net.ipv4.conf.all.accept_redirects = 0
@@ -288,9 +257,9 @@ estimate_stream_capacity() {
 xanmod_add_repo() {
     local keyring="/usr/share/keyrings/xanmod-archive-keyring.gpg" list_file="/etc/apt/sources.list.d/xanmod-release.list" os_codename=""
     if command -v lsb_release >/dev/null 2>&1; then os_codename=$(lsb_release -sc); elif [ -r /etc/os-release ]; then os_codename=$(. /etc/os-release && echo "$VERSION_CODENAME"); fi
-    if ! echo "bookworm trixie forky sid noble plucky jammy" | grep -qw "$os_codename"; then 
-        os_codename="releases"
-    fi
+    if ! echo "bookworm trixie forky sid noble plucky" | grep -qw "$os_codename"; then os_codename="releases"; fi
+    if echo "jammy focal bullseye buster releases" | grep -qw "$os_codename"; then echo -e "${gl_hong}XanMod 已停止支持${gl_bai}"; return 1; fi
+    [ -z "$os_codename" ] && { echo "无法获取代号"; return 1; }
     install_pkg wget gnupg ca-certificates || return 1; mkdir -p /usr/share/keyrings /etc/apt/sources.list.d
     wget -qO - "https://dl.xanmod.org/archive.key" | gpg --dearmor -o "$keyring" --yes 2>/dev/null; chmod 644 "$keyring"
     echo "deb [signed-by=$keyring] http://deb.xanmod.org $os_codename main" > "$list_file"
@@ -618,9 +587,7 @@ manual_open_port() {
 
 _ensure_rc_local() {
     if [ ! -f /etc/rc.local ]; then printf '#!/bin/bash\nexit 0\n' > /etc/rc.local; chmod +x /etc/rc.local; fi
-    if ! grep -q "iptables-restore" /etc/rc.local 2>/dev/null; then sed -i '/^exit 0/i iptables-restore < /etc/iptables.rules 2>/dev/null' /etc/rc.local 2>/dev/null; fi
-    systemctl enable rc-local >/dev/null 2>&1
-    systemctl start rc-local >/dev/null 2>&1
+    if ! grep -q "iptables-restore" /etc/rc.local 2>/dev/null; then sed -i '/^exit 0/i iptables-restore < /etc/iptables.rules' /etc/rc.local 2>/dev/null; fi
 }
 _persist_iptables() {
     command -v iptables-save >/dev/null 2>&1 || return
@@ -745,9 +712,7 @@ sb_add_hysteria2() {
         *) return ;;
     esac
     sb_init_conf; local conf="/etc/sing-box/config.json"; cp "$conf" "${conf}.bak.$(date +%s)"
-    
-    local ij=$(jq -n --argjson p "$port" --arg pwd "$pwd" --argjson tls "$tls_obj" '{"type":"hysteria2","tag":("hysteria2-"+($p|tostring)),"listen":"::","listen_port":$p,"up_mbps":0,"down_mbps":0,"users":[{"password":$pwd}],"tls":$tls}')
-    
+    local ij=$(jq -n --argjson p "$port" --arg pwd "$pwd" --argjson tls "$tls_obj" '{"type":"hysteria2","tag":("hysteria2-"+($p|tostring)),"listen":"::","listen_port":$p,"up_mbps":100,"down_mbps":100,"users":[{"password":$pwd}],"tls":$tls}')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$conf" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$conf"
     if sing-box check -c "$conf" >/dev/null 2>&1; then
         open_port_both "$port"
@@ -936,7 +901,6 @@ sb_menu() {
 
 main_menu() {
     check_env
-    sync_time
     while true; do
         clear
         echo -e "${gl_lv}╔══════════════════════════════════════╗"
