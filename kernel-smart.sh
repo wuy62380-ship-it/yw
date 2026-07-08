@@ -298,7 +298,7 @@ show_sys_info() {
         echo -e "${C}系统信息查询${R}"
         echo -e "${C}=============="
         echo -e "${C}主机名:         ${R}${hostname_val}"
-        echo -e "${C}系统版本:       ${R}${os_info}"
+        echo -e "${C}系统版本:       ${R}${os_info}
         echo -e "${C}Linux版本:      ${R}${kernel_version}"
         echo -e "${C}=============="
         echo -e "${C}CPU架构:        ${R}${cpu_arch}"
@@ -526,8 +526,8 @@ sb_check() {
 sb_init_conf() { 
     if [ ! -f "$SB_CONF" ] || ! jq -e . "$SB_CONF" >/dev/null 2>&1; then 
         mkdir -p /etc/sing-box
-        # 修复出站路由配置，防止连得上但无网
-        echo '{"log":{"level":"error"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct","domain_strategy":"prefer_ipv4"}],"route":{"rules":[{"action":"sniff"},{"action":"resolve","strategy":"prefer_ipv4"}],"final":"direct","auto_detect_interface":true}}' > "$SB_CONF"
+        # 彻底修复出站路由配置，确保流量能正确出去，并适配 1.11.0+ 的 sniff 规范
+        echo '{"log":{"level":"error"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"rules":[{"action":"sniff"}],"final":"direct","auto_detect_interface":true}}' > "$SB_CONF"
     fi
     [ ! -f "$META_FILE" ] && echo '{}' > "$META_FILE" && chmod 600 "$META_FILE"
 }
@@ -543,7 +543,7 @@ _save_node_meta() {
 _del_node_meta() { [ -f "$META_FILE" ] && jq --arg p "$1" 'del(.[$p])' "$META_FILE" > /tmp/sb_meta.json && mv /tmp/sb_meta.json "$META_FILE"; }
 _get_node_meta() { [ -f "$META_FILE" ] && jq -r --arg p "$1" --arg f "$2" '.[$p][$f] // empty' "$META_FILE"; }
 
-get_my_ip() { curl -4 -s -f --connect-timeout 3 https://ifconfig.me 2>/dev/null || curl -4 -s -f --connect-timeout 3 https://checkip.amazonaws.com 2>/dev/null || echo "未知IP"; }
+get_my_ip() { curl -4 -s -f --connect-timeout 3 https://ifconfig.me 2>/dev/null || curl -6 -s -f --connect-timeout 3 https://ifconfig.me 2>/dev/null || curl -4 -s -f --connect-timeout 3 https://checkip.amazonaws.com 2>/dev/null || echo "未知IP"; }
 url_encode() { printf '%s' "$1" | sed 's/+/%2B/g; s/\//%2F/g; s/=/%3D/g; s/ /%20/g; s/#/%23/g; s/?/%3F/g; s/&/%26/g; s/@/%40/g'; }
 
 sb_install() {
@@ -627,7 +627,8 @@ sb_add_reality() {
         systemctl restart sing-box 2>/dev/null || rc-service sing-box restart 2>/dev/null; sleep 2
         echo -e "${G}✅ 成功 | PublicKey: ${pub_key} | short_id: ${short_id}${R}"
         local link_ip=$(get_my_ip)
-        [ "$link_ip" != "未知IP" ] && echo -e "${C}vless://${uuid}@${link_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp#$(url_encode "$nn")${R}"
+        # 链接增加 headerType=none 确保兼容所有客户端
+        [ "$link_ip" != "未知IP" ] && echo -e "${C}vless://${uuid}@${link_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#$(url_encode "$nn")${R}"
     else
         echo -e "${RED}校验失败，回滚配置。错误信息如下：${R}"
         cat /tmp/sb_err.log
@@ -678,7 +679,6 @@ sb_add_hysteria2() {
     readp "名称 (回车默认): " nn; [ -z "$nn" ] && nn="Hysteria2-${port}"
     
     local cert_dir="/etc/sing-box/certs/hy2-${port}"; mkdir -p "$cert_dir"
-    # 改用 ECC 证书，CN 设为 www.bing.com
     openssl ecparam -genkey -name prime256v1 -out "${cert_dir}/key.pem" 2>/dev/null
     openssl req -new -x509 -days 3650 -key "${cert_dir}/key.pem" -out "${cert_dir}/cert.pem" -subj "/CN=${hy2_sni}" 2>/dev/null
     
@@ -691,8 +691,8 @@ sb_add_hysteria2() {
         systemctl restart sing-box 2>/dev/null || rc-service sing-box restart 2>/dev/null; sleep 2
         echo -e "${G}✅ 成功 | 密码: ${pwd} | SNI: ${hy2_sni}${R}"
         local link_ip=$(get_my_ip)
-        # 链接里补全 sni 参数，确保客户端能正确发起握手
-        [ "$link_ip" != "未知IP" ] && echo -e "${C}hysteria2://$(url_encode "$pwd")@${link_ip}:${port}?insecure=1&sni=${hy2_sni}&alpn=h3#$(url_encode "$nn")${R}"
+        # 彻底修复客户端兼容性：同时带 insecure 和 allowInsecure
+        [ "$link_ip" != "未知IP" ] && echo -e "${C}hysteria2://$(url_encode "$pwd")@${link_ip}:${port}?insecure=1&allowInsecure=1&sni=${hy2_sni}&alpn=h3#$(url_encode "$nn")${R}"
     else
         echo -e "${RED}校验失败，回滚配置。错误信息如下：${R}"
         cat /tmp/sb_err.log
@@ -723,13 +723,13 @@ sb_show_nodes_and_links() {
                     if [ "$tls_enabled" = "true" ] && echo "$obj" | jq -e '.tls.reality' >/dev/null 2>&1; then
                         sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null); pub_key=$(_get_node_meta "$port" "pub_key")
                         short_id=$(echo "$obj" | jq -r '.tls.reality.short_id[0] // empty' 2>/dev/null); local flow_param=""; [ -n "$flow" ] && flow_param="&flow=${flow}"
-                        link="vless://${uuid}@${server_ip}:${port}?encryption=none${flow_param}&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp#$(url_encode "$nn")"
+                        link="vless://${uuid}@${server_ip}:${port}?encryption=none${flow_param}&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#$(url_encode "$nn")"
                     else ws_path=$(echo "$obj" | jq -r '.transport.path // empty' 2>/dev/null); link="vless://${uuid}@${server_ip}:${port}?encryption=none&security=none&type=ws&path=$(url_encode "${ws_path:-/}")#$(url_encode "$nn")"; fi
                 } ;;
             hysteria2) local pwd sni; 
                 pwd=$(echo "$obj" | jq -r '.users[0].password // empty' 2>/dev/null)
                 sni="www.bing.com"
-                [ -n "$pwd" ] && link="hysteria2://$(url_encode "$pwd")@${server_ip}:${port}?insecure=1&sni=${sni}&alpn=h3#$(url_encode "$nn")"; ;;
+                [ -n "$pwd" ] && link="hysteria2://$(url_encode "$pwd")@${server_ip}:${port}?insecure=1&allowInsecure=1&sni=${sni}&alpn=h3#$(url_encode "$nn")"; ;;
         esac
         [ -n "$link" ] && echo -e "${C}${link}${R}"; echo ""; idx=$((idx + 1))
     done < <(jq -r '.inbounds[] | @base64' "$SB_CONF" 2>/dev/null)
