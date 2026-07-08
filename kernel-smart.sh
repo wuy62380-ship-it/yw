@@ -381,12 +381,24 @@ check_port_occupied() { local port=$1; if ss -tunlp | awk '{print $5}' | grep -q
 
 sb_check() { if ! command -v $SB_BIN >/dev/null 2>&1; then echo -e "${RED}请先安装 Sing-Box${R}"; read -rs -n 1 -p ""; return 1; fi; return 0; }
 sb_init_conf() { 
-    if [ ! -f "$SB_CONF" ] || ! jq -e . "$SB_CONF" >/dev/null 2>&1; then 
+    if [ ! -f "$SB_CONF" ]; then 
         mkdir -p /etc/sing-box
+        echo '{"log":{"level":"error"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct","auto_detect_interface":true}}' > "$SB_CONF"
+    elif ! jq -e . "$SB_CONF" >/dev/null 2>&1; then
+        echo -e "${RED}警告：$SB_CONF 文件损坏，已自动备份至 ${SB_CONF}.corrupted${R}"
+        mv "$SB_CONF" "${SB_CONF}.corrupted"
         echo '{"log":{"level":"error"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct","auto_detect_interface":true}}' > "$SB_CONF"
     fi
 }
-_init_meta_file() { if [ ! -f "$META_FILE" ] || ! jq -e . "$META_FILE" >/dev/null 2>&1; then mkdir -p /etc/sing-box; echo '{}' > "$META_FILE"; chmod 600 "$META_FILE"; fi; }
+_init_meta_file() { 
+    if [ ! -f "$META_FILE" ]; then 
+        mkdir -p /etc/sing-box; echo '{}' > "$META_FILE"; chmod 600 "$META_FILE"
+    elif ! jq -e . "$META_FILE" >/dev/null 2>&1; then
+        echo -e "${RED}警告：节点元数据文件损坏，已自动备份至 ${META_FILE}.corrupted${R}"
+        mv "$META_FILE" "${META_FILE}.corrupted"
+        echo '{}' > "$META_FILE"; chmod 600 "$META_FILE"
+    fi
+}
 _save_node_meta() {
     _init_meta_file; local tmp="/tmp/sb_meta.json.$$"
     if [ -n "$4" ]; then jq --arg p "$1" --arg n "$2" --arg t "$3" --arg pk "$4" --arg ex "$5" '.[$p] = {"name": $n, "type": $t, "pub_key": $pk, "extra": $ex}' "$META_FILE" > "$tmp"
@@ -694,8 +706,11 @@ sb_sync_client_config() {
         local obj; obj=$(echo "$b64_obj" | base64 -d 2>/dev/null); [ -z "$obj" ] && continue
         local port inb_type nn ex pub_key short_id ws_path pwd sni uuid tu_pwd
         port=$(echo "$obj" | jq -r '.listen_port // empty' 2>/dev/null); [ -z "$port" ] && continue
-        nn=$(_get_node_meta "$port" "name"); [ -z "$nn" ] && continue
+        
+        # 数据自愈：直接从 config.json 读取核心信息，不依赖 meta
         inb_type=$(echo "$obj" | jq -r '.type // empty' 2>/dev/null)
+        nn=$(_get_node_meta "$port" "name")
+        [ -z "$nn" ] && nn="${inb_type}-${port}" # 兜底名称
         ex=$(_get_node_meta "$port" "extra")
         
         local ob=""
@@ -703,18 +718,33 @@ sb_sync_client_config() {
             vless)
                 uuid=$(echo "$obj" | jq -r '.users[0].uuid // empty' 2>/dev/null)
                 if echo "$obj" | jq -e '.tls.reality' >/dev/null 2>&1; then
-                    sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null); pub_key=$(_get_node_meta "$port" "pub_key")
+                    sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null)
+                    pub_key=$(_get_node_meta "$port" "pub_key")
+                    # 兜底 short_id
                     short_id=$(echo "$ex" | sed -n 's/.*short_id=\([^;]*\).*/\1/p')
-                    ob=$(jq -n --arg n "$nn" --arg s "$server_ip" --argjson p "$port" --arg u "$uuid" --arg sni "$sni" --arg pk "$pub_key" --arg sid "$short_id" '{"tag":$n,"type":"vless","server":$s,"server_port":$p,"uuid":$u,"flow":"xtls-rprx-vision","tls":{"enabled":true,"server_name":$sni,"utls":{"enabled":true,"fingerprint":"chrome"},"reality":{"enabled":true,"public_key":$pk,"short_id":$sid}}}')
+                    [ -z "$short_id" ] && short_id=$(echo "$obj" | jq -r '.tls.reality.short_id[0] // empty' 2>/dev/null)
+                    if [ -n "$pub_key" ]; then
+                        ob=$(jq -n --arg n "$nn" --arg s "$server_ip" --argjson p "$port" --arg u "$uuid" --arg sni "$sni" --arg pk "$pub_key" --arg sid "$short_id" '{"tag":$n,"type":"vless","server":$s,"server_port":$p,"uuid":$u,"flow":"xtls-rprx-vision","tls":{"enabled":true,"server_name":$sni,"utls":{"enabled":true,"fingerprint":"chrome"},"reality":{"enabled":true,"public_key":$pk,"short_id":$sid}}}')
+                    fi
                 else
+                    # 兜底 ws_path
                     ws_path=$(echo "$ex" | sed -n 's/.*path=\([^;]*\).*/\1/p')
+                    [ -z "$ws_path" ] && ws_path=$(echo "$obj" | jq -r '.transport.path // empty' 2>/dev/null)
                     ob=$(jq -n --arg n "$nn" --arg s "$server_ip" --argjson p "$port" --arg u "$uuid" --arg wp "$ws_path" '{"tag":$n,"type":"vless","server":$s,"server_port":$p,"uuid":$u,"tls":{"enabled":false},"transport":{"type":"ws","path":$wp}}')
                 fi ;;
             hysteria2)
-                pwd=$(echo "$ex" | sed -n 's/.*password=\([^;]*\).*/\1/p'); sni="www.bing.com"
+                # 兜底 password
+                pwd=$(echo "$ex" | sed -n 's/.*password=\([^;]*\).*/\1/p')
+                [ -z "$pwd" ] && pwd=$(echo "$obj" | jq -r '.users[0].password // empty' 2>/dev/null)
+                sni="www.bing.com"
                 ob=$(jq -n --arg n "$nn" --arg s "$server_ip" --argjson p "$port" --arg pwd "$pwd" --arg sni "$sni" '{"tag":$n,"type":"hysteria2","server":$s,"server_port":$p,"password":$pwd,"tls":{"enabled":true,"insecure":true,"server_name":$sni,"alpn":["h3"]}}') ;;
             tuic)
-                uuid=$(echo "$ex" | sed -n 's/.*uuid=\([^;]*\).*/\1/p'); pwd=$(echo "$ex" | sed -n 's/.*password=\([^;]*\).*/\1/p'); sni="www.bing.com"
+                # 兜底 uuid 和 password
+                uuid=$(echo "$ex" | sed -n 's/.*uuid=\([^;]*\).*/\1/p')
+                [ -z "$uuid" ] && uuid=$(echo "$obj" | jq -r '.users[0].uuid // empty' 2>/dev/null)
+                pwd=$(echo "$ex" | sed -n 's/.*password=\([^;]*\).*/\1/p')
+                [ -z "$pwd" ] && pwd=$(echo "$obj" | jq -r '.users[0].password // empty' 2>/dev/null)
+                sni="www.bing.com"
                 ob=$(jq -n --arg n "$nn" --arg s "$server_ip" --argjson p "$port" --arg u "$uuid" --arg pwd "$pwd" --arg sni "$sni" '{"tag":$n,"type":"tuic","server":$s,"server_port":$p,"uuid":$u,"password":$pwd,"congestion_control":"bbr","tls":{"enabled":true,"insecure":true,"server_name":$sni,"alpn":["h3"]}}') ;;
         esac
         
@@ -795,8 +825,13 @@ sb_show_nodes_and_links() {
         local obj; obj=$(echo "$b64_obj" | base64 -d 2>/dev/null); [ -z "$obj" ] && continue
         local port inb_type nn ex link=""
         port=$(echo "$obj" | jq -r '.listen_port // empty' 2>/dev/null); [ -z "$port" ] && continue
-        nn=$(_get_node_meta "$port" "name"); [ -z "$nn" ] && continue
+        
+        # 数据自愈兜底：直接从 config.json 强行提取
         inb_type=$(echo "$obj" | jq -r '.type // empty' 2>/dev/null)
+        nn=$(_get_node_meta "$port" "name")
+        if [ -z "$nn" ]; then
+            nn="${inb_type}-${port}"
+        fi
         ex=$(_get_node_meta "$port" "extra")
         echo -e "${G}━━━ [${idx}] ${inb_type^^} | 端口: ${port} | ${nn} ━━━${R}"; has_any=1
         
@@ -804,22 +839,41 @@ sb_show_nodes_and_links() {
             vless)
                 local uuid flow tls_enabled sni pub_key short_id ws_path
                 uuid=$(echo "$obj" | jq -r '.users[0].uuid // empty' 2>/dev/null)
-                flow=$(echo "$obj" | jq -r '.users[0].flow // empty' 2>/dev/null); tls_enabled=$(echo "$obj" | jq -r '.tls.enabled // false' 2>/dev/null)
-                if [ "$tls_enabled" = "true" ] && echo "$obj" | jq -e '.tls.reality' >/dev/null 2>&1; then
-                    sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null); pub_key=$(_get_node_meta "$port" "pub_key")
+                if echo "$obj" | jq -e '.tls.reality' >/dev/null 2>&1; then
+                    sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null)
+                    pub_key=$(_get_node_meta "$port" "pub_key")
+                    # 元数据兜底：short_id 从 config.json 取
                     short_id=$(echo "$ex" | sed -n 's/.*short_id=\([^;]*\).*/\1/p')
+                    [ -z "$short_id" ] && short_id=$(echo "$obj" | jq -r '.tls.reality.short_id[0] // empty' 2>/dev/null)
+                    
+                    flow=$(echo "$obj" | jq -r '.users[0].flow // empty' 2>/dev/null)
                     local flow_param=""; [ -n "$flow" ] && flow_param="&flow=${flow}"
-                    link="vless://${uuid}@${server_ip}:${port}?encryption=none${flow_param}&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#$(url_encode "$nn")"
+                    
+                    if [ -n "$pub_key" ]; then
+                        link="vless://${uuid}@${server_ip}:${port}?encryption=none${flow_param}&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#$(url_encode "$nn")"
+                    else
+                        link="${RED}无法生成链接：缺少 PublicKey (pbk)。如需恢复，请在 Sing-Box 客户端日志或旧的节点链接中查找 pbk= 参数。${R}"
+                    fi
                 else
+                    # 元数据兜底：ws_path 从 config.json 取
                     ws_path=$(echo "$ex" | sed -n 's/.*path=\([^;]*\).*/\1/p')
+                    [ -z "$ws_path" ] && ws_path=$(echo "$obj" | jq -r '.transport.path // empty' 2>/dev/null)
                     link="vless://${uuid}@${server_ip}:${port}?encryption=none&security=none&type=ws&path=$(url_encode "${ws_path:-/}")#$(url_encode "$nn")"
                 fi ;;
             hysteria2)
-                local pwd=$(echo "$ex" | sed -n 's/.*password=\([^;]*\).*/\1/p')
-                link="hysteria2://$(url_encode "$pwd")@${server_ip}:${port}?insecure=1&alpn=h3&sni=www.bing.com#$(url_encode "$nn")" ;;
+                # 元数据兜底：密码从 config.json 取
+                pwd=$(echo "$ex" | sed -n 's/.*password=\([^;]*\).*/\1/p')
+                [ -z "$pwd" ] && pwd=$(echo "$obj" | jq -r '.users[0].password // empty' 2>/dev/null)
+                sni="www.bing.com"
+                link="hysteria2://$(url_encode "$pwd")@${server_ip}:${port}?insecure=1&alpn=h3&sni=${sni}#$(url_encode "$nn")" ;;
             tuic)
-                local uuid=$(echo "$ex" | sed -n 's/.*uuid=\([^;]*\).*/\1/p'); local pwd=$(echo "$ex" | sed -n 's/.*password=\([^;]*\).*/\1/p')
-                link="tuic://${uuid}:$(url_encode "$pwd")@${server_ip}:${port}?congestion_control=bbr&alpn=h3&sni=www.bing.com&allow_insecure=1#$(url_encode "$nn")" ;;
+                # 元数据兜底：uuid和密码从 config.json 取
+                uuid=$(echo "$ex" | sed -n 's/.*uuid=\([^;]*\).*/\1/p')
+                [ -z "$uuid" ] && uuid=$(echo "$obj" | jq -r '.users[0].uuid // empty' 2>/dev/null)
+                pwd=$(echo "$ex" | sed -n 's/.*password=\([^;]*\).*/\1/p')
+                [ -z "$pwd" ] && pwd=$(echo "$obj" | jq -r '.users[0].password // empty' 2>/dev/null)
+                sni="www.bing.com"
+                link="tuic://${uuid}:$(url_encode "$pwd")@${server_ip}:${port}?congestion_control=bbr&alpn=h3&sni=${sni}&allow_insecure=1#$(url_encode "$nn")" ;;
         esac
         [ -n "$link" ] && echo -e "${C}${link}${R}\n"; idx=$((idx + 1))
     done < <(jq -r '.inbounds[] | @base64' "$SB_CONF" 2>/dev/null)
@@ -835,7 +889,9 @@ sb_del_node() {
     while IFS= read -r b64_obj; do
         local obj; obj=$(echo "$b64_obj" | base64 -d 2>/dev/null); [ -z "$obj" ] && continue
         local port nn; port=$(echo "$obj" | jq -r '.listen_port // empty' 2>/dev/null); [ -z "$port" ] && continue
-        nn=$(_get_node_meta "$port" "name"); [ -z "$nn" ] && continue
+        # 兜底显示名称
+        nn=$(_get_node_meta "$port" "name")
+        [ -z "$nn" ] && nn="$(echo "$obj" | jq -r '.type // empty' 2>/dev/null)-${port}"
         echo -e "${G}[${idx}] 端口: ${port} | ${nn}${R}"; idx=$((idx + 1)); has_any=1
     done < <(jq -r '.inbounds[] | @base64' "$SB_CONF" 2>/dev/null)
     [ "$has_any" -eq 0 ] && { echo -e "${Y}无节点可删除${R}"; read -rs -n 1 -p ""; return; }
