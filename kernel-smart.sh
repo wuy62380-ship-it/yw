@@ -602,24 +602,35 @@ sb_add_reality() {
     readp "端口 (回车随机): " port; [[ -z "$port" ]] && port=$(shuf -i 10000-65535 -n 1)
     while ss -tunlp | grep -w ":$port" >/dev/null 2>&1; do readp "端口 $port 被占用，请重新输入: " port; [[ -z "$port" ]] && port=$(shuf -i 10000-65535 -n 1); done
     local sni="www.microsoft.com"
-    local uuid=$(cat /proc/sys/kernel/random/uuid 2>/dev/null)
-    local keys=$(/etc/sing-box/sing-box generate reality-keypair 2>&1)
-    local priv_key=$(echo "$keys" | awk '/PrivateKey/{print $2}'); local pub_key=$(echo "$keys" | awk '/PublicKey/{print $2}')
+    local uuid=$(/etc/sing-box/sing-box generate uuid 2>/dev/null)
+    local keys=$(/etc/sing-box/sing-box generate reality-keypair 2>/dev/null)
+    local priv_key=$(echo "$keys" | awk '/PrivateKey/{print $2}')
+    local pub_key=$(echo "$keys" | awk '/PublicKey/{print $2}')
     local short_id=$(/etc/sing-box/sing-box generate rand --hex 4 2>/dev/null || echo "aabbccdd")
+    
+    if [ -z "$uuid" ] || [ -z "$priv_key" ] || [ -z "$pub_key" ]; then
+        echo -e "${RED}❌ 生成核心参数失败，sing-box 可能无法正常运行，请尝试卸载后重新安装！${R}"
+        /etc/sing-box/sing-box version
+        read -rs -n 1 -p ""
+        return 1
+    fi
+
     readp "名称 (回车默认): " nn; [ -z "$nn" ] && nn="VLESS-Reality-${port}"
 
     sb_init_conf; cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
     local ij=$(jq -n --argjson p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" '{"type":"vless","tag":("vless-reality-"+($p|tostring)),"listen":"::","listen_port":$p,"sniff":true,"sniff_override_destination":true,"users":[{"uuid":$u,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$s,"reality":{"enabled":true,"handshake":{"server":$s,"server_port":443},"private_key":$pk,"short_id":[$sid]}}}')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$SB_CONF" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$SB_CONF"
     
-    if /etc/sing-box/sing-box check -c "$SB_CONF" >/dev/null 2>&1; then
+    if /etc/sing-box/sing-box check -c "$SB_CONF" 2>/tmp/sb_err.log; then
         open_port_both "$port"; _save_node_meta "$port" "$nn" "vless-reality" "$pub_key" "short_id=${short_id}"
         systemctl restart sing-box 2>/dev/null || rc-service sing-box restart 2>/dev/null; sleep 2
         echo -e "${G}✅ 成功 | PublicKey: ${pub_key} | short_id: ${short_id}${R}"
         local link_ip=$(get_my_ip)
         [ "$link_ip" != "未知IP" ] && echo -e "${C}vless://${uuid}@${link_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp#$(url_encode "$nn")${R}"
     else
-        echo -e "${RED}校验失败，回滚配置${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
+        echo -e "${RED}校验失败，回滚配置。错误信息如下：${R}"
+        cat /tmp/sb_err.log
+        local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
     fi
     read -rs -n 1 -p ""
 }
@@ -630,20 +641,29 @@ sb_add_vless_ws() {
     while ss -tunlp | grep -w ":$port" >/dev/null 2>&1; do readp "端口 $port 被占用，请重新输入: " port; [[ -z "$port" ]] && port=$(shuf -i 10000-65535 -n 1); done
     local ws_path="/$(openssl rand -hex 8)"; readp "WS Path (回车默认): " wp; [ -n "$wp" ] && ws_path="$wp"
     readp "名称 (回车默认): " nn; [ -z "$nn" ] && nn="VLESS-WS-${port}"
-    local uuid=$(cat /proc/sys/kernel/random/uuid 2>/dev/null)
+    local uuid=$(/etc/sing-box/sing-box generate uuid 2>/dev/null)
+
+    if [ -z "$uuid" ]; then
+        echo -e "${RED}❌ 生成 UUID 失败，sing-box 可能无法正常运行，请尝试卸载后重新安装！${R}"
+        /etc/sing-box/sing-box version
+        read -rs -n 1 -p ""
+        return 1
+    fi
 
     sb_init_conf; cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
     local ij=$(jq -n --argjson p "$port" --arg u "$uuid" --arg wp "$ws_path" '{"type":"vless","tag":("vless-ws-"+($p|tostring)),"listen":"::","listen_port":$p,"sniff":true,"sniff_override_destination":true,"users":[{"uuid":$u}],"transport":{"type":"ws","path":$wp}}')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$SB_CONF" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$SB_CONF"
     
-    if /etc/sing-box/sing-box check -c "$SB_CONF" >/dev/null 2>&1; then
+    if /etc/sing-box/sing-box check -c "$SB_CONF" 2>/tmp/sb_err.log; then
         open_port_both "$port"; _save_node_meta "$port" "$nn" "vless-ws" "" "path=${ws_path}"
         systemctl restart sing-box 2>/dev/null || rc-service sing-box restart 2>/dev/null; sleep 2
         echo -e "${G}✅ 成功 | Path: ${ws_path}${R}"
         local link_ip=$(get_my_ip)
         [ "$link_ip" != "未知IP" ] && echo -e "${C}vless://${uuid}@${link_ip}:${port}?encryption=none&security=none&type=ws&path=$(url_encode "${ws_path}")#$(url_encode "$nn")${R}"
     else
-        echo -e "${RED}校验失败，回滚配置${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
+        echo -e "${RED}校验失败，回滚配置。错误信息如下：${R}"
+        cat /tmp/sb_err.log
+        local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
     fi
     read -rs -n 1 -p ""
 }
@@ -662,14 +682,16 @@ sb_add_hysteria2() {
     local ij=$(jq -n --argjson p "$port" --arg pwd "$pwd" --arg c "${cert_dir}/cert.pem" --arg k "${cert_dir}/key.pem" '{"type":"hysteria2","tag":("hysteria2-"+($p|tostring)),"listen":"::","listen_port":$p,"sniff":true,"sniff_override_destination":true,"users":[{"password":$pwd}],"ignore_client_bandwidth":false,"tls":{"enabled":true,"alpn":["h3"],"certificate_path":$c,"key_path":$k}}')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$SB_CONF" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$SB_CONF"
     
-    if /etc/sing-box/sing-box check -c "$SB_CONF" >/dev/null 2>&1; then
+    if /etc/sing-box/sing-box check -c "$SB_CONF" 2>/tmp/sb_err.log; then
         open_port_both "$port"; _save_node_meta "$port" "$nn" "hysteria2" "" "password=${pwd};tls_method=selfsign"
         systemctl restart sing-box 2>/dev/null || rc-service sing-box restart 2>/dev/null; sleep 2
         echo -e "${G}✅ 成功 | 密码: ${pwd}${R}"
         local link_ip=$(get_my_ip)
         [ "$link_ip" != "未知IP" ] && echo -e "${C}hysteria2://$(url_encode "$pwd")@${link_ip}:${port}?insecure=1#$(url_encode "$nn")${R}"
     else
-        echo -e "${RED}校验失败，回滚配置${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
+        echo -e "${RED}校验失败，回滚配置。错误信息如下：${R}"
+        cat /tmp/sb_err.log
+        local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
     fi
     read -rs -n 1 -p ""
 }
@@ -730,10 +752,14 @@ sb_del_node() {
     del_port_both "$del_input"
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
     jq --arg t "$found_tag" 'del(.inbounds[] | select(.tag == $t))' "$SB_CONF" > /tmp/sb_cfg.json && mv /tmp/sb_cfg.json "$SB_CONF"
-    if /etc/sing-box/sing-box check -c "$SB_CONF" >/dev/null 2>&1; then
+    if /etc/sing-box/sing-box check -c "$SB_CONF" 2>/tmp/sb_err.log; then
         _del_node_meta "$del_input"; systemctl restart sing-box 2>/dev/null || rc-service sing-box restart 2>/dev/null; sleep 1
         echo -e "${G}✅ 已删除端口 ${del_input} 的节点${R}"
-    else echo -e "${RED}删除后校验失败，回滚...${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"; fi
+    else 
+        echo -e "${RED}删除后校验失败，回滚...错误信息如下：${R}"
+        cat /tmp/sb_err.log
+        local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
+    fi
     read -rs -n 1 -p ""
 }
 
