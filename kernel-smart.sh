@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+# 终极洁癖：捕获退出信号，自动清理临时文件
+trap 'rm -f /tmp/sb_cfg.json /tmp/sb_meta.json.* /tmp/c_tmp.json /tmp/sb_tmp.json 2>/dev/null' EXIT INT TERM
+
 # ================= 全局变量与颜色定义 =================
 : "${gl_bai:=\033[0m}" "${gl_lv:=\033[32m}" "${gl_huang:=\033[33m}" "${gl_hui:=\033[90m}" "${gl_red:=\033[31m}" "${gl_kjlan:=\033[36m}" "${gh_proxy:=https://}"
 R="${gl_bai}"; G="${gl_lv}"; Y="${gl_huang}"; H="${gl_hui}"; RED="${gl_red}"; C="${gl_kjlan}"
@@ -19,8 +22,19 @@ check_env() {
         apt-get install -y curl jq openssl iptables wget tar python3 ca-certificates software-properties-common >/dev/null 2>&1
         echo -e "${G}✅ 基础环境准备完毕！${R}"
     fi
-    systemctl enable --now systemd-timesyncd >/dev/null 2>&1
-    timedatectl set-ntp true >/dev/null 2>&1
+    
+    command -v timedatectl >/dev/null 2>&1 && timedatectl set-ntp true >/dev/null 2>&1
+    local current_year=$(date +%Y)
+    if [ "$current_year" -lt 2023 ] || [ "$current_year" -gt 2025 ]; then
+        echo -e "${Y}检测到系统时间异常($current_year)，正在通过 HTTP 强制校准...${R}"
+        local sys_time=$(curl -sI https://www.cloudflare.com 2>/dev/null | grep -i '^date:' | sed 's/^[Dd]ate: //g' | tr -d '\r')
+        if [ -n "$sys_time" ]; then
+            date -s "$sys_time" >/dev/null 2>&1
+            echo -e "${G}✅ 系统时间已强制校准${R}"
+        else
+            echo -e "${RED}⚠ HTTP 校准失败，请确保服务器时间正确，否则 Reality 节点将无法连通！${R}"
+        fi
+    fi
 }
 
 # ================= 基础工具函数 =================
@@ -28,10 +42,12 @@ check_swap() {
     local swap_total=$(free -m | awk '/Swap/{print $2}')
     if [ "$swap_total" -ge 512 ] || grep -q "/dev/zram" /proc/swaps 2>/dev/null; then return 0; fi
     
-    local is_slow_disk=$(lsblk -d -o ROTA,NAME | awk '$1==1{print $2}')
-    if [ -n "$is_slow_disk" ]; then
-        echo -e "${Y}检测到普通云盘，跳过 Swapfile 创建（防止 IO 阻塞），自动启用 ZRAM...${R}"
-        auto_setup_zram; return 0
+    if command -v lsblk >/dev/null 2>&1; then
+        local is_slow_disk=$(lsblk -d -o ROTA,NAME | awk '$1==1{print $2}')
+        if [ -n "$is_slow_disk" ]; then
+            echo -e "${Y}检测到普通云盘，跳过 Swapfile 创建（防止 IO 阻塞），自动启用 ZRAM...${R}"
+            auto_setup_zram; return 0
+        fi
     fi
 
     if [ -f /swapfile ] && [ "$swap_total" -lt 512 ]; then swapon /swapfile >/dev/null 2>&1; swap_total=$(free -m | awk '/Swap/{print $2}'); [ "$swap_total" -ge 512 ] && return 0; fi
@@ -68,7 +84,17 @@ _optimize_nic_queues() {
     [ -z "$main_nic" ] && return
     local cpu_count=$(nproc)
     [ "$cpu_count" -le 1 ] && return
-    local mask=$(printf "%x" $(( (1 << cpu_count) - 1 )))
+    
+    local mask=""
+    local full_cores=$((cpu_count / 8))
+    local remainder=$((cpu_count % 8))
+    for i in $(seq 1 $full_cores); do mask="${mask}ff"; done
+    if [ $remainder -gt 0 ]; then
+        local rem_val=$(( (1 << remainder) - 1 ))
+        mask="${mask}$(printf '%02x' $rem_val)"
+    fi
+    [ -z "$mask" ] && return
+
     for q in /sys/class/net/$main_nic/queues/rx-*; do
         [ -f "$q/rps_cpus" ] && echo $mask > "$q/rps_cpus" 2>/dev/null
         [ -f "$q/rps_flow_cnt" ] && echo 32768 > "$q/rps_flow_cnt" 2>/dev/null
@@ -101,7 +127,7 @@ _kernel_optimize_core() {
     local KVER=$(uname -r | cut -d '-' -f1)
     local KVER_OK=$(echo -e "4.9\n$KVER" | sort -V | head -n 1)
     CC="cubic"; QDISC="fq_codel"
-    if [ "$KVER_OK" = "4.9" ]; then modprobe tcp_bbr 2>/dev/null; sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q bbr && { CC="bbr"; QDISC="fq"; }; fi
+    if [ "$KVER_OK" = "4.9" ]; then modprobe tcp_bbr 2>/dev/null || true; sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q bbr && { CC="bbr"; QDISC="fq"; }; fi
     
     local TCP_MEM_MIN=$((MEM_MB_VAL * 256)) TCP_MEM_DEF=$((MEM_MB_VAL * 512)) TCP_MEM_MAX=$((MEM_MB_VAL * 1024))
     [ "$TCP_MEM_MIN" -lt 8192 ] && TCP_MEM_MIN=8192; [ "$TCP_MEM_DEF" -lt 16384 ] && TCP_MEM_DEF=16384; [ "$TCP_MEM_MAX" -lt 32768 ] && TCP_MEM_MAX=32768
@@ -181,7 +207,7 @@ xanmod_add_repo() {
     local keyring="/usr/share/keyrings/xanmod-archive-keyring.gpg" list_file="/etc/apt/sources.list.d/xanmod-release.list" os_codename=""
     if command -v lsb_release >/dev/null 2>&1; then os_codename=$(lsb_release -sc); elif [ -r /etc/os-release ]; then os_codename=$(. /etc/os-release && echo "$VERSION_CODENAME"); fi
     if ! echo "bookworm trixie forky sid noble plucky" | grep -qw "$os_codename"; then os_codename="releases"; fi
-    if echo "jammy focal bullseye buster releases" | grep -qw "$os_codename"; then echo -e "${RED}XanMod 已停止支持${R}"; return 1; fi
+    if echo "jammy focal buster releases" | grep -qw "$os_codename"; then echo -e "${RED}XanMod 已停止支持${R}"; return 1; fi
     [ -z "$os_codename" ] && { echo "无法获取代号"; return 1; }
     apt-get install -y wget gnupg ca-certificates >/dev/null 2>&1; mkdir -p /usr/share/keyrings /etc/apt/sources.list.d
     wget -qO - "https://dl.xanmod.org/archive.key" | gpg --dearmor -o "$keyring" --yes 2>/dev/null; chmod 644 "$keyring"
@@ -334,9 +360,14 @@ Kernel_optimize() {
 SB_BIN="/usr/local/bin/sing-box"
 SB_CONF="/etc/sing-box/config.json"
 META_FILE="/etc/sing-box/.nodes_meta"
-SUB_TOKEN=$(cat /etc/sing-box/.sub_token 2>/dev/null || tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)
 
-# 专家级强化：获取 IP 增加底层网卡兜底
+if [ ! -f /etc/sing-box/.sub_token ]; then
+    mkdir -p /etc/sing-box
+    tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16 > /etc/sing-box/.sub_token
+    chmod 600 /etc/sing-box/.sub_token
+fi
+SUB_TOKEN=$(cat /etc/sing-box/.sub_token)
+
 get_my_ip() { 
     local ip=$(curl -4 -s -f --connect-timeout 3 https://ifconfig.me 2>/dev/null || curl -4 -s -f --connect-timeout 3 https://checkip.amazonaws.com 2>/dev/null || curl -6 -s -f --connect-timeout 3 https://api64.ipify.org 2>/dev/null)
     if [ -z "$ip" ] || [ "$ip" = "未知IP" ]; then
@@ -352,7 +383,7 @@ sb_check() { if ! command -v $SB_BIN >/dev/null 2>&1; then echo -e "${RED}请先
 sb_init_conf() { 
     if [ ! -f "$SB_CONF" ] || ! jq -e . "$SB_CONF" >/dev/null 2>&1; then 
         mkdir -p /etc/sing-box
-        echo '{"log":{"level":"error"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"rules":[{"action":"sniff"}],"final":"direct","auto_detect_interface":true}}' > "$SB_CONF"
+        echo '{"log":{"level":"error"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct","auto_detect_interface":true}}' > "$SB_CONF"
     fi
 }
 _init_meta_file() { if [ ! -f "$META_FILE" ] || ! jq -e . "$META_FILE" >/dev/null 2>&1; then mkdir -p /etc/sing-box; echo '{}' > "$META_FILE"; chmod 600 "$META_FILE"; fi; }
@@ -373,6 +404,7 @@ _open_single_port() {
     elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
         firewall-cmd --permanent --add-port=${port}/${proto} >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1; opened=1
     elif command -v iptables >/dev/null 2>&1; then
+        modprobe iptable_nat 2>/dev/null || true
         iptables -C INPUT -p ${proto} --dport ${port} -j ACCEPT 2>/dev/null || iptables -I INPUT -p ${proto} --dport ${port} -j ACCEPT 2>/dev/null
         if command -v ip6tables >/dev/null 2>&1; then
             ip6tables -C INPUT -p ${proto} --dport ${port} -j ACCEPT 2>/dev/null || ip6tables -I INPUT -p ${proto} --dport ${port} -j ACCEPT 2>/dev/null
@@ -391,31 +423,35 @@ _del_single_port() {
         firewall-cmd --permanent --remove-port=${port}/${proto} >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1
     elif command -v iptables >/dev/null 2>&1; then
         iptables -D INPUT -p ${proto} --dport ${port} -j ACCEPT 2>/dev/null
-        # 专家级强化：ip6tables 清理防呆，静默处理无规则报错
         command -v ip6tables >/dev/null 2>&1 && ip6tables -D INPUT -p ${proto} --dport ${port} -j ACCEPT 2>/dev/null
     fi
 }
 del_port_both() { _del_single_port "$1" "tcp"; _del_single_port "$1" "udp"; }
 
-_ensure_rc_local() {
-    if [ ! -f /etc/rc.local ]; then
-        printf '#!/bin/bash\niptables-restore < /etc/iptables.rules\nexit 0\n' > /etc/rc.local
-    else
-        if ! grep -q "iptables-restore" /etc/rc.local 2>/dev/null; then
-            sed -i '/^exit 0/i iptables-restore < /etc/iptables.rules' /etc/rc.local 2>/dev/null
-        fi
-    fi
-    chmod +x /etc/rc.local
-    if systemctl is-enabled rc-local >/dev/null 2>&1; then
-        systemctl enable rc-local >/dev/null 2>&1
-        systemctl start rc-local >/dev/null 2>&1
-    fi
-}
 _persist_iptables() {
-    command -v iptables-save >/dev/null 2>&1 || return
-    iptables-save > /etc/iptables.rules 2>/dev/null
-    command -v ip6tables-save >/dev/null 2>&1 && ip6tables-save > /etc/iptables/rules.v6 2>/dev/null
-    _ensure_rc_local
+    local ipt_save=$(command -v iptables-save)
+    local ip6t_save=$(command -v ip6tables-save)
+    local ipt_rest=$(command -v iptables-restore)
+    local ip6t_rest=$(command -v ip6tables-restore)
+    
+    [ -n "$ipt_save" ] && $ipt_save > /etc/iptables.rules 2>/dev/null
+    [ -n "$ip6t_save" ] && $ip6t_save > /etc/ip6tables.rules 2>/dev/null
+
+    cat > /etc/systemd/system/sb-iptables.service <<EOF
+[Unit]
+Description=Restore iptables rules for Sing-Box
+After=network-pre.target
+Before=network.target
+[Service]
+Type=oneshot
+ExecStart=$ipt_rest /etc/iptables.rules
+ $([ -n "$ip6t_rest" ] && echo "ExecStart=$ip6t_rest /etc/ip6tables.rules")
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload >/dev/null 2>&1
+    systemctl enable sb-iptables.service >/dev/null 2>&1
 }
 
 sb_install() {
@@ -468,10 +504,11 @@ sb_update() {
 sb_uninstall() {
     if ! command -v $SB_BIN >/dev/null 2>&1; then echo -e "${Y}Sing-Box 未安装${R}"; read -rs -n 1 -p ""; return; fi
     read -e -p "确认卸载？: " c; [[ ! "$c" =~ ^[Yy]$ ]] && return
-    systemctl stop sing-box sb-sub >/dev/null 2>&1; systemctl disable sing-box sb-sub >/dev/null 2>&1
-    rm -rf /etc/sing-box $SB_BIN /etc/systemd/system/sing-box.service /etc/systemd/system/sb-sub.service
+    systemctl stop sing-box sb-sub sb-iptables >/dev/null 2>&1
+    systemctl disable sing-box sb-sub sb-iptables >/dev/null 2>&1
+    rm -rf /etc/sing-box $SB_BIN /etc/systemd/system/sing-box.service /etc/systemd/system/sb-sub.service /etc/systemd/system/sb-iptables.service
     systemctl daemon-reload >/dev/null 2>&1
-    systemctl reset-failed >/dev/null 2>&1 # 专家级强化：清理 systemd 残留标记
+    systemctl reset-failed >/dev/null 2>&1
     echo -e "${G}✅ Sing-Box 已完全卸载${R}"; read -rs -n 1 -p ""
 }
 sb_view_log() {
@@ -513,7 +550,7 @@ sb_add_reality() {
     if $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
         open_port_both "$port"; _save_node_meta "$port" "$nn" "vless-reality" "$pub_key" "short_id=${short_id}"
         systemctl restart sing-box; sleep 2
-        if systemctl is-active --quiet sing-box; then echo -e "${G}✅ 成功 | PublicKey: ${pub_key}${R}"; sb_sync_client_config; else
+        if systemctl is-active --quiet sing-box; then echo -e "${G}✅ 成功 | PublicKey: ${pub_key}${R}"; sb_sync_client_config; _persist_iptables; else
             echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"; _del_node_meta "$port"; fi
     else echo -e "${RED}校验失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"; _del_node_meta "$port"; fi
     _clean_bak; read -rs -n 1 -p ""
@@ -532,7 +569,7 @@ sb_add_vless_ws() {
     if $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
         open_port_both "$port"; _save_node_meta "$port" "$nn" "vless-ws" "" "path=${ws_path}"
         systemctl restart sing-box; sleep 2
-        if systemctl is-active --quiet sing-box; then echo -e "${G}✅ 成功 | Path: ${ws_path}${R}"; sb_sync_client_config; else
+        if systemctl is-active --quiet sing-box; then echo -e "${G}✅ 成功 | Path: ${ws_path}${R}"; sb_sync_client_config; _persist_iptables; else
             echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"; _del_node_meta "$port"; fi
     else echo -e "${RED}校验失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"; _del_node_meta "$port"; fi
     _clean_bak; read -rs -n 1 -p ""
@@ -555,7 +592,7 @@ sb_add_hysteria2() {
     if $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
         open_port_both "$port"; _save_node_meta "$port" "$nn" "hysteria2" "" "password=${pwd};tls_method=selfsign;sni=www.bing.com"
         systemctl restart sing-box; sleep 2
-        if systemctl is-active --quiet sing-box; then echo -e "${G}✅ 成功 | 密码: ${pwd}${R}"; sb_sync_client_config; else
+        if systemctl is-active --quiet sing-box; then echo -e "${G}✅ 成功 | 密码: ${pwd}${R}"; sb_sync_client_config; _persist_iptables; else
             echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"; _del_node_meta "$port"; fi
     else echo -e "${RED}校验失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"; _del_node_meta "$port"; fi
     _clean_bak; read -rs -n 1 -p ""
@@ -579,7 +616,7 @@ sb_add_tuic() {
     if $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
         open_port_both "$port"; _save_node_meta "$port" "$nn" "tuic" "" "uuid=${uuid};password=${pwd};tls_method=selfsign;sni=www.bing.com"
         systemctl restart sing-box; sleep 2
-        if systemctl is-active --quiet sing-box; then echo -e "${G}✅ 成功 | UUID: ${uuid} | 密码: ${pwd}${R}"; sb_sync_client_config; else
+        if systemctl is-active --quiet sing-box; then echo -e "${G}✅ 成功 | UUID: ${uuid} | 密码: ${pwd}${R}"; sb_sync_client_config; _persist_iptables; else
             echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"; _del_node_meta "$port"; fi
     else echo -e "${RED}校验失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"; _del_node_meta "$port"; fi
     _clean_bak; read -rs -n 1 -p ""
@@ -629,7 +666,7 @@ sb_add_all() {
         _save_node_meta "$p_hy" "Hysteria2" "hysteria2" "" "password=${hy_pwd};tls_method=selfsign;sni=www.bing.com"
         _save_node_meta "$p_tu" "TUIC" "tuic" "" "uuid=${tu_uuid};password=${tu_pwd};tls_method=selfsign;sni=www.bing.com"
         systemctl restart sing-box; sleep 2
-        if systemctl is-active --quiet sing-box; then echo -e "${G}✅ 四协议部署成功！${R}"; sb_sync_client_config; else
+        if systemctl is-active --quiet sing-box; then echo -e "${G}✅ 四协议部署成功！${R}"; sb_sync_client_config; _persist_iptables; else
             echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
             for p in $p_re $p_ws $p_hy $p_tu; do _del_node_meta "$p"; done; fi
     else echo -e "${RED}校验失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"; fi
@@ -640,6 +677,16 @@ sb_add_all() {
 sb_sync_client_config() {
     local server_ip=$(get_my_ip)
     local client_conf="/etc/sing-box/client.json"
+    
+    if [ ! -f "$SB_CONF" ] || ! jq -e '.inbounds[0]' "$SB_CONF" >/dev/null 2>&1; then
+        jq -n '{log:{"level":"info"}, inbounds:[{"type":"tun","tag":"tun-in","address":["172.19.0.1/30","fd00::1/126"],"auto_route":true,"strict_route":true}], outbounds:[{"type":"direct","tag":"direct"}], route:{"final":"direct","auto_detect_interface":true}}' > $client_conf
+        if systemctl is-active --quiet sb-sub 2>/dev/null; then
+            mkdir -p /etc/sing-box/sub
+            cp $client_conf /etc/sing-box/sub/$SUB_TOKEN.json 2>/dev/null
+        fi
+        return 0
+    fi
+
     jq -n '{log:{"level":"info"}, inbounds:[{"type":"tun","tag":"tun-in","address":["172.19.0.1/30","fd00::1/126"],"auto_route":true,"strict_route":true}], outbounds:[], route:{"final":"proxy","auto_detect_interface":true}}' > $client_conf
     
     local tags_json='[]'
@@ -710,13 +757,11 @@ sb_start_sub_server() {
     local server_ip=$(get_my_ip)
     [ "$server_ip" = "未知IP" ] && { echo -e "${RED}无法获取IP${R}"; return; }
     
-    # 专家级强化：动态获取 Python3 绝对路径，防止定制系统找不到解释器
     local py_bin=$(command -v python3)
     if [ -z "$py_bin" ]; then
         echo -e "${RED}未找到 Python3 环境，无法启动订阅服务${R}"; return 1
     fi
     
-    echo "$SUB_TOKEN" > /etc/sing-box/.sub_token
     sb_sync_client_config
     
     cat > /etc/systemd/system/sb-sub.service <<EOF
@@ -735,6 +780,7 @@ EOF
     systemctl daemon-reload
     systemctl enable --now sb-sub >/dev/null 2>&1
     _open_single_port 8191 "tcp"
+    _persist_iptables
     echo -e "${G}✅ 订阅服务已启动并设置为开机自启${R}"
     echo -e "${Y}订阅链接 (Base64): http://${server_ip}:8191/${SUB_TOKEN}.json${R}"
     read -rs -n 1 -p ""
@@ -804,6 +850,7 @@ sb_del_node() {
         del_port_both "$del_input"
         rm -rf /etc/sing-box/certs/hy2-${del_input} /etc/sing-box/certs/tuic-${del_input}
         sb_sync_client_config
+        _persist_iptables
         echo -e "${G}✅ 已删除并清理残留${R}"
     else echo -e "${RED}校验失败，回滚...${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"; fi
     _clean_bak; read -rs -n 1 -p ""
@@ -818,8 +865,8 @@ manual_open_port() {
         echo -e "0. 返回 Sing-Box 菜单"
         read -e -p "请选择: " port_choice
         case "$port_choice" in
-            1) read -e -p "请输入端口号: " port; open_port_both "$port"; read -rs -n 1 -p "按任意键继续..." ;;
-            2) read -e -p "起始端口: " sp; read -e -p "结束端口: " ep; _open_single_port "$sp" "$ep" "tcp"; _open_single_port "$sp" "$ep" "udp"; read -rs -n 1 -p "按任意键继续..." ;;
+            1) read -e -p "请输入端口号: " port; open_port_both "$port"; _persist_iptables; read -rs -n 1 -p "按任意键继续..." ;;
+            2) read -e -p "起始端口: " sp; read -e -p "结束端口: " ep; _open_single_port "$sp" "$ep" "tcp"; _open_single_port "$sp" "$ep" "udp"; _persist_iptables; read -rs -n 1 -p "按任意键继续..." ;;
             0|"") break ;; *) echo -e "${RED}无效${R}"; sleep 1 ;;
         esac
     done
