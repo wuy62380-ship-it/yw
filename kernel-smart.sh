@@ -721,6 +721,7 @@ select_best_domain() {
                 echo -e "${G}-----------------------------------------${R}" >&2
                 
                 read -e -p "请输入序号选用 [1-5, 默认1]: " sel
+                sel=$(echo "$sel" | tr -d '[:space:]')
                 [ -z "$sel" ] && sel=1
                 if [[ "$sel" =~ ^[1-5]$ ]] && [ ${#top_domains[@]} -ge $sel ]; then
                     echo "${top_domains[$((sel-1))]}"
@@ -729,6 +730,7 @@ select_best_domain() {
                 ;;
             2) 
                 read -e -p "请输入域名 (如 www.example.com): " manual_dom
+                manual_dom=$(echo "$manual_dom" | tr -d '[:space:]')
                 if [ -n "$manual_dom" ]; then echo "$manual_dom"; return 0; fi 
                 ;;
             3) echo "www.microsoft.com"; return 0 ;;
@@ -954,6 +956,7 @@ _get_port() {
     while true; do
         echo -e "${Y}提示：如果云服务器有安全组限制，请输入已在安全组放行的端口${R}" >&2
         read -e -p "端口 (回车默认随机 $port): " input_port
+        input_port=$(echo "$input_port" | tr -d '[:space:]')
         if [[ "$input_port" =~ ^[0-9]{1,5}$ ]] && [ "$input_port" -ge 1 ] && [ "$input_port" -le 65535 ]; then
             port="$input_port"
         elif [ -n "$input_port" ]; then
@@ -973,8 +976,10 @@ sb_add_reality() {
         read -e -p "是否继续？: " rc; [[ ! "$rc" =~ ^[Yy]$ ]] && return
     fi
     local port; port=$(_get_port $(shuf -i 10000-65535 -n 1))
+    port=$(echo "$port" | tr -d '[:space:]')
     
     local sni; sni=$(select_best_domain "sni")
+    sni=$(echo "$sni" | tr -d '[:space:]')
     [ -z "$sni" ] && { echo -e "${Y}已取消添加。${R}"; return; }
     
     local uuid=$($SB_BIN generate uuid 2>/dev/null)
@@ -986,7 +991,9 @@ sb_add_reality() {
     fi
     
     local short_id=$($SB_BIN generate rand --hex 4 2>/dev/null || echo "aabbccdd")
-    local nn; read -e -p "名称 (回车默认): " nn; [ -z "$nn" ] && nn="VLESS-Reality-TikTok-${port}"
+    local nn; read -e -p "名称 (回车默认): " nn
+    nn=$(echo "$nn" | tr -d '\r')
+    [ -z "$nn" ] && nn="VLESS-Reality-TikTok-${port}"
     
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
     local ij=$(jq -n --arg p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" '{
@@ -1008,18 +1015,14 @@ sb_add_reality() {
                 "short_id": [$sid]
             },
             "alpn": ["h2", "http/1.1"],
-            "min_version": "1.2",
-            "cipher_suites": [
-                "TLS_AES_128_GCM_SHA256",
-                "TLS_AES_256_GCM_SHA384",
-                "TLS_CHACHA20_POLY1305_SHA256"
-            ]
+            "min_version": "1.2"
         },
         "packet_encoding": "xudp"
     }')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
     
-    if $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
+    local check_err
+    if check_err=$($SB_BIN check -c "$SB_CONF" 2>&1); then
         open_port_both "$port"; _save_node_meta "$port" "$nn" "vless-reality" "$pub_key" "short_id=${short_id};sni=${sni};tiktok_optimized=true"
         systemctl restart sing-box
         if _wait_for_sb_active; then 
@@ -1031,7 +1034,8 @@ sb_add_reality() {
             del_port_both "$port"; _del_node_meta "$port"
         fi
     else 
-        echo -e "${RED}校验失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
+        echo -e "${RED}校验失败: ${check_err}${R}"
+        local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
         _del_node_meta "$port"
     fi
     _clean_bak; read -rs -n 1 -p ""
@@ -1040,20 +1044,26 @@ sb_add_reality() {
 sb_add_vless_ws() {
     sb_check || return
     local port; port=$(_get_port $(shuf -i 10000-65535 -n 1))
+    port=$(echo "$port" | tr -d '[:space:]')
     local ws_path="/$(openssl rand -hex 8)"; read -e -p "WS Path (回车默认): " wp
     if [ -n "$wp" ]; then
+        wp=$(echo "$wp" | tr -d '\r')
         [[ "$wp" != /* ]] && wp="/$wp"
         ws_path="$wp"
     fi
     local uuid=$($SB_BIN generate uuid 2>/dev/null)
-    local nn; read -e -p "名称 (回车默认): " nn; [ -z "$nn" ] && nn="VLESS-WS-${port}"
+    local nn; read -e -p "名称 (回车默认): " nn
+    nn=$(echo "$nn" | tr -d '\r')
+    [ -z "$nn" ] && nn="VLESS-WS-${port}"
     
     local cdn_yn cdn_domain cdn_host=""
     read -e -p "是否启用大厂 CDN 并发测速优选？[y/N]: " cdn_yn
     if [[ "$cdn_yn" =~ ^[Yy]$ ]]; then
         read -e -p "请输入你已解析到 Cloudflare 的域名 (用于 Host): " cdn_host
+        cdn_host=$(echo "$cdn_host" | tr -d '[:space:]')
         if [ -n "$cdn_host" ]; then
             cdn_domain=$(select_best_domain "cdn" "$cdn_host")
+            cdn_domain=$(echo "$cdn_domain" | tr -d '[:space:]')
             [ -z "$cdn_domain" ] && cdn_domain=""
         else
             echo -e "${RED}必须输入域名才能使用 CDN，已自动取消 CDN${R}"
@@ -1063,7 +1073,9 @@ sb_add_vless_ws() {
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
     local ij=$(jq -n --arg p "$port" --arg u "$uuid" --arg wp "$ws_path" '{"type":"vless","tag":("vless-ws-"+($p|tostring)),"listen":"::","listen_port":($p|tonumber),"users":[{"uuid":$u}],"transport":{"type":"ws","path":$wp}}')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
-    if $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
+    
+    local check_err
+    if check_err=$($SB_BIN check -c "$SB_CONF" 2>&1); then
         open_port_both "$port"; _save_node_meta "$port" "$nn" "vless-ws" "" "path=${ws_path};cdn_server=${cdn_domain};cdn_host=${cdn_host}"
         systemctl restart sing-box
         if _wait_for_sb_active; then 
@@ -1073,7 +1085,8 @@ sb_add_vless_ws() {
             del_port_both "$port"; _del_node_meta "$port"
         fi
     else 
-        echo -e "${RED}校验失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
+        echo -e "${RED}校验失败: ${check_err}${R}"
+        local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
         _del_node_meta "$port"
     fi
     _clean_bak; read -rs -n 1 -p ""
@@ -1082,10 +1095,14 @@ sb_add_vless_ws() {
 sb_add_hysteria2() {
     sb_check || return
     local port; port=$(_get_port $(shuf -i 10000-65535 -n 1))
+    port=$(echo "$port" | tr -d '[:space:]')
     local pass=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)
-    local nn; read -e -p "名称 (回车默认): " nn; [ -z "$nn" ] && nn="Hysteria2-TikTok-${port}"
+    local nn; read -e -p "名称 (回车默认): " nn
+    nn=$(echo "$nn" | tr -d '\r')
+    [ -z "$nn" ] && nn="Hysteria2-TikTok-${port}"
     
     local sni; sni=$(select_best_domain "sni")
+    sni=$(echo "$sni" | tr -d '[:space:]')
     [ -z "$sni" ] && { echo -e "${Y}已取消添加。${R}"; return; }
     
     local cert_dir="/etc/sing-box/certs/hy2-${port}"; mkdir -p "$cert_dir"
@@ -1114,7 +1131,9 @@ sb_add_hysteria2() {
         "disable_mtu_discovery": false
     }')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
-    if $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
+    
+    local check_err
+    if check_err=$($SB_BIN check -c "$SB_CONF" 2>&1); then
         open_port_both "$port"; _save_node_meta "$port" "$nn" "hysteria2" "" "password=${pass};tls_method=selfsign;sni=${sni};tiktok_optimized=true"
         systemctl restart sing-box
         if _wait_for_sb_active; then 
@@ -1126,7 +1145,8 @@ sb_add_hysteria2() {
             del_port_both "$port"; _del_node_meta "$port"; rm -rf "$cert_dir"
         fi
     else 
-        echo -e "${RED}校验失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
+        echo -e "${RED}校验失败: ${check_err}${R}"
+        local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
         _del_node_meta "$port"; rm -rf "$cert_dir"
     fi
     _clean_bak; read -rs -n 1 -p ""
@@ -1135,11 +1155,15 @@ sb_add_hysteria2() {
 sb_add_tuic() {
     sb_check || return
     local port; port=$(_get_port $(shuf -i 10000-65535 -n 1))
+    port=$(echo "$port" | tr -d '[:space:]')
     local uuid=$($SB_BIN generate uuid 2>/dev/null)
     local pass=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)
-    local nn; read -e -p "名称 (回车默认): " nn; [ -z "$nn" ] && nn="TUIC-TikTok-${port}"
+    local nn; read -e -p "名称 (回车默认): " nn
+    nn=$(echo "$nn" | tr -d '\r')
+    [ -z "$nn" ] && nn="TUIC-TikTok-${port}"
     
     local sni; sni=$(select_best_domain "sni")
+    sni=$(echo "$sni" | tr -d '[:space:]')
     [ -z "$sni" ] && { echo -e "${Y}已取消添加。${R}"; return; }
     
     local cert_dir="/etc/sing-box/certs/tuic-${port}"; mkdir -p "$cert_dir"
@@ -1166,7 +1190,9 @@ sb_add_tuic() {
         }
     }')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
-    if $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
+    
+    local check_err
+    if check_err=$($SB_BIN check -c "$SB_CONF" 2>&1); then
         open_port_both "$port"; _save_node_meta "$port" "$nn" "tuic" "" "uuid=${uuid};password=${pass};tls_method=selfsign;sni=${sni};tiktok_optimized=true"
         systemctl restart sing-box
         if _wait_for_sb_active; then 
@@ -1179,7 +1205,8 @@ sb_add_tuic() {
             del_port_both "$port"; _del_node_meta "$port"; rm -rf "$cert_dir"
         fi
     else 
-        echo -e "${RED}校验失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
+        echo -e "${RED}校验失败: ${check_err}${R}"
+        local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
         _del_node_meta "$port"; rm -rf "$cert_dir"
     fi
     _clean_bak; read -rs -n 1 -p ""
@@ -1189,6 +1216,7 @@ sb_add_all() {
     sb_check || return
     echo -e "${Y}将自动部署 VLESS-Reality, VLESS-WS, Hysteria2, TUIC 四协议${R}"
     local base_port; read -e -p "输入起始端口 (将自动占用连续4个端口): " base_port
+    base_port=$(echo "$base_port" | tr -d '[:space:]')
     
     if [[ ! "$base_port" =~ ^[0-9]{1,5}$ ]] || [ "$base_port" -lt 1024 ] || [ "$((base_port + 3))" -gt 65535 ]; then
         echo -e "${RED}❌ 起始端口错误！端口范围需在 1024-65532 之间（确保连续4个端口不越界）。${R}"
@@ -1202,6 +1230,7 @@ sb_add_all() {
     done
     
     local sni; sni=$(select_best_domain "sni")
+    sni=$(echo "$sni" | tr -d '[:space:]')
     [ -z "$sni" ] && { echo -e "${Y}已取消部署。${R}"; return; }
     
     local uuid=$($SB_BIN generate uuid 2>/dev/null)
@@ -1231,7 +1260,7 @@ sb_add_all() {
     local ij_re=$(jq -n --arg p "$p_re" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" '{
         "type": "vless", "tag": ("vless-reality-"+($p|tostring)), "listen": "::", "listen_port": ($p|tonumber),
         "users": [{"uuid": $u, "flow": "xtls-rprx-vision"}],
-        "tls": { "enabled": true, "server_name": $s, "reality": { "enabled": true, "handshake": { "server": $s, "server_port": 443 }, "private_key": $pk, "short_id": [$sid] }, "alpn": ["h2", "http/1.1"], "min_version": "1.2", "cipher_suites": ["TLS_AES_128_GCM_SHA256", "TLS_AES_256_GCM_SHA384", "TLS_CHACHA20_POLY1305_SHA256"] },
+        "tls": { "enabled": true, "server_name": $s, "reality": { "enabled": true, "handshake": { "server": $s, "server_port": 443 }, "private_key": $pk, "short_id": [$sid] }, "alpn": ["h2", "http/1.1"], "min_version": "1.2" },
         "packet_encoding": "xudp"
     }')
     local ij_ws=$(jq -n --arg p "$p_ws" --arg u "$uuid" --arg wp "$ws_path" '{"type":"vless","tag":("vless-ws-"+($p|tostring)),"listen":"::","listen_port":($p|tonumber),"users":[{"uuid":$u}],"transport":{"type":"ws","path":$wp}}')
@@ -1248,7 +1277,8 @@ sb_add_all() {
     
     jq --argjson re "$ij_re" --argjson ws "$ij_ws" --argjson hy "$ij_hy" --argjson tu "$ij_tu" '.inbounds += [$re, $ws, $hy, $tu]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
     
-    if $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
+    local check_err
+    if check_err=$($SB_BIN check -c "$SB_CONF" 2>&1); then
         open_port_both "$p_re"; open_port_both "$p_ws"; open_port_both "$p_hy"; open_port_both "$p_tu"
         _save_node_meta "$p_re" "VLESS-Reality" "vless-reality" "$pub_key" "short_id=${short_id};sni=${sni};tiktok_optimized=true"
         _save_node_meta "$p_ws" "VLESS-WS" "vless-ws" "" "path=${ws_path}"
@@ -1264,7 +1294,8 @@ sb_add_all() {
             rm -rf "$hy_cert_dir" "$tu_cert_dir"
         fi
     else 
-        echo -e "${RED}校验失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
+        echo -e "${RED}校验失败: ${check_err}${R}"
+        local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
         for p in $p_re $p_ws $p_hy $p_tu; do _del_node_meta "$p"; done
         rm -rf "$hy_cert_dir" "$tu_cert_dir"
     fi
@@ -1569,6 +1600,7 @@ sb_del_node() {
     [ "$has_any" -eq 0 ] && { echo -e "${Y}无节点可删除${R}"; read -rs -n 1 -p ""; return; }
     
     read -e -p "请输入要删除的端口号: " del_input
+    del_input=$(echo "$del_input" | tr -d '[:space:]')
     [ -z "$del_input" ] || [[ "$del_input" == "0" ]] && return
     
     if [[ ! "$del_input" =~ ^[0-9]{1,5}$ ]] || [ "$del_input" -lt 1 ] || [ "$del_input" -gt 65535 ]; then
@@ -1581,14 +1613,19 @@ sb_del_node() {
     [ -z "$found_tag" ] && { echo -e "${RED}未找到节点${R}"; return; }
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
     jq --arg t "$found_tag" 'del(.inbounds[] | select(.tag == $t))' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
-    if $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
+    
+    local check_err
+    if check_err=$($SB_BIN check -c "$SB_CONF" 2>&1); then
         _del_node_meta "$del_input"; systemctl restart sing-box
         del_port_both "$del_input"
         rm -rf /etc/sing-box/certs/hy2-${del_input} /etc/sing-box/certs/tuic-${del_input}
         sb_sync_client_config
         _persist_iptables
         echo -e "${G}✅ 已删除并清理残留${R}"
-    else echo -e "${RED}校验失败，回滚...${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"; fi
+    else 
+        echo -e "${RED}校验失败: ${check_err}${R}"
+        local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
+    fi
     _clean_bak; read -rs -n 1 -p ""
 }
 
@@ -1603,6 +1640,7 @@ manual_open_port() {
         case "$port_choice" in
             1) 
                read -e -p "请输入端口号 (1-65535): " port
+               port=$(echo "$port" | tr -d '[:space:]')
                if [[ "$port" =~ ^[0-9]{1,5}$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
                    open_port_both "$port"; _persist_iptables
                else
@@ -1612,6 +1650,7 @@ manual_open_port() {
             2) 
                read -e -p "起始端口 (1-65535): " sp
                read -e -p "结束端口 (1-65535): " ep
+               sp=$(echo "$sp" | tr -d '[:space:]'); ep=$(echo "$ep" | tr -d '[:space:]')
                if [[ "$sp" =~ ^[0-9]{1,5}$ ]] && [[ "$ep" =~ ^[0-9]{1,5}$ ]] && [ "$sp" -ge 1 ] && [ "$ep" -le 65535 ] && [ "$sp" -le "$ep" ]; then
                    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
                        ufw allow ${sp}:${ep}/tcp >/dev/null 2>&1; ufw allow ${sp}:${ep}/udp >/dev/null 2>&1
@@ -1729,7 +1768,7 @@ low_memory_optimize() {
     journalctl --vacuum-time=3d 2>/dev/null || true
     if [ -f /etc/systemd/journald.conf ]; then
         sed -i 's/^#SystemMaxUse=.*/SystemMaxUse=50M/' /etc/systemd/journald.conf 2>/dev/null || true
-        sed -i 's/^#MaxLevelStore=.*/MaxLevelStore=err}' /etc/systemd/journald.conf 2>/dev/null || true
+        sed -i 's/^#MaxLevelStore=.*/MaxLevelStore=err/' /etc/systemd/journald.conf 2>/dev/null || true
         systemctl restart systemd-journald 2>/dev/null || true
     fi
     echo -e "${G}✅ 完成${R}"
@@ -1780,7 +1819,7 @@ low_disk_optimize() {
     fi
     if [ -f /etc/systemd/journald.conf ]; then
         sed -i 's/^#RateLimitBurst=.*/RateLimitBurst=50/' /etc/systemd/journald.conf 2>/dev/null || true
-        sed -i 's/^#RateLimitIntervalSec=.*/RateLimitIntervalSec=1m/' /etc/systemd/journald.conf 2>/dev/null || true
+        sed -i 's/^#RateLimitIntervalSec=.*/RateLimitIntervalSec=1m}' /etc/systemd/journald.conf 2>/dev/null || true
     fi
     echo -e "${G}✅ 完成${R}"
     
