@@ -744,13 +744,6 @@ SB_BIN="/usr/local/bin/sing-box"
 SB_CONF="/etc/sing-box/config.json"
 META_FILE="/etc/sing-box/.nodes_meta"
 
-if [ ! -f /etc/sing-box/.sub_token ]; then
-    mkdir -p /etc/sing-box
-    tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16 > /etc/sing-box/.sub_token
-    chmod 600 /etc/sing-box/.sub_token
-fi
-SUB_TOKEN=$(cat /etc/sing-box/.sub_token)
-
 get_my_ip() { 
     local ip=$(curl -4 -s -f --connect-timeout 2 --max-time 3 https://api.ipify.org 2>/dev/null || curl -4 -s -f --connect-timeout 2 --max-time 3 https://checkip.amazonaws.com 2>/dev/null || curl -6 -s -f --connect-timeout 2 --max-time 3 https://api64.ipify.org 2>/dev/null)
     if [ -z "$ip" ] || [ "$ip" = "未知IP" ]; then
@@ -771,7 +764,6 @@ sb_check() {
     if ! command -v $SB_BIN >/dev/null 2>&1; then 
         echo -e "${RED}请先安装 Sing-Box${R}"; read -rs -n 1 -p ""; return 1; 
     fi
-    # 修复：每次操作节点前，自动清理旧版本不兼容的残留字段
     if [ -f "$SB_CONF" ] && command -v jq >/dev/null 2>&1; then
         local tmp_clean="$TMP_DIR/sb_clean.json"
         if jq 'del(.dns.cache_size) | (.inbounds[]? |= del(.packet_encoding))' "$SB_CONF" > "$tmp_clean" 2>/dev/null; then
@@ -943,9 +935,9 @@ sb_update() {
 sb_uninstall() {
     if ! command -v $SB_BIN >/dev/null 2>&1; then echo -e "${Y}Sing-Box 未安装${R}"; read -rs -n 1 -p ""; return; fi
     read -e -p "确认卸载？: " c; [[ ! "$c" =~ ^[Yy]$ ]] && return
-    systemctl stop sing-box sb-sub sb-iptables >/dev/null 2>&1
-    systemctl disable sing-box sb-sub sb-iptables >/dev/null 2>&1
-    rm -rf /etc/sing-box $SB_BIN /etc/systemd/system/sing-box.service /etc/systemd/system/sb-sub.service /etc/systemd/system/sb-iptables.service
+    systemctl stop sing-box sb-iptables >/dev/null 2>&1
+    systemctl disable sing-box sb-iptables >/dev/null 2>&1
+    rm -rf /etc/sing-box $SB_BIN /etc/systemd/system/sing-box.service /etc/systemd/system/sb-iptables.service
     systemctl daemon-reload >/dev/null 2>&1
     systemctl reset-failed >/dev/null 2>&1
     echo -e "${G}✅ Sing-Box 已完全卸载${R}"; read -rs -n 1 -p ""
@@ -1050,7 +1042,7 @@ sb_add_reality() {
             if [[ "$server_ip" =~ : ]]; then server_ip_url="[$server_ip]"; fi
             local link="vless://${uuid}@${server_ip_url}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#$(url_encode "$nn")"
             echo -e "${C}节点链接: ${link}${R}"
-            sb_sync_client_config; _persist_iptables; 
+            _persist_iptables; 
         else
             echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
             del_port_both "$port"; _del_node_meta "$port"
@@ -1110,7 +1102,7 @@ sb_add_vless_ws() {
             fi
             local link="vless://${uuid}@${client_server}:${port}?encryption=none&security=none&type=ws&path=$(url_encode "${ws_path:-/}")${link_host_param}#$(url_encode "$nn")"
             echo -e "${C}节点链接: ${link}${R}"
-            sb_sync_client_config; _persist_iptables; 
+            _persist_iptables; 
         else
             echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
             del_port_both "$port"; _del_node_meta "$port"
@@ -1174,7 +1166,7 @@ sb_add_hysteria2() {
             if [[ "$server_ip" =~ : ]]; then server_ip_url="[$server_ip]"; fi
             local link="hysteria2://$(url_encode "$pass")@${server_ip_url}:${port}?insecure=1&alpn=h3&sni=${sni}#$(url_encode "$nn")"
             echo -e "${C}节点链接: ${link}${R}"
-            sb_sync_client_config; _persist_iptables; 
+            _persist_iptables; 
         else
             echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
             del_port_both "$port"; _del_node_meta "$port"; rm -rf "$cert_dir"
@@ -1238,7 +1230,7 @@ sb_add_tuic() {
             if [[ "$server_ip" =~ : ]]; then server_ip_url="[$server_ip]"; fi
             local link="tuic://${uuid}:$(url_encode "$pass")@${server_ip_url}:${port}?congestion_control=bbr&alpn=h3&sni=${sni}&allow_insecure=1#$(url_encode "$nn")"
             echo -e "${C}节点链接: ${link}${R}"
-            sb_sync_client_config; _persist_iptables; 
+            _persist_iptables; 
         else
             echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
             del_port_both "$port"; _del_node_meta "$port"; rm -rf "$cert_dir"
@@ -1332,7 +1324,7 @@ sb_add_all() {
             echo -e "${C}2. vless://${uuid}@${server_ip_url}:${p_ws}?encryption=none&security=none&type=ws&path=$(url_encode "${ws_path:-/}")#VLESS-WS${R}"
             echo -e "${C}3. hysteria2://$(url_encode "$hy_pass")@${server_ip_url}:${p_hy}?insecure=1&alpn=h3&sni=${sni}#Hysteria2${R}"
             echo -e "${C}4. tuic://${tu_uuid}:$(url_encode "$tu_pass")@${server_ip_url}:${p_tu}?congestion_control=bbr&alpn=h3&sni=${sni}&allow_insecure=1#TUIC${R}"
-            sb_sync_client_config; _persist_iptables; 
+            _persist_iptables; 
         else
             echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
             for p in $p_re $p_ws $p_hy $p_tu; do del_port_both "$p"; _del_node_meta "$p"; done
@@ -1345,152 +1337,6 @@ sb_add_all() {
         rm -rf "$hy_cert_dir" "$tu_cert_dir"
     fi
     _clean_bak; read -rs -n 1 -p ""
-}
-
-# ================= 客户端配置与订阅 =================
-sb_sync_client_config() {
-    local server_ip=$(get_my_ip)
-    local client_conf="/etc/sing-box/client.json"
-    
-    if [ ! -f "$SB_CONF" ] || ! jq -e '.inbounds[0]' "$SB_CONF" >/dev/null 2>&1; then
-        jq -n '{log:{"level":"info"}, inbounds:[{"type":"tun","tag":"tun-in","address":["172.19.0.1/30","fd00::1/126"],"auto_route":true,"strict_route":true}], outbounds:[{"type":"direct","tag":"direct"}], route:{"final":"direct","auto_detect_interface":true}}' > $client_conf
-        if systemctl is-active --quiet sb-sub 2>/dev/null; then
-            mkdir -p /etc/sing-box/sub
-            cp $client_conf /etc/sing-box/sub/$SUB_TOKEN.json 2>/dev/null
-        fi
-        return 0
-    fi
-
-    jq -n '{log:{"level":"info"}, inbounds:[{"type":"tun","tag":"tun-in","address":["172.19.0.1/30","fd00::1/126"],"auto_route":true,"strict_route":true}], outbounds:[], route:{"final":"proxy","auto_detect_interface":true}}' > $client_conf
-    
-    local tags_json='[]'
-    while IFS= read -r b64_obj; do
-        local obj; obj=$(echo "$b64_obj" | base64 -d 2>/dev/null); [ -z "$obj" ] && continue
-        local port inb_type nn ex pub_key short_id ws_path pass sni uuid tu_pass cdn_server cdn_host
-        port=$(echo "$obj" | jq -r '.listen_port // empty' 2>/dev/null); [ -z "$port" ] && continue
-        
-        inb_type=$(echo "$obj" | jq -r '.type // empty' 2>/dev/null)
-        nn=$(_get_node_meta "$port" "name")
-        [ -z "$nn" ] && nn="${inb_type}-${port}"
-        ex=$(_get_node_meta "$port" "extra")
-        
-        local ob=""
-        case "$inb_type" in
-            vless)
-                uuid=$(echo "$obj" | jq -r '.users[0].uuid // empty' 2>/dev/null)
-                if echo "$obj" | jq -e '.tls.reality' >/dev/null 2>&1; then
-                    sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null)
-                    pub_key=$(_get_node_meta "$port" "pub_key")
-                    short_id=$(echo "$ex" | sed -n 's/.*short_id=\([^;]*\).*/\1/p')
-                    [ -z "$short_id" ] && short_id=$(echo "$obj" | jq -r '.tls.reality.short_id[0] // empty' 2>/dev/null)
-                    if [ -n "$pub_key" ]; then
-                        ob=$(jq -n --arg n "$nn" --arg s "$server_ip" --argjson p "$port" --arg u "$uuid" --arg sni "$sni" --arg pk "$pub_key" --arg sid "$short_id" '{"tag":$n,"type":"vless","server":$s,"server_port":$p,"uuid":$u,"flow":"xtls-rprx-vision","tls":{"enabled":true,"server_name":$sni,"utls":{"enabled":true,"fingerprint":"chrome"},"reality":{"enabled":true,"public_key":$pk,"short_id":$sid}}}')
-                    fi
-                else
-                    ws_path=$(echo "$ex" | sed -n 's/.*path=\([^;]*\).*/\1/p')
-                    [ -z "$ws_path" ] && ws_path=$(echo "$obj" | jq -r '.transport.path // empty' 2>/dev/null)
-                    cdn_server=$(echo "$ex" | sed -n 's/.*cdn_server=\([^;]*\).*/\1/p')
-                    cdn_host=$(echo "$ex" | sed -n 's/.*cdn_host=\([^;]*\).*/\1/p')
-                    local client_server="$server_ip"
-                    local client_host="$server_ip"
-                    if [ -n "$cdn_server" ] && [ -n "$cdn_host" ]; then
-                        client_server="$cdn_server"
-                        client_host="$cdn_host"
-                    fi
-                    ob=$(jq -n --arg n "$nn" --arg s "$client_server" --argjson p "$port" --arg u "$uuid" --arg wp "$ws_path" --arg h "$client_host" '{"tag":$n,"type":"vless","server":$s,"server_port":$p,"uuid":$u,"tls":{"enabled":false},"transport":{"type":"ws","path":$wp,"headers":{"Host":$h}}}')
-                fi ;;
-            hysteria2)
-                pass=$(echo "$ex" | sed -n 's/.*password=\([^;]*\).*/\1/p')
-                [ -z "$pass" ] && pass=$(echo "$obj" | jq -r '.users[0].password // empty' 2>/dev/null)
-                sni=$(echo "$ex" | sed -n 's/.*sni=\([^;]*\).*/\1/p')
-                [ -z "$sni" ] && sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null)
-                [ -z "$sni" ] && sni="www.bing.com"
-                ob=$(jq -n --arg n "$nn" --arg s "$server_ip" --argjson p "$port" --arg pass "$pass" --arg sni "$sni" '{"tag":$n,"type":"hysteria2","server":$s,"server_port":$p,"password":$pass,"tls":{"enabled":true,"insecure":true,"server_name":$sni,"alpn":["h3"]}}') ;;
-            tuic)
-                uuid=$(echo "$ex" | sed -n 's/.*uuid=\([^;]*\).*/\1/p')
-                [ -z "$uuid" ] && uuid=$(echo "$obj" | jq -r '.users[0].uuid // empty' 2>/dev/null)
-                pass=$(echo "$ex" | sed -n 's/.*password=\([^;]*\).*/\1/p')
-                [ -z "$pass" ] && pass=$(echo "$obj" | jq -r '.users[0].password // empty' 2>/dev/null)
-                sni=$(echo "$ex" | sed -n 's/.*sni=\([^;]*\).*/\1/p')
-                [ -z "$sni" ] && sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null)
-                [ -z "$sni" ] && sni="www.bing.com"
-                ob=$(jq -n --arg n "$nn" --arg s "$server_ip" --argjson p "$port" --arg u "$uuid" --arg pass "$pass" --arg sni "$sni" '{"tag":$n,"type":"tuic","server":$s,"server_port":$p,"uuid":$u,"password":$pass,"congestion_control":"bbr","tls":{"enabled":true,"insecure":true,"server_name":$sni,"alpn":["h3"]}}') ;;
-        esac
-        
-        if [ -n "$ob" ]; then
-            jq --argjson ob "$ob" '.outbounds += [$ob]' $client_conf > "$TMP_DIR/c_tmp.json" && mv "$TMP_DIR/c_tmp.json" $client_conf
-            tags_json=$(echo "$tags_json" | jq --arg n "$nn" '. += [$n]')
-        fi
-    done < <(jq -r '.inbounds[] | @base64' "$SB_CONF" 2>/dev/null)
-    
-    if [ "$tags_json" != "[]" ]; then
-        local selector=$(jq -n --argjson tags "$tags_json" '{"type":"selector","tag":"proxy","outbounds":($tags + ["auto"])}')
-        jq --argjson ob "$selector" '.outbounds += [$ob]' $client_conf > "$TMP_DIR/c_tmp.json" && mv "$TMP_DIR/c_tmp.json" $client_conf
-        local urltest=$(jq -n --argjson tags "$tags_json" '{"type":"urltest","tag":"auto","outbounds":$tags,"url":"http://www.gstatic.com/generate_204","interval":"10m"}')
-        jq --argjson ob "$urltest" '.outbounds += [$ob]' $client_conf > "$TMP_DIR/c_tmp.json" && mv "$TMP_DIR/c_tmp.json" $client_conf
-    fi
-    local direct=$(jq -n '{"type":"direct","tag":"direct"}')
-    jq --argjson ob "$direct" '.outbounds += [$ob]' $client_conf > "$TMP_DIR/c_tmp.json" && mv "$TMP_DIR/c_tmp.json" $client_conf
-    
-    if systemctl is-active --quiet sb-sub 2>/dev/null; then
-        mkdir -p /etc/sing-box/sub
-        cp $client_conf /etc/sing-box/sub/$SUB_TOKEN.json 2>/dev/null
-    fi
-}
-
-sb_generate_client_config() {
-    sb_check || return
-    if [ ! -f "$SB_CONF" ] || ! jq -e '.inbounds[0]' "$SB_CONF" >/dev/null 2>&1; then
-        echo -e "${RED}当前没有任何节点，无法生成客户端配置！${R}"
-        read -rs -n 1 -p ""; return
-    fi
-    sb_sync_client_config
-    echo -e "${G}客户端配置已生成并同步至: /etc/sing-box/client.json${R}"
-    cat /etc/sing-box/client.json
-    read -rs -n 1 -p ""
-}
-
-sb_start_sub_server() {
-    sb_check || return
-    if systemctl is-active --quiet sb-sub 2>/dev/null; then echo -e "${Y}订阅服务已在运行${R}"; read -rs -n 1 -p ""; return; fi
-    local server_ip=$(get_my_ip)
-    [ "$server_ip" = "未知IP" ] && { echo -e "${RED}无法获取IP${R}"; return; }
-    
-    if check_port_occupied 8191; then
-        echo -e "${RED}❌ 8191 端口已被其他程序占用，无法启动订阅服务！${R}"
-        echo -e "${Y}请检查是否已有其他面板或服务占用了该端口。${R}"
-        read -rs -n 1 -p ""
-        return 1
-    fi
-
-    local py_bin=$(command -v python3)
-    if [ -z "$py_bin" ]; then
-        echo -e "${RED}未找到 Python3 环境，无法启动订阅服务${R}"; return 1
-    fi
-    
-    sb_sync_client_config
-    mkdir -p /etc/sing-box/sub
-    
-    cat > /etc/systemd/system/sb-sub.service <<EOF
-[Unit]
-Description=Sing-Box Subscription Server
-After=network.target
-[Service]
-Type=simple
-ExecStartPre=/bin/mkdir -p /etc/sing-box/sub
-ExecStart=/bin/bash -c 'cd /etc/sing-box/sub && exec "$py_bin" -m http.server 8191 --bind 0.0.0.0'
-Restart=on-failure
-RestartSec=3
-[Install]
-WantedBy=multi-user.target
-EOF
-    systemctl daemon-reload
-    systemctl enable --now sb-sub >/dev/null 2>&1
-    _open_single_port 8191 "tcp"
-    _persist_iptables
-    echo -e "${G}✅ 订阅服务已启动并设置为开机自启${R}"
-    echo -e "${Y}订阅链接: http://${server_ip}:8191/${SUB_TOKEN}.json${R}"
-    read -rs -n 1 -p ""
 }
 
 sb_show_nodes_and_links() {
@@ -1664,7 +1510,6 @@ sb_del_node() {
         _del_node_meta "$del_input"; systemctl restart sing-box
         del_port_both "$del_input"
         rm -rf /etc/sing-box/certs/hy2-${del_input} /etc/sing-box/certs/tuic-${del_input}
-        sb_sync_client_config
         _persist_iptables
         echo -e "${G}✅ 已删除并清理残留${R}"
     else 
@@ -1752,15 +1597,13 @@ sb_menu() {
         echo -e "${H}────────────────────────${R}"
         echo -e "${H}[6] 查看节点与链接${R}"
         echo -e "${H}[7] 删除节点${R}"
-        echo -e "${H}[8] 生成客户端配置文件${R}"
-        echo -e "${H}[9] 开启本地订阅服务${R}"
         echo -e "${H}────────────────────────${R}"
-        echo -e "${H}[10] 安装 Sing-Box${R}"
-        echo -e "${H}[11] 更新 Sing-Box${R}"
-        echo -e "${H}[12] 卸载 Sing-Box${R}"
-        echo -e "${H}[13] 重启 Sing-Box${R}"
-        echo -e "${H}[14] 查看 Sing-Box 日志${R}"
-        echo -e "${H}[15] 手动开放端口${R}"
+        echo -e "${H}[8] 安装 Sing-Box${R}"
+        echo -e "${H}[9] 更新 Sing-Box${R}"
+        echo -e "${H}[10] 卸载 Sing-Box${R}"
+        echo -e "${H}[11] 重启 Sing-Box${R}"
+        echo -e "${H}[12] 查看 Sing-Box 日志${R}"
+        echo -e "${H}[13] 手动开放端口${R}"
         echo ""
         echo -e "${H}[0] 返回主菜单${R}"
         echo ""
@@ -1773,10 +1616,9 @@ sb_menu() {
             3) clear; sb_add_tuic ;; 4) clear; sb_add_vless_ws ;;
             5) clear; sb_add_all ;;
             6) clear; sb_show_nodes_and_links ;; 7) clear; sb_del_node ;;
-            8) clear; sb_generate_client_config ;; 9) clear; sb_start_sub_server ;;
-            10) clear; sb_install ;; 11) clear; sb_update ;; 12) clear; sb_uninstall ;;
-            13) clear; systemctl restart sing-box && echo -e "${G}✅ 已重启${R}" || echo -e "${RED}重启失败${R}"; read -rs -n 1 -p "" ;;
-            14) clear; sb_view_log ;; 15) clear; manual_open_port ;; 0|"") break ;; *) echo -e "${RED}无效${R}"; sleep 1 ;;
+            8) clear; sb_install ;; 9) clear; sb_update ;; 10) clear; sb_uninstall ;;
+            11) clear; systemctl restart sing-box && echo -e "${G}✅ 已重启${R}" || echo -e "${RED}重启失败${R}"; read -rs -n 1 -p "" ;;
+            12) clear; sb_view_log ;; 13) clear; manual_open_port ;; 0|"") break ;; *) echo -e "${RED}无效${R}"; sleep 1 ;;
         esac
     done
 }
