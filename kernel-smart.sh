@@ -764,15 +764,27 @@ sb_check() {
     if ! command -v $SB_BIN >/dev/null 2>&1; then 
         echo -e "${RED}请先安装 Sing-Box${R}"; read -rs -n 1 -p ""; return 1; 
     fi
+    
+    # 修复：检测如果文件为空或损坏，自动恢复初始配置
+    if [ ! -s "$SB_CONF" ] || ! jq -e . "$SB_CONF" >/dev/null 2>&1; then
+        echo -e "${Y}检测到配置文件损坏或为空，正在重新初始化...${R}"
+        mv "$SB_CONF" "${SB_CONF}.eof_bak.$(date +%s)" 2>/dev/null
+        sb_init_conf
+        systemctl restart sing-box >/dev/null 2>&1
+    fi
+
     if [ -f "$SB_CONF" ] && command -v jq >/dev/null 2>&1; then
         local tmp_clean="$TMP_DIR/sb_clean.json"
-        # 修复：深度清理所有不兼容字段，包括 Reality 冲突字段
         if jq 'del(.dns.cache_size) | (.inbounds[]? |= del(.packet_encoding)) | (.inbounds[]? | select(.tls.reality != null) |= del(.tls.min_version, .tls.alpn, .tls.cipher_suites))' "$SB_CONF" > "$tmp_clean" 2>/dev/null; then
-            if ! cmp -s "$SB_CONF" "$tmp_clean"; then
-                mv -f "$tmp_clean" "$SB_CONF"
-                systemctl restart sing-box >/dev/null 2>&1
-                echo -e "${Y}已自动深度清理不兼容的旧版残留字段并重启服务！${R}"
-                sleep 1
+            if [ -s "$tmp_clean" ]; then # 确保生成的文件不为空
+                if ! cmp -s "$SB_CONF" "$tmp_clean"; then
+                    mv -f "$tmp_clean" "$SB_CONF"
+                    systemctl restart sing-box >/dev/null 2>&1
+                    echo -e "${Y}已自动深度清理不兼容的旧版残留字段并重启服务！${R}"
+                    sleep 1
+                else
+                    rm -f "$tmp_clean"
+                fi
             else
                 rm -f "$tmp_clean"
             fi
@@ -781,7 +793,7 @@ sb_check() {
     return 0
 }
 sb_init_conf() { 
-    if [ ! -f "$SB_CONF" ]; then 
+    if [ ! -f "$SB_CONF" ] || [ ! -s "$SB_CONF" ]; then 
         mkdir -p /etc/sing-box
         echo '{"log":{"level":"error"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct","auto_detect_interface":true}}' > "$SB_CONF"
     elif ! jq -e . "$SB_CONF" >/dev/null 2>&1; then
