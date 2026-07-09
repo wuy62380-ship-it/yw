@@ -996,6 +996,7 @@ sb_add_reality() {
     [ -z "$nn" ] && nn="VLESS-Reality-TikTok-${port}"
     
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
+    # 修复：移除 packet_encoding 以兼容新版 sing-box
     local ij=$(jq -n --arg p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" '{
         "type": "vless",
         "tag": ("vless-reality-"+($p|tostring)),
@@ -1016,8 +1017,7 @@ sb_add_reality() {
             },
             "alpn": ["h2", "http/1.1"],
             "min_version": "1.2"
-        },
-        "packet_encoding": "xudp"
+        }
     }')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
     
@@ -1257,11 +1257,11 @@ sb_add_all() {
     chmod 600 "${tu_cert_dir}/key.pem"
     
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
+    # 修复：移除 packet_encoding 以兼容新版 sing-box
     local ij_re=$(jq -n --arg p "$p_re" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" '{
         "type": "vless", "tag": ("vless-reality-"+($p|tostring)), "listen": "::", "listen_port": ($p|tonumber),
         "users": [{"uuid": $u, "flow": "xtls-rprx-vision"}],
-        "tls": { "enabled": true, "server_name": $s, "reality": { "enabled": true, "handshake": { "server": $s, "server_port": 443 }, "private_key": $pk, "short_id": [$sid] }, "alpn": ["h2", "http/1.1"], "min_version": "1.2" },
-        "packet_encoding": "xudp"
+        "tls": { "enabled": true, "server_name": $s, "reality": { "enabled": true, "handshake": { "server": $s, "server_port": 443 }, "private_key": $pk, "short_id": [$sid] }, "alpn": ["h2", "http/1.1"], "min_version": "1.2" }
     }')
     local ij_ws=$(jq -n --arg p "$p_ws" --arg u "$uuid" --arg wp "$ws_path" '{"type":"vless","tag":("vless-ws-"+($p|tostring)),"listen":"::","listen_port":($p|tonumber),"users":[{"uuid":$u}],"transport":{"type":"ws","path":$wp}}')
     local ij_hy=$(jq -n --arg p "$p_hy" --arg pass "$hy_pass" --arg c "${hy_cert_dir}/cert.pem" --arg k "${hy_cert_dir}/key.pem" --arg s "$sni" '{
@@ -1768,7 +1768,7 @@ low_memory_optimize() {
     journalctl --vacuum-time=3d 2>/dev/null || true
     if [ -f /etc/systemd/journald.conf ]; then
         sed -i 's/^#SystemMaxUse=.*/SystemMaxUse=50M/' /etc/systemd/journald.conf 2>/dev/null || true
-        sed -i 's/^#MaxLevelStore=.*/MaxLevelStore=err/' /etc/systemd/journald.conf 2>/dev/null || true
+        sed -i 's/^#MaxLevelStore=.*/MaxLevelStore=err}' /etc/systemd/journald.conf 2>/dev/null || true
         systemctl restart systemd-journald 2>/dev/null || true
     fi
     echo -e "${G}✅ 完成${R}"
