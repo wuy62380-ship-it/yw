@@ -355,7 +355,8 @@ smart_auto_optimize() {
         sleep 0.3
         if command -v "$SB_BIN" >/dev/null 2>&1; then
             if [ -f "$SB_CONF" ] && jq -e . "$SB_CONF" >/dev/null 2>&1; then
-                jq '.log.level = "warn" | .dns.cache_size = 1024' "$SB_CONF" > "$TMP_DIR/sb_auto.json" && mv "$TMP_DIR/sb_auto.json" "$SB_CONF"
+                # 修复：移除 dns.cache_size 以兼容所有版本
+                jq '.log.level = "warn"' "$SB_CONF" > "$TMP_DIR/sb_auto.json" && mv "$TMP_DIR/sb_auto.json" "$SB_CONF"
             fi
             if [ -f /etc/systemd/system/sing-box.service ]; then
                 local temp_service=$(mktemp)
@@ -996,7 +997,6 @@ sb_add_reality() {
     [ -z "$nn" ] && nn="VLESS-Reality-TikTok-${port}"
     
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
-    # 修复：移除 packet_encoding 以兼容新版 sing-box
     local ij=$(jq -n --arg p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" '{
         "type": "vless",
         "tag": ("vless-reality-"+($p|tostring)),
@@ -1257,7 +1257,6 @@ sb_add_all() {
     chmod 600 "${tu_cert_dir}/key.pem"
     
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
-    # 修复：移除 packet_encoding 以兼容新版 sing-box
     local ij_re=$(jq -n --arg p "$p_re" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" '{
         "type": "vless", "tag": ("vless-reality-"+($p|tostring)), "listen": "::", "listen_port": ($p|tonumber),
         "users": [{"uuid": $u, "flow": "xtls-rprx-vision"}],
@@ -1865,8 +1864,8 @@ low_sb_optimize() {
     
     echo -e "${Y}[2/3] 优化 Sing-Box 配置...${R}"
     if [ -f "$SB_CONF" ] && jq -e . "$SB_CONF" >/dev/null 2>&1; then
+        # 修复：移除 dns.cache_size 以兼容所有版本
         jq '.log.level = "warn"' "$SB_CONF" > "$TMP_DIR/sb_opt.json" && mv "$TMP_DIR/sb_opt.json" "$SB_CONF"
-        jq '.dns.cache_size = 1024' "$SB_CONF" > "$TMP_DIR/sb_opt.json" && mv "$TMP_DIR/sb_opt.json" "$SB_CONF"
         echo -e "${G}✅ 完成${R}"
     fi
     
@@ -2053,7 +2052,8 @@ EOF
         echo -e "${Y}[6/7] 优化Sing-Box配置...${R}"
         if command -v $SB_BIN >/dev/null 2>&1; then
             if [ -f "$SB_CONF" ] && jq -e . "$SB_CONF" >/dev/null 2>&1; then
-                jq '.log.level = "warn" | .dns.cache_size = 1024' "$SB_CONF" > "$TMP_DIR/sb_tiktok.json" && mv "$TMP_DIR/sb_tiktok.json" "$SB_CONF"
+                # 修复：移除 dns.cache_size 以兼容所有版本
+                jq '.log.level = "warn"' "$SB_CONF" > "$TMP_DIR/sb_tiktok.json" && mv "$TMP_DIR/sb_tiktok.json" "$SB_CONF"
                 if [ -f /etc/systemd/system/sing-box.service ]; then
                     local temp_service=$(mktemp)
                     cp /etc/systemd/system/sing-box.service "$temp_service"
