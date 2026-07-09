@@ -66,10 +66,25 @@ check_swap() {
         fi
     fi
 
-    if [ -f /swapfile ] && [ "$swap_total" -lt 512 ]; then swapon /swapfile >/dev/null 2>&1; swap_total=$(free -m | awk '/Swap/{print $2}'); [ "$swap_total" -ge 512 ] && return 0; fi
+    if [ -f /swapfile ] && [ "$swap_total" -lt 512 ]; then 
+        swapon /swapfile >/dev/null 2>&1
+        swap_total=$(free -m | awk '/Swap/{print $2}')
+        [ "$swap_total" -ge 512 ] && return 0
+    fi
+    
     if df / | grep -q "/$" && [ ! -f /etc/pve/.version ]; then
-        echo -e "${Y}创建 512MB Swap...${R}"; dd if=/dev/zero of=/swapfile bs=1M count=512 2>/dev/null; chmod 600 /swapfile; mkswap /swapfile >/dev/null 2>&1; swapon /swapfile >/dev/null 2>&1
-        grep -q "/swapfile none" /etc/fstab 2>/dev/null || echo "/swapfile none swap sw 0 0" >> /etc/fstab; echo -e "${G}✅ Swap 完成。${R}"; fi
+        echo -e "${Y}创建 512MB Swap...${R}"
+        if dd if=/dev/zero of=/swapfile bs=1M count=512 2>/dev/null && \
+           chmod 600 /swapfile && \
+           mkswap /swapfile >/dev/null 2>&1 && \
+           swapon /swapfile >/dev/null 2>&1; then
+            grep -q "/swapfile none" /etc/fstab 2>/dev/null || echo "/swapfile none swap sw 0 0" >> /etc/fstab
+            echo -e "${G}✅ Swap 完成。${R}"
+        else
+            echo -e "${RED}❌ Swap 创建失败，请检查磁盘空间是否充足！${R}"
+            rm -f /swapfile 2>/dev/null
+        fi
+    fi
 }
 auto_setup_zram() {
     if grep -qaE "lxc|docker|containerd" /proc/1/environ 2>/dev/null || [ -f /.dockerenv ] || ! lsmod | grep -q zram; then
@@ -80,6 +95,8 @@ auto_setup_zram() {
     fi
     if grep -q "/dev/zram" /proc/swaps 2>/dev/null; then return 0; fi
     if ! command -v zramctl >/dev/null 2>&1; then apt-get install -y zram-tools >/dev/null 2>&1 || return 1; fi
+    
+    mkdir -p /etc/default
     echo -e "ALGO=zstd\nPERCENT=50" > /etc/default/zramswap
     systemctl enable zramswap >/dev/null 2>&1; systemctl restart zramswap >/dev/null 2>&1
 }
@@ -355,7 +372,6 @@ smart_auto_optimize() {
         
         echo -e "${Y}[4/5] 优化网络流量优先级...${R}"
         sleep 0.3
-        # 修复：检查规则是否存在，防止无限叠加
         for proto in tcp udp; do
             if command -v iptables >/dev/null 2>&1; then
                 if ! iptables -t mangle -C OUTPUT -p $proto -j TOS --set-tos Minimize-Delay 2>/dev/null; then
@@ -669,9 +685,9 @@ select_best_domain() {
                 
                 local total=${#domains[@]}
                 while true; do
-                    local done; done=$(wc -l < "$tmp_res" 2>/dev/null || echo 0)
-                    local remaining=$((total - done))
-                    local percent=$((done * 100 / total))
+                    local done_count; done_count=$(wc -l < "$tmp_res" 2>/dev/null || echo 0)
+                    local remaining=$((total - done_count))
+                    local percent=$((done_count * 100 / total))
                     
                     local filled=$((percent / 5))
                     local empty=$((20 - filled))
@@ -680,7 +696,7 @@ select_best_domain() {
                     
                     local bars=$(printf '█%.0s' $(seq 1 $filled))
                     local spaces=$(printf '░%.0s' $(seq 1 $empty))
-                    echo -ne "${H}\r[${bars}${spaces}] ${percent}% (${done}/${total})${R}"
+                    echo -ne "${H}\r[${bars}${spaces}] ${percent}% (${done_count}/${total})${R}"
                     [ "$remaining" -le 0 ] && break
                     sleep 0.2
                 done
@@ -832,11 +848,16 @@ sb_install() {
     local latest_ver=$(curl -sL https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | sed 's/v//')
     [ -z "$latest_ver" ] && latest_ver="1.10.7"
     mkdir -p /etc/sing-box
-    if curl -L -o "$TMP_DIR/sb.tar.gz" -# --retry 2 "https://github.com/SagerNet/sing-box/releases/download/v${latest_ver}/sing-box-${latest_ver}-linux-${arch}.tar.gz"; then
-        tar xzf "$TMP_DIR/sb.tar.gz" -C "$TMP_DIR"; mv "$TMP_DIR/sing-box-${latest_ver}-linux-${arch}/sing-box" $SB_BIN
-        rm -rf "$TMP_DIR/sb.tar.gz" "$TMP_DIR/sing-box-${latest_ver}-linux-${arch}"; chmod +x $SB_BIN
-        sb_init_conf
-        cat > /etc/systemd/system/sing-box.service <<EOF
+    if curl -L -o "$TMP_DIR/sb.tar.gz" -# --retry 2 "https://github.com/SagerNet/sing-box/releases/download/v${latest_ver}/sing-box-${latest_ver}-linux-${arch}.tar.gz" 2>/dev/null; then
+        if tar xzf "$TMP_DIR/sb.tar.gz" -C "$TMP_DIR" 2>/dev/null; then
+            local tmp_bin="$TMP_DIR/sing-box-new"
+            mv "$TMP_DIR/sing-box-${latest_ver}-linux-${arch}/sing-box" "$tmp_bin" 2>/dev/null
+            rm -rf "$TMP_DIR/sb.tar.gz" "$TMP_DIR/sing-box-${latest_ver}-linux-${arch}"
+            chmod +x "$tmp_bin"
+            if "$tmp_bin" version >/dev/null 2>&1; then
+                mv -f "$tmp_bin" $SB_BIN
+                sb_init_conf
+                cat > /etc/systemd/system/sing-box.service <<EOF
 [Unit]
 After=network.target nss-lookup.target
 [Service]
@@ -854,8 +875,16 @@ OOMScoreAdjust=-1000
 [Install]
 WantedBy=multi-user.target
 EOF
-        systemctl daemon-reload; systemctl enable sing-box >/dev/null 2>&1; systemctl start sing-box
-        echo -e "${G}✅ 安装成功 | 版本: $($SB_BIN version 2>/dev/null | head -1)${R}"
+                systemctl daemon-reload; systemctl enable sing-box >/dev/null 2>&1; systemctl start sing-box
+                echo -e "${G}✅ 安装成功 | 版本: $($SB_BIN version 2>/dev/null | head -1)${R}"
+            else
+                echo -e "${RED}❌ 下载的执行文件无法运行，可能架构不匹配或文件损坏！${R}"
+                rm -f "$tmp_bin"
+            fi
+        else
+            echo -e "${RED}❌ 解压失败，可能是 GitHub 限流返回了 HTML 错误页。${R}"
+            rm -f "$TMP_DIR/sb.tar.gz"
+        fi
     else echo -e "${RED}❌ 下载失败${R}"; fi
     read -rs -n 1 -p ""
 }
@@ -864,11 +893,25 @@ sb_update() {
     local arch=$(uname -m); case "$arch" in x86_64) arch="amd64";; aarch64) arch="arm64";; *) return 1;; esac
     local latest_ver=$(curl -sL https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | sed 's/v//')
     [ -z "$latest_ver" ] && latest_ver="1.10.7"
-    if curl -L -o "$TMP_DIR/sb.tar.gz" -# --retry 2 "https://github.com/SagerNet/sing-box/releases/download/v${latest_ver}/sing-box-${latest_ver}-linux-${arch}.tar.gz"; then
-        tar xzf "$TMP_DIR/sb.tar.gz" -C "$TMP_DIR"; systemctl stop sing-box >/dev/null 2>&1
-        mv "$TMP_DIR/sing-box-${latest_ver}-linux-${arch}/sing-box" $SB_BIN
-        rm -rf "$TMP_DIR/sb.tar.gz" "$TMP_DIR/sing-box-${latest_ver}-linux-${arch}"; chmod +x $SB_BIN
-        systemctl start sing-box >/dev/null 2>&1; echo -e "${G}✅ 更新成功 | 版本: $($SB_BIN version 2>/dev/null | head -1)${R}"
+    echo -e "${Y}正在更新 Sing-Box...${R}"
+    if curl -L -o "$TMP_DIR/sb.tar.gz" -# --retry 2 "https://github.com/SagerNet/sing-box/releases/download/v${latest_ver}/sing-box-${latest_ver}-linux-${arch}.tar.gz" 2>/dev/null; then
+        if tar xzf "$TMP_DIR/sb.tar.gz" -C "$TMP_DIR" 2>/dev/null; then
+            local tmp_bin="$TMP_DIR/sing-box-new"
+            mv "$TMP_DIR/sing-box-${latest_ver}-linux-${arch}/sing-box" "$tmp_bin" 2>/dev/null
+            rm -rf "$TMP_DIR/sb.tar.gz" "$TMP_DIR/sing-box-${latest_ver}-linux-${arch}"
+            chmod +x "$tmp_bin"
+            if "$tmp_bin" version >/dev/null 2>&1; then
+                systemctl stop sing-box >/dev/null 2>&1
+                mv -f "$tmp_bin" $SB_BIN
+                systemctl start sing-box >/dev/null 2>&1
+                echo -e "${G}✅ 更新成功 | 版本: $($SB_BIN version 2>/dev/null | head -1)${R}"
+            else
+                echo -e "${RED}❌ 新版执行文件验证失败，可能架构不匹配。更新已取消，旧版本不受影响。${R}"
+                rm -f "$tmp_bin"
+            fi
+        else
+            echo -e "${RED}❌ 解压失败，可能是 GitHub 限流返回了 HTML 错误页。${R}"
+        fi
     else echo -e "${RED}❌ 下载失败${R}"; fi
     read -rs -n 1 -p ""
 }
@@ -884,10 +927,24 @@ sb_uninstall() {
 }
 sb_view_log() {
     echo -e "${Y}退出日志请按 Ctrl+C${R}"
-    journalctl -u sing-box -f -n 50
+    trap - INT
+    timeout 3600 journalctl -u sing-box -f -n 50
+    trap 'rm -rf "$TMP_DIR" 2>/dev/null; exit 130' INT
 }
 
 # ================= 节点添加逻辑 =================
+_wait_for_sb_active() {
+    local i=0
+    while [ $i -lt 30 ]; do
+        if systemctl is-active --quiet sing-box 2>/dev/null; then
+            return 0
+        fi
+        sleep 0.5
+        i=$((i+1))
+    done
+    return 1
+}
+
 _get_port() {
     local port=$1; local input_port
     while true; do
@@ -919,50 +976,38 @@ sb_add_reality() {
     local uuid=$($SB_BIN generate uuid 2>/dev/null)
     local keys_output priv_key pub_key; keys_output=$($SB_BIN generate reality-keypair 2>&1)
     priv_key=$(echo "$keys_output" | awk '/PrivateKey/{print $2}' | tr -d '\r'); pub_key=$(echo "$keys_output" | awk '/PublicKey/{print $2}' | tr -d '\r')
-    [ -z "$priv_key" ] || [ -z "$pub_key" ] && { echo -e "${RED}密钥生成失败${R}"; return; }
+    
+    if [ -z "$priv_key" ] || [ -z "$pub_key" ]; then
+        echo -e "${RED}密钥生成失败${R}"; return
+    fi
+    
     local short_id=$($SB_BIN generate rand --hex 4 2>/dev/null || echo "aabbccdd")
     local nn; read -e -p "名称 (回车默认): " nn; [ -z "$nn" ] && nn="VLESS-Reality-TikTok-${port}"
     
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
     local ij=$(jq -n --argjson p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" '{
-        "type": "vless",
-        "tag": ("vless-reality-"+($p|tostring)),
-        "listen": "::",
-        "listen_port": $p,
+        "type": "vless", "tag": ("vless-reality-"+($p|tostring)), "listen": "::", "listen_port": $p,
         "users": [{"uuid": $u, "flow": "xtls-rprx-vision"}],
-        "tls": {
-            "enabled": true,
-            "server_name": $s,
-            "reality": {
-                "enabled": true,
-                "handshake": {
-                    "server": $s,
-                    "server_port": 443
-                },
-                "private_key": $pk,
-                "short_id": [$sid]
-            },
-            "alpn": ["h2", "http/1.1"],
-            "min_version": "1.2",
-            "cipher_suites": [
-                "TLS_AES_128_GCM_SHA256",
-                "TLS_AES_256_GCM_SHA384",
-                "TLS_CHACHA20_POLY1305_SHA256"
-            ]
-        },
+        "tls": { "enabled": true, "server_name": $s, "reality": { "enabled": true, "handshake": { "server": $s, "server_port": 443 }, "private_key": $pk, "short_id": [$sid] }, "alpn": ["h2", "http/1.1"], "min_version": "1.2", "cipher_suites": ["TLS_AES_128_GCM_SHA256", "TLS_AES_256_GCM_SHA384", "TLS_CHACHA20_POLY1305_SHA256"] },
         "packet_encoding": "xudp"
     }')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
+    
     if $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
         open_port_both "$port"; _save_node_meta "$port" "$nn" "vless-reality" "$pub_key" "short_id=${short_id};sni=${sni};tiktok_optimized=true"
-        systemctl restart sing-box; sleep 2
-        if systemctl is-active --quiet sing-box; then 
+        systemctl restart sing-box
+        if _wait_for_sb_active; then 
             echo -e "${G}✅ TikTok专属VLESS-Reality部署成功！${R}"
             echo -e "${G}🔑 PublicKey: ${pub_key}${R}"
             sb_sync_client_config; _persist_iptables; 
         else
-            echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"; _del_node_meta "$port"; fi
-    else echo -e "${RED}校验失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"; _del_node_meta "$port"; fi
+            echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
+            del_port_both "$port"; _del_node_meta "$port"
+        fi
+    else 
+        echo -e "${RED}校验失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
+        _del_node_meta "$port"
+    fi
     _clean_bak; read -rs -n 1 -p ""
 }
 
@@ -994,10 +1039,17 @@ sb_add_vless_ws() {
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
     if $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
         open_port_both "$port"; _save_node_meta "$port" "$nn" "vless-ws" "" "path=${ws_path};cdn_server=${cdn_domain};cdn_host=${cdn_host}"
-        systemctl restart sing-box; sleep 2
-        if systemctl is-active --quiet sing-box; then echo -e "${G}✅ 成功 | Path: ${ws_path} | CDN: ${cdn_domain:-未启用}${R}"; sb_sync_client_config; _persist_iptables; else
-            echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"; _del_node_meta "$port"; fi
-    else echo -e "${RED}校验失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"; _del_node_meta "$port"; fi
+        systemctl restart sing-box
+        if _wait_for_sb_active; then 
+            echo -e "${G}✅ 成功 | Path: ${ws_path} | CDN: ${cdn_domain:-未启用}${R}"; sb_sync_client_config; _persist_iptables; 
+        else
+            echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
+            del_port_both "$port"; _del_node_meta "$port"
+        fi
+    else 
+        echo -e "${RED}校验失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
+        _del_node_meta "$port"
+    fi
     _clean_bak; read -rs -n 1 -p ""
 }
 
@@ -1008,7 +1060,6 @@ sb_add_hysteria2() {
     local nn; read -e -p "名称 (回车默认): " nn; [ -z "$nn" ] && nn="Hysteria2-TikTok-${port}"
     
     local sni; sni=$(select_best_domain "sni")
-    # 修复：用户取消选择直接返回
     [ -z "$sni" ] && { echo -e "${Y}已取消添加。${R}"; return; }
     
     local cert_dir="/etc/sing-box/certs/hy2-${port}"; mkdir -p "$cert_dir"
@@ -1018,35 +1069,26 @@ sb_add_hysteria2() {
     
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
     local ij=$(jq -n --argjson p "$port" --arg pass "$pass" --arg c "${cert_dir}/cert.pem" --arg k "${cert_dir}/key.pem" --arg s "$sni" '{
-        "type": "hysteria2",
-        "tag": ("hysteria2-"+($p|tostring)),
-        "listen": "::",
-        "listen_port": $p,
-        "users": [{"password": $pass}],
-        "tls": {
-            "enabled": true,
-            "server_name": $s,
-            "alpn": ["h3", "h2", "http/1.1"],
-            "min_version": "1.2",
-            "certificate_path": $c,
-            "key_path": $k
-        },
-        "congestion_control": "bbr",
-        "udp_disable_fragment": false,
-        "ignore_client_bandwidth": true,
-        "disable_mtu_discovery": false
+        "type": "hysteria2", "tag": ("hysteria2-"+($p|tostring)), "listen": "::", "listen_port": $p, "users": [{"password": $pass}],
+        "tls": { "enabled": true, "server_name": $s, "alpn": ["h3", "h2", "http/1.1"], "min_version": "1.2", "certificate_path": $c, "key_path": $k },
+        "congestion_control": "bbr", "udp_disable_fragment": false, "ignore_client_bandwidth": true, "disable_mtu_discovery": false
     }')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
     if $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
         open_port_both "$port"; _save_node_meta "$port" "$nn" "hysteria2" "" "password=${pass};tls_method=selfsign;sni=${sni};tiktok_optimized=true"
-        systemctl restart sing-box; sleep 2
-        if systemctl is-active --quiet sing-box; then 
+        systemctl restart sing-box
+        if _wait_for_sb_active; then 
             echo -e "${G}✅ TikTok直播专用Hysteria2部署成功！${R}"
             echo -e "${G}🔑 密码: ${pass}${R}"
             sb_sync_client_config; _persist_iptables; 
         else
-            echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"; _del_node_meta "$port"; fi
-    else echo -e "${RED}校验失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"; _del_node_meta "$port"; fi
+            echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
+            del_port_both "$port"; _del_node_meta "$port"; rm -rf "$cert_dir"
+        fi
+    else 
+        echo -e "${RED}校验失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
+        _del_node_meta "$port"; rm -rf "$cert_dir"
+    fi
     _clean_bak; read -rs -n 1 -p ""
 }
 
@@ -1058,7 +1100,6 @@ sb_add_tuic() {
     local nn; read -e -p "名称 (回车默认): " nn; [ -z "$nn" ] && nn="TUIC-TikTok-${port}"
     
     local sni; sni=$(select_best_domain "sni")
-    # 修复：用户取消选择直接返回
     [ -z "$sni" ] && { echo -e "${Y}已取消添加。${R}"; return; }
     
     local cert_dir="/etc/sing-box/certs/tuic-${port}"; mkdir -p "$cert_dir"
@@ -1068,34 +1109,27 @@ sb_add_tuic() {
     
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
     local ij=$(jq -n --argjson p "$port" --arg u "$uuid" --arg pass "$pass" --arg c "${cert_dir}/cert.pem" --arg k "${cert_dir}/key.pem" --arg s "$sni" '{
-        "type": "tuic",
-        "tag": ("tuic-"+($p|tostring)),
-        "listen": "::",
-        "listen_port": $p,
-        "users": [{"uuid": $u, "password": $pass}],
-        "congestion_control": "bbr",
-        "udp_relay_mode": "native",
-        "tls": {
-            "enabled": true,
-            "server_name": $s,
-            "alpn": ["h3", "h2", "http/1.1"],
-            "min_version": "1.2",
-            "certificate_path": $c,
-            "key_path": $k
-        }
+        "type": "tuic", "tag": ("tuic-"+($p|tostring)), "listen": "::", "listen_port": $p, "users": [{"uuid": $u, "password": $pass}],
+        "congestion_control": "bbr", "udp_relay_mode": "native",
+        "tls": { "enabled": true, "server_name": $s, "alpn": ["h3", "h2", "http/1.1"], "min_version": "1.2", "certificate_path": $c, "key_path": $k }
     }')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
     if $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
         open_port_both "$port"; _save_node_meta "$port" "$nn" "tuic" "" "uuid=${uuid};password=${pass};tls_method=selfsign;sni=${sni};tiktok_optimized=true"
-        systemctl restart sing-box; sleep 2
-        if systemctl is-active --quiet sing-box; then 
+        systemctl restart sing-box
+        if _wait_for_sb_active; then 
             echo -e "${G}✅ TikTok优化版TUIC部署成功！${R}"
             echo -e "${G}UUID: ${uuid}${R}"
             echo -e "${G}密码: ${pass}${R}"
             sb_sync_client_config; _persist_iptables; 
         else
-            echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"; _del_node_meta "$port"; fi
-    else echo -e "${RED}校验失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"; _del_node_meta "$port"; fi
+            echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
+            del_port_both "$port"; _del_node_meta "$port"; rm -rf "$cert_dir"
+        fi
+    else 
+        echo -e "${RED}校验失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
+        _del_node_meta "$port"; rm -rf "$cert_dir"
+    fi
     _clean_bak; read -rs -n 1 -p ""
 }
 
@@ -1116,93 +1150,48 @@ sb_add_all() {
     done
     
     local sni; sni=$(select_best_domain "sni")
-    # 修复：用户取消选择直接返回
     [ -z "$sni" ] && { echo -e "${Y}已取消部署。${R}"; return; }
     
     local uuid=$($SB_BIN generate uuid 2>/dev/null)
     local keys_output priv_key pub_key; keys_output=$($SB_BIN generate reality-keypair 2>&1)
     priv_key=$(echo "$keys_output" | awk '/PrivateKey/{print $2}' | tr -d '\r'); pub_key=$(echo "$keys_output" | awk '/PublicKey/{print $2}' | tr -d '\r')
-    # 修复：校验密钥生成结果
-    [ -z "$priv_key" ] || [ -z "$pub_key" ] && { echo -e "${RED}密钥生成失败${R}"; return; }
+    
+    if [ -z "$priv_key" ] || [ -z "$pub_key" ]; then
+        echo -e "${RED}密钥生成失败${R}"; return
+    fi
+    
     local short_id=$($SB_BIN generate rand --hex 4 2>/dev/null || echo "aabbccdd")
     local ws_path="/$(openssl rand -hex 8)"
     local hy_pass=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)
     local tu_uuid=$($SB_BIN generate uuid 2>/dev/null)
     local tu_pass=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)
     
-    mkdir -p /etc/sing-box/certs/hy2-${p_hy} /etc/sing-box/certs/tuic-${p_tu}
-    openssl ecparam -genkey -name prime256v1 -out "/etc/sing-box/certs/hy2-${p_hy}/key.pem" 2>/dev/null
-    openssl req -new -x509 -days 3650 -key "/etc/sing-box/certs/hy2-${p_hy}/key.pem" -out "/etc/sing-box/certs/hy2-${p_hy}/cert.pem" -subj "/CN=${sni}" 2>/dev/null
-    chmod 600 "/etc/sing-box/certs/hy2-${p_hy}/key.pem"
-    openssl ecparam -genkey -name prime256v1 -out "/etc/sing-box/certs/tuic-${p_tu}/key.pem" 2>/dev/null
-    openssl req -new -x509 -days 3650 -key "/etc/sing-box/certs/tuic-${p_tu}/key.pem" -out "/etc/sing-box/certs/tuic-${p_tu}/cert.pem" -subj "/CN=${sni}" 2>/dev/null
-    chmod 600 "/etc/sing-box/certs/tuic-${p_tu}/key.pem"
+    local hy_cert_dir="/etc/sing-box/certs/hy2-${p_hy}" tu_cert_dir="/etc/sing-box/certs/tuic-${p_tu}"
+    mkdir -p "$hy_cert_dir" "$tu_cert_dir"
+    openssl ecparam -genkey -name prime256v1 -out "${hy_cert_dir}/key.pem" 2>/dev/null
+    openssl req -new -x509 -days 3650 -key "${hy_cert_dir}/key.pem" -out "${hy_cert_dir}/cert.pem" -subj "/CN=${sni}" 2>/dev/null
+    chmod 600 "${hy_cert_dir}/key.pem"
+    openssl ecparam -genkey -name prime256v1 -out "${tu_cert_dir}/key.pem" 2>/dev/null
+    openssl req -new -x509 -days 3650 -key "${tu_cert_dir}/key.pem" -out "${tu_cert_dir}/cert.pem" -subj "/CN=${sni}" 2>/dev/null
+    chmod 600 "${tu_cert_dir}/key.pem"
     
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
     local ij_re=$(jq -n --argjson p "$p_re" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" '{
-        "type": "vless",
-        "tag": ("vless-reality-"+($p|tostring)),
-        "listen": "::",
-        "listen_port": $p,
+        "type": "vless", "tag": ("vless-reality-"+($p|tostring)), "listen": "::", "listen_port": $p,
         "users": [{"uuid": $u, "flow": "xtls-rprx-vision"}],
-        "tls": {
-            "enabled": true,
-            "server_name": $s,
-            "reality": {
-                "enabled": true,
-                "handshake": {
-                    "server": $s,
-                    "server_port": 443
-                },
-                "private_key": $pk,
-                "short_id": [$sid]
-            },
-            "alpn": ["h2", "http/1.1"],
-            "min_version": "1.2",
-            "cipher_suites": [
-                "TLS_AES_128_GCM_SHA256",
-                "TLS_AES_256_GCM_SHA384",
-                "TLS_CHACHA20_POLY1305_SHA256"
-            ]
-        },
+        "tls": { "enabled": true, "server_name": $s, "reality": { "enabled": true, "handshake": { "server": $s, "server_port": 443 }, "private_key": $pk, "short_id": [$sid] }, "alpn": ["h2", "http/1.1"], "min_version": "1.2", "cipher_suites": ["TLS_AES_128_GCM_SHA256", "TLS_AES_256_GCM_SHA384", "TLS_CHACHA20_POLY1305_SHA256"] },
         "packet_encoding": "xudp"
     }')
     local ij_ws=$(jq -n --argjson p "$p_ws" --arg u "$uuid" --arg wp "$ws_path" '{"type":"vless","tag":("vless-ws-"+($p|tostring)),"listen":"::","listen_port":$p,"users":[{"uuid":$u}],"transport":{"type":"ws","path":$wp}}')
-    local ij_hy=$(jq -n --argjson p "$p_hy" --arg pass "$hy_pass" --arg c "/etc/sing-box/certs/hy2-${p_hy}/cert.pem" --arg k "/etc/sing-box/certs/hy2-${p_hy}/key.pem" --arg s "$sni" '{
-        "type": "hysteria2",
-        "tag": ("hysteria2-"+($p|tostring)),
-        "listen": "::",
-        "listen_port": $p,
-        "users": [{"password": $pass}],
-        "tls": {
-            "enabled": true,
-            "server_name": $s,
-            "alpn": ["h3", "h2", "http/1.1"],
-            "min_version": "1.2",
-            "certificate_path": $c,
-            "key_path": $k
-        },
-        "congestion_control": "bbr",
-        "udp_disable_fragment": false,
-        "ignore_client_bandwidth": true,
-        "disable_mtu_discovery": false
+    local ij_hy=$(jq -n --argjson p "$p_hy" --arg pass "$hy_pass" --arg c "${hy_cert_dir}/cert.pem" --arg k "${hy_cert_dir}/key.pem" --arg s "$sni" '{
+        "type": "hysteria2", "tag": ("hysteria2-"+($p|tostring)), "listen": "::", "listen_port": $p, "users": [{"password": $pass}],
+        "tls": { "enabled": true, "server_name": $s, "alpn": ["h3", "h2", "http/1.1"], "min_version": "1.2", "certificate_path": $c, "key_path": $k },
+        "congestion_control": "bbr", "udp_disable_fragment": false, "ignore_client_bandwidth": true, "disable_mtu_discovery": false
     }')
-    local ij_tu=$(jq -n --argjson p "$p_tu" --arg u "$tu_uuid" --arg pass "$tu_pass" --arg c "/etc/sing-box/certs/tuic-${p_tu}/cert.pem" --arg k "/etc/sing-box/certs/tuic-${p_tu}/key.pem" --arg s "$sni" '{
-        "type": "tuic",
-        "tag": ("tuic-"+($p|tostring)),
-        "listen": "::",
-        "listen_port": $p,
-        "users": [{"uuid": $u, "password": $pass}],
-        "congestion_control": "bbr",
-        "udp_relay_mode": "native",
-        "tls": {
-            "enabled": true,
-            "server_name": $s,
-            "alpn": ["h3", "h2", "http/1.1"],
-            "min_version": "1.2",
-            "certificate_path": $c,
-            "key_path": $k
-        }
+    local ij_tu=$(jq -n --argjson p "$p_tu" --arg u "$tu_uuid" --arg pass "$tu_pass" --arg c "${tu_cert_dir}/cert.pem" --arg k "${tu_cert_dir}/key.pem" --arg s "$sni" '{
+        "type": "tuic", "tag": ("tuic-"+($p|tostring)), "listen": "::", "listen_port": $p, "users": [{"uuid": $u, "password": $pass}],
+        "congestion_control": "bbr", "udp_relay_mode": "native",
+        "tls": { "enabled": true, "server_name": $s, "alpn": ["h3", "h2", "http/1.1"], "min_version": "1.2", "certificate_path": $c, "key_path": $k }
     }')
     
     jq --argjson re "$ij_re" --argjson ws "$ij_ws" --argjson hy "$ij_hy" --argjson tu "$ij_tu" '.inbounds += [$re, $ws, $hy, $tu]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
@@ -1213,14 +1202,20 @@ sb_add_all() {
         _save_node_meta "$p_ws" "VLESS-WS" "vless-ws" "" "path=${ws_path}"
         _save_node_meta "$p_hy" "Hysteria2" "hysteria2" "" "password=${hy_pass};tls_method=selfsign;sni=${sni};tiktok_optimized=true"
         _save_node_meta "$p_tu" "TUIC" "tuic" "" "uuid=${tu_uuid};password=${tu_pass};tls_method=selfsign;sni=${sni};tiktok_optimized=true"
-        systemctl restart sing-box; sleep 2
-        if systemctl is-active --quiet sing-box; then 
+        systemctl restart sing-box
+        if _wait_for_sb_active; then 
             echo -e "${G}✅ TikTok专属四协议部署成功！${R}"
             sb_sync_client_config; _persist_iptables; 
         else
             echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
-            for p in $p_re $p_ws $p_hy $p_tu; do _del_node_meta "$p"; done; fi
-    else echo -e "${RED}校验失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"; fi
+            for p in $p_re $p_ws $p_hy $p_tu; do del_port_both "$p"; _del_node_meta "$p"; done
+            rm -rf "$hy_cert_dir" "$tu_cert_dir"
+        fi
+    else 
+        echo -e "${RED}校验失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
+        for p in $p_re $p_ws $p_hy $p_tu; do _del_node_meta "$p"; done
+        rm -rf "$hy_cert_dir" "$tu_cert_dir"
+    fi
     _clean_bak; read -rs -n 1 -p ""
 }
 
@@ -1606,7 +1601,6 @@ low_memory_optimize() {
     echo -e "${G}✅ 完成${R}"
     
     echo -e "${Y}[3/5] 关闭不必要的服务...${R}"
-    # 修复：移除 rsyslog，避免影响系统日志
     for service in snapd ModemManager packagekit; do
         systemctl stop $service 2>/dev/null || true
         systemctl disable $service 2>/dev/null || true
@@ -1648,7 +1642,7 @@ low_disk_optimize() {
     echo -e "${Y}[1/4] 优化挂载选项...${R}"
     if [ -f /etc/fstab ]; then
         if ! awk '$1 !~ /^#/ && $2 == "/" && $4 ~ /(^|,)noatime(,|$)/ { found=1 } END { exit found ? 0 : 1 }' /etc/fstab 2>/dev/null; then
-            # 修复：移除 BEGIN{OFS="\t"}，保持原格式
+            cp /etc/fstab /etc/fstab.bak.$(date +%s)
             awk '{ if ($1 !~ /^#/ && $2 == "/" && $4 !~ /(^|,)noatime(,|$)/) $4=$4",noatime"; print }' /etc/fstab > "$TMP_DIR/fstab.root.tmp" && mv "$TMP_DIR/fstab.root.tmp" /etc/fstab
         fi
     fi
@@ -1674,7 +1668,7 @@ low_disk_optimize() {
     
     echo -e "${Y}[4/4] 优化 tmpfs 挂载...${R}"
     if [ -f /etc/fstab ] && grep -Eq '^[^#]+\s+/tmp\s+' /etc/fstab; then
-        # 修复：移除 BEGIN{OFS="\t"}，保持原格式
+        cp /etc/fstab /etc/fstab.bak.$(date +%s)
         awk '{ if ($1 !~ /^#/ && $2 == "/tmp" && $4 !~ /(^|,)size=128M(,|$)/) $4=$4",size=128M"; print }' /etc/fstab > "$TMP_DIR/fstab.tmp.tmp" && mv "$TMP_DIR/fstab.tmp.tmp" /etc/fstab
     fi
     echo -e "${G}✅ 完成${R}"
@@ -1789,7 +1783,6 @@ EOF
         mount -o remount,noatime / 2>/dev/null || true
         
         echo -e "${Y}[5/6] 优化系统服务中...${R}"
-        # 修复：移除 rsyslog，避免影响系统日志
         for service in snapd ModemManager packagekit; do
             systemctl stop $service 2>/dev/null || true
             systemctl disable $service 2>/dev/null || true
@@ -1920,7 +1913,6 @@ EOF
         echo -e "${G}✅ 完成${R}"
         
         echo -e "${Y}[7/7] 优化防火墙和连接...${R}"
-        # 修复：检查规则是否存在，防止无限叠加
         for proto in tcp udp; do
             if command -v iptables >/dev/null 2>&1; then
                 if ! iptables -t mangle -C OUTPUT -p $proto -j TOS --set-tos Minimize-Delay 2>/dev/null; then
@@ -2058,7 +2050,6 @@ tiktok_bandwidth_optimize() {
         5)
             echo -e "${Y}正在自动检测网络...${R}"
             local main_nic=$(ip route | grep default | awk '{print $5}' | head -1)
-            # 修复：默认速度改为 100，防止检测失败时分配过大缓冲区
             local nic_speed=100
             if [ -n "$main_nic" ] && command -v ethtool >/dev/null 2>&1; then
                 local detected_speed=$(ethtool "$main_nic" 2>/dev/null | grep -i speed | awk '{print $2}' | sed 's/Mb\/s//')
