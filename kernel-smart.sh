@@ -664,21 +664,21 @@ select_best_domain() {
     else domains=("${SNI_DOMAINS[@]}"); purpose="大厂 SNI (TLS 偷步) 优选"; fi
     
     while true; do
-        clear
-        echo -e "${G}╔══════════════════════════════════════╗${R}"
-        echo -e "${G}║       顶级大厂域名优选模块            ║${R}"
-        echo -e "${G}╚══════════════════════════════════════╝${R}"
-        echo -e "当前用途: ${Y}${purpose}${R}"
-        echo ""
-        echo -e "${C}1.${R} 自动并发测速优选 (推荐)"
-        echo -e "${C}2.${R} 手动输入域名"
-        echo -e "${C}3.${R} 使用默认域名 (www.microsoft.com)"
-        echo -e "${H}0.${R} 返回上层"
-        echo ""
+        clear >&2
+        echo -e "${G}╔══════════════════════════════════════╗${R}" >&2
+        echo -e "${G}║       顶级大厂域名优选模块            ║${R}" >&2
+        echo -e "${G}╚══════════════════════════════════════╝${R}" >&2
+        echo -e "当前用途: ${Y}${purpose}${R}" >&2
+        echo "" >&2
+        echo -e "${C}1.${R} 自动并发测速优选 (推荐)" >&2
+        echo -e "${C}2.${R} 手动输入域名" >&2
+        echo -e "${C}3.${R} 使用默认域名 (www.microsoft.com)" >&2
+        echo -e "${H}0.${R} 返回上层" >&2
+        echo "" >&2
         read -e -p "请选择 [1-3]: " choice
         case "$choice" in
             1)
-                echo -e "${Y}[*] 正在并发测试 ${#domains[@]} 个大厂域名...${R}"
+                echo -e "${Y}[*] 正在并发测试 ${#domains[@]} 个大厂域名...${R}" >&2
                 local tmp_res="$TMP_DIR/sb_domain_speed"
                 > "$tmp_res"
                 for domain in "${domains[@]}"; do _test_domain_latency "$domain" "$tmp_res" & done
@@ -696,37 +696,41 @@ select_best_domain() {
                     
                     local bars=$(printf '█%.0s' $(seq 1 $filled))
                     local spaces=$(printf '░%.0s' $(seq 1 $empty))
-                    echo -ne "${H}\r[${bars}${spaces}] ${percent}% (${done_count}/${total})${R}"
+                    echo -ne "${H}\r[${bars}${spaces}] ${percent}% (${done_count}/${total})${R}" >&2
                     [ "$remaining" -le 0 ] && break
                     sleep 0.2
                 done
                 wait 
-                echo -e "\n${G}✅ 测速完成！${R}"
+                echo -e "\n${G}✅ 测速完成！${R}" >&2
                 
                 local sorted_domains=$(grep -v "^9999" "$tmp_res" | sort -n)
                 rm -f "$tmp_res"
-                if [ -z "$sorted_domains" ]; then echo -e "${RED}❌ 所有域名测速失败！请检查服务器网络。${R}"; read -rs -n 1 -p "按任意键重试..."; continue; fi
+                if [ -z "$sorted_domains" ]; then echo -e "${RED}❌ 所有域名测速失败！请检查服务器网络。${R}" >&2; read -rs -n 1 -p "按任意键重试..." >&2; continue; fi
                 
-                echo -e "${G}-----------------------------------------${R}"
-                echo -e "  ${C}序号${R}  ${C}域名${R}                          ${C}TLS延迟${R}"
-                echo -e "${G}-----------------------------------------${R}"
+                echo -e "${G}-----------------------------------------${R}" >&2
+                echo -e "  ${C}序号${R}  ${C}域名${R}                          ${C}TLS延迟${R}" >&2
+                echo -e "${G}-----------------------------------------${R}" >&2
                 local top_domains=() i=1
                 while IFS= read -r line; do
                     local latency=$(echo "$line" | awk '{print $1}')
                     local dom=$(echo "$line" | awk '{print $2}')
-                    printf "  ${G}[%d]${R} %-30s ${Y}%s ms${R}\n" "$i" "$dom" "$latency"
+                    printf "  ${G}[%d]${R} %-30s ${Y}%s ms${R}\n" "$i" "$dom" "$latency" >&2
                     top_domains+=("$dom"); i=$((i+1))
                     [ $i -gt 5 ] && break
                 done <<< "$sorted_domains"
-                echo -e "${G}-----------------------------------------${R}"
+                echo -e "${G}-----------------------------------------${R}" >&2
                 
                 read -e -p "请输入序号选用 [1-5, 默认1]: " sel
                 [ -z "$sel" ] && sel=1
                 if [[ "$sel" =~ ^[1-5]$ ]] && [ ${#top_domains[@]} -ge $sel ]; then
-                    echo "${top_domains[$((sel-1))]}"; return 0
-                else echo -e "${RED}选择无效${R}"; sleep 1; fi
+                    echo "${top_domains[$((sel-1))]}"
+                    return 0
+                else echo -e "${RED}选择无效${R}" >&2; sleep 1; fi
                 ;;
-            2) read -e -p "请输入域名 (如 www.example.com): " manual_dom; if [ -n "$manual_dom" ]; then echo "$manual_dom"; return 0; fi ;;
+            2) 
+                read -e -p "请输入域名 (如 www.example.com): " manual_dom
+                if [ -n "$manual_dom" ]; then echo "$manual_dom"; return 0; fi 
+                ;;
             3) echo "www.microsoft.com"; return 0 ;;
             0|"") return 1 ;;
         esac
@@ -948,15 +952,15 @@ _wait_for_sb_active() {
 _get_port() {
     local port=$1; local input_port
     while true; do
-        echo -e "${Y}提示：如果云服务器有安全组限制，请输入已在安全组放行的端口${R}"
+        echo -e "${Y}提示：如果云服务器有安全组限制，请输入已在安全组放行的端口${R}" >&2
         read -e -p "端口 (回车默认随机 $port): " input_port
         if [[ "$input_port" =~ ^[0-9]{1,5}$ ]] && [ "$input_port" -ge 1 ] && [ "$input_port" -le 65535 ]; then
             port="$input_port"
         elif [ -n "$input_port" ]; then
-            echo -e "${RED}❌ 端口范围必须在 1-65535 之间！${R}"
+            echo -e "${RED}❌ 端口范围必须在 1-65535 之间！${R}" >&2
             continue
         fi
-        if check_port_occupied "$port"; then echo -e "${RED}❌ 端口 $port 已被占用，请重新输入！${R}"; else break; fi
+        if check_port_occupied "$port"; then echo -e "${RED}❌ 端口 $port 已被占用，请重新输入！${R}" >&2; else break; fi
     done
     echo "$port"
 }
@@ -1509,7 +1513,6 @@ sb_del_node() {
         ex=$(_get_node_meta "$port" "extra")
         echo -e "${G}━━━ [${idx}] ${inb_type^^} | 端口: ${port} | ${nn} ━━━${R}"
         
-        # 生成链接以便确认
         case "$inb_type" in
             vless)
                 local uuid flow sni pub_key short_id ws_path cdn_server cdn_host
@@ -1614,8 +1617,8 @@ manual_open_port() {
                        ufw allow ${sp}:${ep}/tcp >/dev/null 2>&1; ufw allow ${sp}:${ep}/udp >/dev/null 2>&1
                        echo -e "${G}  ✅ 已放行端口范围 ${sp}-${ep} (TCP+UDP)${R}"
                    elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
-                       firewall-cmd --permanent --add-port=${sp}-${ep}/tcp >/dev/null 2>&1
-                       firewall-cmd --permanent --add-port=${sp}-${ep}/udp >/dev/null 2>&1
+                       firewall-cmd --permanent --add-port=${sp}:${ep}/tcp >/dev/null 2>&1
+                       firewall-cmd --permanent --add-port=${sp}:${ep}/udp >/dev/null 2>&1
                        firewall-cmd --reload >/dev/null 2>&1
                        echo -e "${G}  ✅ 已放行端口范围 ${sp}-${ep} (TCP+UDP)${R}"
                    elif command -v iptables >/dev/null 2>&1; then
@@ -1726,7 +1729,7 @@ low_memory_optimize() {
     journalctl --vacuum-time=3d 2>/dev/null || true
     if [ -f /etc/systemd/journald.conf ]; then
         sed -i 's/^#SystemMaxUse=.*/SystemMaxUse=50M/' /etc/systemd/journald.conf 2>/dev/null || true
-        sed -i 's/^#MaxLevelStore=.*/MaxLevelStore=err/' /etc/systemd/journald.conf 2>/dev/null || true
+        sed -i 's/^#MaxLevelStore=.*/MaxLevelStore=err}' /etc/systemd/journald.conf 2>/dev/null || true
         systemctl restart systemd-journald 2>/dev/null || true
     fi
     echo -e "${G}✅ 完成${R}"
