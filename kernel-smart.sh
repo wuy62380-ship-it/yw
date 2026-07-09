@@ -766,11 +766,12 @@ sb_check() {
     fi
     if [ -f "$SB_CONF" ] && command -v jq >/dev/null 2>&1; then
         local tmp_clean="$TMP_DIR/sb_clean.json"
-        if jq 'del(.dns.cache_size) | (.inbounds[]? |= del(.packet_encoding))' "$SB_CONF" > "$tmp_clean" 2>/dev/null; then
+        # 修复：深度清理所有不兼容字段，包括 Reality 冲突字段
+        if jq 'del(.dns.cache_size) | (.inbounds[]? |= del(.packet_encoding)) | (.inbounds[]? | select(.tls.reality != null) |= del(.tls.min_version, .tls.alpn, .tls.cipher_suites))' "$SB_CONF" > "$tmp_clean" 2>/dev/null; then
             if ! cmp -s "$SB_CONF" "$tmp_clean"; then
                 mv -f "$tmp_clean" "$SB_CONF"
                 systemctl restart sing-box >/dev/null 2>&1
-                echo -e "${Y}已自动清理不兼容的旧版残留字段并重启服务！${R}"
+                echo -e "${Y}已自动深度清理不兼容的旧版残留字段并重启服务！${R}"
                 sleep 1
             else
                 rm -f "$tmp_clean"
@@ -966,6 +967,7 @@ _get_port() {
     local port=$1; local input_port
     while true; do
         echo -e "${Y}提示：如果云服务器有安全组限制，请输入已在安全组放行的端口${R}" >&2
+        echo -e "${Y}提示：Reality 协议强烈建议使用 443 端口以防被阻断！${R}" >&2
         read -e -p "端口 (回车默认随机 $port): " input_port
         input_port=$(echo "$input_port" | tr -d '[:space:]')
         if [[ "$input_port" =~ ^[0-9]{1,5}$ ]] && [ "$input_port" -ge 1 ] && [ "$input_port" -le 65535 ]; then
@@ -986,7 +988,7 @@ sb_add_reality() {
         echo -e "${RED}警告：服务器时间异常($current_year)，Reality 将无法连通！建议用 Hy2/Tuic。${R}"
         read -e -p "是否继续？: " rc; [[ ! "$rc" =~ ^[Yy]$ ]] && return
     fi
-    local port; port=$(_get_port $(shuf -i 10000-65535 -n 1))
+    local port; port=$(_get_port 443)
     port=$(echo "$port" | tr -d '[:space:]')
     
     local sni; sni=$(select_best_domain "sni")
@@ -1007,6 +1009,7 @@ sb_add_reality() {
     [ -z "$nn" ] && nn="VLESS-Reality-TikTok-${port}"
     
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
+    # 修复：完全移除 min_version, alpn, cipher_suites，强制使用 TLS 1.3 默认值
     local ij=$(jq -n --arg p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" '{
         "type": "vless",
         "tag": ("vless-reality-"+($p|tostring)),
@@ -1024,9 +1027,7 @@ sb_add_reality() {
                 },
                 "private_key": $pk,
                 "short_id": [$sid]
-            },
-            "alpn": ["h2", "http/1.1"],
-            "min_version": "1.2"
+            }
         }
     }')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
@@ -1246,7 +1247,7 @@ sb_add_tuic() {
 sb_add_all() {
     sb_check || return
     echo -e "${Y}将自动部署 VLESS-Reality, VLESS-WS, Hysteria2, TUIC 四协议${R}"
-    local base_port; read -e -p "输入起始端口 (将自动占用连续4个端口): " base_port
+    local base_port; read -e -p "输入起始端口 (将自动占用连续4个端口，建议输入 443 以保证 Reality 可用性): " base_port
     base_port=$(echo "$base_port" | tr -d '[:space:]')
     
     if [[ ! "$base_port" =~ ^[0-9]{1,5}$ ]] || [ "$base_port" -lt 1024 ] || [ "$((base_port + 3))" -gt 65535 ]; then
@@ -1288,10 +1289,11 @@ sb_add_all() {
     chmod 600 "${tu_cert_dir}/key.pem"
     
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
+    # 修复：完全移除 Reality 的 min_version, alpn, cipher_suites
     local ij_re=$(jq -n --arg p "$p_re" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" '{
         "type": "vless", "tag": ("vless-reality-"+($p|tostring)), "listen": "::", "listen_port": ($p|tonumber),
         "users": [{"uuid": $u, "flow": "xtls-rprx-vision"}],
-        "tls": { "enabled": true, "server_name": $s, "reality": { "enabled": true, "handshake": { "server": $s, "server_port": 443 }, "private_key": $pk, "short_id": [$sid] }, "alpn": ["h2", "http/1.1"], "min_version": "1.2" }
+        "tls": { "enabled": true, "server_name": $s, "reality": { "enabled": true, "handshake": { "server": $s, "server_port": 443 }, "private_key": $pk, "short_id": [$sid] } }
     }')
     local ij_ws=$(jq -n --arg p "$p_ws" --arg u "$uuid" --arg wp "$ws_path" '{"type":"vless","tag":("vless-ws-"+($p|tostring)),"listen":"::","listen_port":($p|tonumber),"users":[{"uuid":$u}],"transport":{"type":"ws","path":$wp}}')
     local ij_hy=$(jq -n --arg p "$p_hy" --arg pass "$hy_pass" --arg c "${hy_cert_dir}/cert.pem" --arg k "${hy_cert_dir}/key.pem" --arg s "$sni" '{
