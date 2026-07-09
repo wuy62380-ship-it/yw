@@ -355,7 +355,6 @@ smart_auto_optimize() {
         sleep 0.3
         if command -v "$SB_BIN" >/dev/null 2>&1; then
             if [ -f "$SB_CONF" ] && jq -e . "$SB_CONF" >/dev/null 2>&1; then
-                # 修复：移除 dns.cache_size 以兼容所有版本
                 jq '.log.level = "warn"' "$SB_CONF" > "$TMP_DIR/sb_auto.json" && mv "$TMP_DIR/sb_auto.json" "$SB_CONF"
             fi
             if [ -f /etc/systemd/system/sing-box.service ]; then
@@ -768,7 +767,26 @@ check_port_occupied() {
     if ss -tunlpn | awk '{print $5}' | grep -qE ":${port}\$"; then return 0; else return 1; fi
 }
 
-sb_check() { if ! command -v $SB_BIN >/dev/null 2>&1; then echo -e "${RED}请先安装 Sing-Box${R}"; read -rs -n 1 -p ""; return 1; fi; return 0; }
+sb_check() { 
+    if ! command -v $SB_BIN >/dev/null 2>&1; then 
+        echo -e "${RED}请先安装 Sing-Box${R}"; read -rs -n 1 -p ""; return 1; 
+    fi
+    # 修复：每次操作节点前，自动清理旧版本不兼容的残留字段
+    if [ -f "$SB_CONF" ] && command -v jq >/dev/null 2>&1; then
+        local tmp_clean="$TMP_DIR/sb_clean.json"
+        if jq 'del(.dns.cache_size) | (.inbounds[]? |= del(.packet_encoding))' "$SB_CONF" > "$tmp_clean" 2>/dev/null; then
+            if ! cmp -s "$SB_CONF" "$tmp_clean"; then
+                mv -f "$tmp_clean" "$SB_CONF"
+                systemctl restart sing-box >/dev/null 2>&1
+                echo -e "${Y}已自动清理不兼容的旧版残留字段并重启服务！${R}"
+                sleep 1
+            else
+                rm -f "$tmp_clean"
+            fi
+        fi
+    fi
+    return 0
+}
 sb_init_conf() { 
     if [ ! -f "$SB_CONF" ]; then 
         mkdir -p /etc/sing-box
@@ -1864,7 +1882,6 @@ low_sb_optimize() {
     
     echo -e "${Y}[2/3] 优化 Sing-Box 配置...${R}"
     if [ -f "$SB_CONF" ] && jq -e . "$SB_CONF" >/dev/null 2>&1; then
-        # 修复：移除 dns.cache_size 以兼容所有版本
         jq '.log.level = "warn"' "$SB_CONF" > "$TMP_DIR/sb_opt.json" && mv "$TMP_DIR/sb_opt.json" "$SB_CONF"
         echo -e "${G}✅ 完成${R}"
     fi
@@ -2052,7 +2069,6 @@ EOF
         echo -e "${Y}[6/7] 优化Sing-Box配置...${R}"
         if command -v $SB_BIN >/dev/null 2>&1; then
             if [ -f "$SB_CONF" ] && jq -e . "$SB_CONF" >/dev/null 2>&1; then
-                # 修复：移除 dns.cache_size 以兼容所有版本
                 jq '.log.level = "warn"' "$SB_CONF" > "$TMP_DIR/sb_tiktok.json" && mv "$TMP_DIR/sb_tiktok.json" "$SB_CONF"
                 if [ -f /etc/systemd/system/sing-box.service ]; then
                     local temp_service=$(mktemp)
