@@ -1046,6 +1046,10 @@ sb_add_reality() {
         if _wait_for_sb_active; then 
             echo -e "${G}✅ TikTok专属VLESS-Reality部署成功！${R}"
             echo -e "${G}🔑 PublicKey: ${pub_key}${R}"
+            local server_ip=$(get_my_ip); local server_ip_url="$server_ip"
+            if [[ "$server_ip" =~ : ]]; then server_ip_url="[$server_ip]"; fi
+            local link="vless://${uuid}@${server_ip_url}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#$(url_encode "$nn")"
+            echo -e "${C}节点链接: ${link}${R}"
             sb_sync_client_config; _persist_iptables; 
         else
             echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
@@ -1097,7 +1101,16 @@ sb_add_vless_ws() {
         open_port_both "$port"; _save_node_meta "$port" "$nn" "vless-ws" "" "path=${ws_path};cdn_server=${cdn_domain};cdn_host=${cdn_host}"
         systemctl restart sing-box
         if _wait_for_sb_active; then 
-            echo -e "${G}✅ 成功 | Path: ${ws_path} | CDN: ${cdn_domain:-未启用}${R}"; sb_sync_client_config; _persist_iptables; 
+            echo -e "${G}✅ 成功 | Path: ${ws_path} | CDN: ${cdn_domain:-未启用}${R}"
+            local server_ip=$(get_my_ip); local server_ip_url="$server_ip"
+            if [[ "$server_ip" =~ : ]]; then server_ip_url="[$server_ip]"; fi
+            local client_server="$server_ip_url"; local link_host_param=""
+            if [ -n "$cdn_domain" ] && [ -n "$cdn_host" ]; then
+                client_server="$cdn_domain"; link_host_param="&host=$(url_encode "$cdn_host")"
+            fi
+            local link="vless://${uuid}@${client_server}:${port}?encryption=none&security=none&type=ws&path=$(url_encode "${ws_path:-/}")${link_host_param}#$(url_encode "$nn")"
+            echo -e "${C}节点链接: ${link}${R}"
+            sb_sync_client_config; _persist_iptables; 
         else
             echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
             del_port_both "$port"; _del_node_meta "$port"
@@ -1157,6 +1170,10 @@ sb_add_hysteria2() {
         if _wait_for_sb_active; then 
             echo -e "${G}✅ TikTok直播专用Hysteria2部署成功！${R}"
             echo -e "${G}🔑 密码: ${pass}${R}"
+            local server_ip=$(get_my_ip); local server_ip_url="$server_ip"
+            if [[ "$server_ip" =~ : ]]; then server_ip_url="[$server_ip]"; fi
+            local link="hysteria2://$(url_encode "$pass")@${server_ip_url}:${port}?insecure=1&alpn=h3&sni=${sni}#$(url_encode "$nn")"
+            echo -e "${C}节点链接: ${link}${R}"
             sb_sync_client_config; _persist_iptables; 
         else
             echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
@@ -1217,6 +1234,10 @@ sb_add_tuic() {
             echo -e "${G}✅ TikTok优化版TUIC部署成功！${R}"
             echo -e "${G}UUID: ${uuid}${R}"
             echo -e "${G}密码: ${pass}${R}"
+            local server_ip=$(get_my_ip); local server_ip_url="$server_ip"
+            if [[ "$server_ip" =~ : ]]; then server_ip_url="[$server_ip]"; fi
+            local link="tuic://${uuid}:$(url_encode "$pass")@${server_ip_url}:${port}?congestion_control=bbr&alpn=h3&sni=${sni}&allow_insecure=1#$(url_encode "$nn")"
+            echo -e "${C}节点链接: ${link}${R}"
             sb_sync_client_config; _persist_iptables; 
         else
             echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
@@ -1304,6 +1325,13 @@ sb_add_all() {
         systemctl restart sing-box
         if _wait_for_sb_active; then 
             echo -e "${G}✅ TikTok专属四协议部署成功！${R}"
+            local server_ip=$(get_my_ip); local server_ip_url="$server_ip"
+            if [[ "$server_ip" =~ : ]]; then server_ip_url="[$server_ip]"; fi
+            echo -e "${C}节点链接：${R}"
+            echo -e "${C}1. vless://${uuid}@${server_ip_url}:${p_re}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#VLESS-Reality${R}"
+            echo -e "${C}2. vless://${uuid}@${server_ip_url}:${p_ws}?encryption=none&security=none&type=ws&path=$(url_encode "${ws_path:-/}")#VLESS-WS${R}"
+            echo -e "${C}3. hysteria2://$(url_encode "$hy_pass")@${server_ip_url}:${p_hy}?insecure=1&alpn=h3&sni=${sni}#Hysteria2${R}"
+            echo -e "${C}4. tuic://${tu_uuid}:$(url_encode "$tu_pass")@${server_ip_url}:${p_tu}?congestion_control=bbr&alpn=h3&sni=${sni}&allow_insecure=1#TUIC${R}"
             sb_sync_client_config; _persist_iptables; 
         else
             echo -e "${RED}启动失败${R}"; local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
