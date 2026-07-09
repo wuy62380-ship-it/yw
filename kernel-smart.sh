@@ -985,10 +985,32 @@ sb_add_reality() {
     local nn; read -e -p "名称 (回车默认): " nn; [ -z "$nn" ] && nn="VLESS-Reality-TikTok-${port}"
     
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
-    local ij=$(jq -n --argjson p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" '{
-        "type": "vless", "tag": ("vless-reality-"+($p|tostring)), "listen": "::", "listen_port": $p,
+    local ij=$(jq -n --arg p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" '{
+        "type": "vless",
+        "tag": ("vless-reality-"+($p|tostring)),
+        "listen": "::",
+        "listen_port": ($p|tonumber),
         "users": [{"uuid": $u, "flow": "xtls-rprx-vision"}],
-        "tls": { "enabled": true, "server_name": $s, "reality": { "enabled": true, "handshake": { "server": $s, "server_port": 443 }, "private_key": $pk, "short_id": [$sid] }, "alpn": ["h2", "http/1.1"], "min_version": "1.2", "cipher_suites": ["TLS_AES_128_GCM_SHA256", "TLS_AES_256_GCM_SHA384", "TLS_CHACHA20_POLY1305_SHA256"] },
+        "tls": {
+            "enabled": true,
+            "server_name": $s,
+            "reality": {
+                "enabled": true,
+                "handshake": {
+                    "server": $s,
+                    "server_port": 443
+                },
+                "private_key": $pk,
+                "short_id": [$sid]
+            },
+            "alpn": ["h2", "http/1.1"],
+            "min_version": "1.2",
+            "cipher_suites": [
+                "TLS_AES_128_GCM_SHA256",
+                "TLS_AES_256_GCM_SHA384",
+                "TLS_CHACHA20_POLY1305_SHA256"
+            ]
+        },
         "packet_encoding": "xudp"
     }')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
@@ -1035,7 +1057,7 @@ sb_add_vless_ws() {
     fi
 
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
-    local ij=$(jq -n --argjson p "$port" --arg u "$uuid" --arg wp "$ws_path" '{"type":"vless","tag":("vless-ws-"+($p|tostring)),"listen":"::","listen_port":$p,"users":[{"uuid":$u}],"transport":{"type":"ws","path":$wp}}')
+    local ij=$(jq -n --arg p "$port" --arg u "$uuid" --arg wp "$ws_path" '{"type":"vless","tag":("vless-ws-"+($p|tostring)),"listen":"::","listen_port":($p|tonumber),"users":[{"uuid":$u}],"transport":{"type":"ws","path":$wp}}')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
     if $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
         open_port_both "$port"; _save_node_meta "$port" "$nn" "vless-ws" "" "path=${ws_path};cdn_server=${cdn_domain};cdn_host=${cdn_host}"
@@ -1068,10 +1090,24 @@ sb_add_hysteria2() {
     chmod 600 "${cert_dir}/key.pem"
     
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
-    local ij=$(jq -n --argjson p "$port" --arg pass "$pass" --arg c "${cert_dir}/cert.pem" --arg k "${cert_dir}/key.pem" --arg s "$sni" '{
-        "type": "hysteria2", "tag": ("hysteria2-"+($p|tostring)), "listen": "::", "listen_port": $p, "users": [{"password": $pass}],
-        "tls": { "enabled": true, "server_name": $s, "alpn": ["h3", "h2", "http/1.1"], "min_version": "1.2", "certificate_path": $c, "key_path": $k },
-        "congestion_control": "bbr", "udp_disable_fragment": false, "ignore_client_bandwidth": true, "disable_mtu_discovery": false
+    local ij=$(jq -n --arg p "$port" --arg pass "$pass" --arg c "${cert_dir}/cert.pem" --arg k "${cert_dir}/key.pem" --arg s "$sni" '{
+        "type": "hysteria2",
+        "tag": ("hysteria2-"+($p|tostring)),
+        "listen": "::",
+        "listen_port": ($p|tonumber),
+        "users": [{"password": $pass}],
+        "tls": {
+            "enabled": true,
+            "server_name": $s,
+            "alpn": ["h3", "h2", "http/1.1"],
+            "min_version": "1.2",
+            "certificate_path": $c,
+            "key_path": $k
+        },
+        "congestion_control": "bbr",
+        "udp_disable_fragment": false,
+        "ignore_client_bandwidth": true,
+        "disable_mtu_discovery": false
     }')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
     if $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
@@ -1108,10 +1144,22 @@ sb_add_tuic() {
     chmod 600 "${cert_dir}/key.pem"
     
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
-    local ij=$(jq -n --argjson p "$port" --arg u "$uuid" --arg pass "$pass" --arg c "${cert_dir}/cert.pem" --arg k "${cert_dir}/key.pem" --arg s "$sni" '{
-        "type": "tuic", "tag": ("tuic-"+($p|tostring)), "listen": "::", "listen_port": $p, "users": [{"uuid": $u, "password": $pass}],
-        "congestion_control": "bbr", "udp_relay_mode": "native",
-        "tls": { "enabled": true, "server_name": $s, "alpn": ["h3", "h2", "http/1.1"], "min_version": "1.2", "certificate_path": $c, "key_path": $k }
+    local ij=$(jq -n --arg p "$port" --arg u "$uuid" --arg pass "$pass" --arg c "${cert_dir}/cert.pem" --arg k "${cert_dir}/key.pem" --arg s "$sni" '{
+        "type": "tuic",
+        "tag": ("tuic-"+($p|tostring)),
+        "listen": "::",
+        "listen_port": ($p|tonumber),
+        "users": [{"uuid": $u, "password": $pass}],
+        "congestion_control": "bbr",
+        "udp_relay_mode": "native",
+        "tls": {
+            "enabled": true,
+            "server_name": $s,
+            "alpn": ["h3", "h2", "http/1.1"],
+            "min_version": "1.2",
+            "certificate_path": $c,
+            "key_path": $k
+        }
     }')
     jq --argjson inb "$ij" '.inbounds += [$inb]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
     if $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
@@ -1176,20 +1224,20 @@ sb_add_all() {
     chmod 600 "${tu_cert_dir}/key.pem"
     
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
-    local ij_re=$(jq -n --argjson p "$p_re" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" '{
-        "type": "vless", "tag": ("vless-reality-"+($p|tostring)), "listen": "::", "listen_port": $p,
+    local ij_re=$(jq -n --arg p "$p_re" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" '{
+        "type": "vless", "tag": ("vless-reality-"+($p|tostring)), "listen": "::", "listen_port": ($p|tonumber),
         "users": [{"uuid": $u, "flow": "xtls-rprx-vision"}],
         "tls": { "enabled": true, "server_name": $s, "reality": { "enabled": true, "handshake": { "server": $s, "server_port": 443 }, "private_key": $pk, "short_id": [$sid] }, "alpn": ["h2", "http/1.1"], "min_version": "1.2", "cipher_suites": ["TLS_AES_128_GCM_SHA256", "TLS_AES_256_GCM_SHA384", "TLS_CHACHA20_POLY1305_SHA256"] },
         "packet_encoding": "xudp"
     }')
-    local ij_ws=$(jq -n --argjson p "$p_ws" --arg u "$uuid" --arg wp "$ws_path" '{"type":"vless","tag":("vless-ws-"+($p|tostring)),"listen":"::","listen_port":$p,"users":[{"uuid":$u}],"transport":{"type":"ws","path":$wp}}')
-    local ij_hy=$(jq -n --argjson p "$p_hy" --arg pass "$hy_pass" --arg c "${hy_cert_dir}/cert.pem" --arg k "${hy_cert_dir}/key.pem" --arg s "$sni" '{
-        "type": "hysteria2", "tag": ("hysteria2-"+($p|tostring)), "listen": "::", "listen_port": $p, "users": [{"password": $pass}],
+    local ij_ws=$(jq -n --arg p "$p_ws" --arg u "$uuid" --arg wp "$ws_path" '{"type":"vless","tag":("vless-ws-"+($p|tostring)),"listen":"::","listen_port":($p|tonumber),"users":[{"uuid":$u}],"transport":{"type":"ws","path":$wp}}')
+    local ij_hy=$(jq -n --arg p "$p_hy" --arg pass "$hy_pass" --arg c "${hy_cert_dir}/cert.pem" --arg k "${hy_cert_dir}/key.pem" --arg s "$sni" '{
+        "type": "hysteria2", "tag": ("hysteria2-"+($p|tostring)), "listen": "::", "listen_port": ($p|tonumber), "users": [{"password": $pass}],
         "tls": { "enabled": true, "server_name": $s, "alpn": ["h3", "h2", "http/1.1"], "min_version": "1.2", "certificate_path": $c, "key_path": $k },
         "congestion_control": "bbr", "udp_disable_fragment": false, "ignore_client_bandwidth": true, "disable_mtu_discovery": false
     }')
-    local ij_tu=$(jq -n --argjson p "$p_tu" --arg u "$tu_uuid" --arg pass "$tu_pass" --arg c "${tu_cert_dir}/cert.pem" --arg k "${tu_cert_dir}/key.pem" --arg s "$sni" '{
-        "type": "tuic", "tag": ("tuic-"+($p|tostring)), "listen": "::", "listen_port": $p, "users": [{"uuid": $u, "password": $pass}],
+    local ij_tu=$(jq -n --arg p "$p_tu" --arg u "$tu_uuid" --arg pass "$tu_pass" --arg c "${tu_cert_dir}/cert.pem" --arg k "${tu_cert_dir}/key.pem" --arg s "$sni" '{
+        "type": "tuic", "tag": ("tuic-"+($p|tostring)), "listen": "::", "listen_port": ($p|tonumber), "users": [{"uuid": $u, "password": $pass}],
         "congestion_control": "bbr", "udp_relay_mode": "native",
         "tls": { "enabled": true, "server_name": $s, "alpn": ["h3", "h2", "http/1.1"], "min_version": "1.2", "certificate_path": $c, "key_path": $k }
     }')
@@ -1387,7 +1435,7 @@ sb_show_nodes_and_links() {
         
         case "$inb_type" in
             vless)
-                local uuid flow tls_enabled sni pub_key short_id ws_path cdn_server cdn_host
+                local uuid flow sni pub_key short_id ws_path cdn_server cdn_host
                 uuid=$(echo "$obj" | jq -r '.users[0].uuid // empty' 2>/dev/null)
                 if echo "$obj" | jq -e '.tls.reality' >/dev/null 2>&1; then
                     sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null)
@@ -1406,15 +1454,16 @@ sb_show_nodes_and_links() {
                     [ -z "$ws_path" ] && ws_path=$(echo "$obj" | jq -r '.transport.path // empty' 2>/dev/null)
                     cdn_server=$(echo "$ex" | sed -n 's/.*cdn_server=\([^;]*\).*/\1/p')
                     cdn_host=$(echo "$ex" | sed -n 's/.*cdn_host=\([^;]*\).*/\1/p')
-                    local link_server="$server_ip_url"
+                    local client_server="$server_ip_url"
                     local link_host_param=""
                     if [ -n "$cdn_server" ] && [ -n "$cdn_host" ]; then
-                        link_server="$cdn_server"
+                        client_server="$cdn_server"
                         link_host_param="&host=$(url_encode "$cdn_host")"
                     fi
-                    link="vless://${uuid}@${link_server}:${port}?encryption=none&security=none&type=ws&path=$(url_encode "${ws_path:-/}")${link_host_param}#$(url_encode "$nn")"
+                    link="vless://${uuid}@${client_server}:${port}?encryption=none&security=none&type=ws&path=$(url_encode "${ws_path:-/}")${link_host_param}#$(url_encode "$nn")"
                 fi ;;
             hysteria2)
+                local pass sni
                 pass=$(echo "$ex" | sed -n 's/.*password=\([^;]*\).*/\1/p')
                 [ -z "$pass" ] && pass=$(echo "$obj" | jq -r '.users[0].password // empty' 2>/dev/null)
                 sni=$(echo "$ex" | sed -n 's/.*sni=\([^;]*\).*/\1/p')
@@ -1422,6 +1471,7 @@ sb_show_nodes_and_links() {
                 [ -z "$sni" ] && sni="www.bing.com"
                 link="hysteria2://$(url_encode "$pass")@${server_ip_url}:${port}?insecure=1&alpn=h3&sni=${sni}#$(url_encode "$nn")" ;;
             tuic)
+                local uuid pass sni
                 uuid=$(echo "$ex" | sed -n 's/.*uuid=\([^;]*\).*/\1/p')
                 [ -z "$uuid" ] && uuid=$(echo "$obj" | jq -r '.users[0].uuid // empty' 2>/dev/null)
                 pass=$(echo "$ex" | sed -n 's/.*password=\([^;]*\).*/\1/p')
@@ -1431,7 +1481,8 @@ sb_show_nodes_and_links() {
                 [ -z "$sni" ] && sni="www.bing.com"
                 link="tuic://${uuid}:$(url_encode "$pass")@${server_ip_url}:${port}?congestion_control=bbr&alpn=h3&sni=${sni}&allow_insecure=1#$(url_encode "$nn")" ;;
         esac
-        [ -n "$link" ] && echo -e "${C}${link}${R}\n"; idx=$((idx + 1))
+        [ -n "$link" ] && echo -e "${C}${link}${R}\n"
+        idx=$((idx + 1))
     done < <(jq -r '.inbounds[] | @base64' "$SB_CONF" 2>/dev/null)
     [ "$has_any" -eq 0 ] && echo -e "${Y}无节点${R}"
     read -rs -n 1 -p ""
@@ -1442,14 +1493,78 @@ sb_del_node() {
     [ ! -f "$SB_CONF" ] || ! jq -e . "$SB_CONF" >/dev/null 2>&1 && { echo -e "${Y}无节点${R}"; read -rs -n 1 -p ""; return; }
     echo -e "${Y}===== 删除节点 =====${R}"
     local idx=1 has_any=0
+    local server_ip=$(get_my_ip)
+    local server_ip_url="$server_ip"
+    if [[ "$server_ip" =~ : ]]; then
+        server_ip_url="[$server_ip]"
+    fi
+
     while IFS= read -r b64_obj; do
         local obj; obj=$(echo "$b64_obj" | base64 -d 2>/dev/null); [ -z "$obj" ] && continue
-        local port nn; port=$(echo "$obj" | jq -r '.listen_port // empty' 2>/dev/null); [ -z "$port" ] && continue
+        local port inb_type nn ex link=""
+        port=$(echo "$obj" | jq -r '.listen_port // empty' 2>/dev/null); [ -z "$port" ] && continue
+        inb_type=$(echo "$obj" | jq -r '.type // empty' 2>/dev/null)
         nn=$(_get_node_meta "$port" "name")
-        [ -z "$nn" ] && nn="$(echo "$obj" | jq -r '.type // empty' 2>/dev/null)-${port}"
-        echo -e "${G}[${idx}] 端口: ${port} | ${nn}${R}"; idx=$((idx + 1)); has_any=1
+        [ -z "$nn" ] && nn="${inb_type}-${port}"
+        ex=$(_get_node_meta "$port" "extra")
+        echo -e "${G}━━━ [${idx}] ${inb_type^^} | 端口: ${port} | ${nn} ━━━${R}"
+        
+        # 生成链接以便确认
+        case "$inb_type" in
+            vless)
+                local uuid flow sni pub_key short_id ws_path cdn_server cdn_host
+                uuid=$(echo "$obj" | jq -r '.users[0].uuid // empty' 2>/dev/null)
+                if echo "$obj" | jq -e '.tls.reality' >/dev/null 2>&1; then
+                    sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null)
+                    pub_key=$(_get_node_meta "$port" "pub_key")
+                    short_id=$(echo "$ex" | sed -n 's/.*short_id=\([^;]*\).*/\1/p')
+                    [ -z "$short_id" ] && short_id=$(echo "$obj" | jq -r '.tls.reality.short_id[0] // empty' 2>/dev/null)
+                    flow=$(echo "$obj" | jq -r '.users[0].flow // empty' 2>/dev/null)
+                    local flow_param=""; [ -n "$flow" ] && flow_param="&flow=${flow}"
+                    if [ -n "$pub_key" ]; then
+                        link="vless://${uuid}@${server_ip_url}:${port}?encryption=none${flow_param}&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#$(url_encode "$nn")"
+                    else
+                        link="${RED}无法生成链接：缺少 PublicKey${R}"
+                    fi
+                else
+                    ws_path=$(echo "$ex" | sed -n 's/.*path=\([^;]*\).*/\1/p')
+                    [ -z "$ws_path" ] && ws_path=$(echo "$obj" | jq -r '.transport.path // empty' 2>/dev/null)
+                    cdn_server=$(echo "$ex" | sed -n 's/.*cdn_server=\([^;]*\).*/\1/p')
+                    cdn_host=$(echo "$ex" | sed -n 's/.*cdn_host=\([^;]*\).*/\1/p')
+                    local client_server="$server_ip_url"
+                    local link_host_param=""
+                    if [ -n "$cdn_server" ] && [ -n "$cdn_host" ]; then
+                        client_server="$cdn_server"
+                        link_host_param="&host=$(url_encode "$cdn_host")"
+                    fi
+                    link="vless://${uuid}@${client_server}:${port}?encryption=none&security=none&type=ws&path=$(url_encode "${ws_path:-/}")${link_host_param}#$(url_encode "$nn")"
+                fi ;;
+            hysteria2)
+                local pass sni
+                pass=$(echo "$ex" | sed -n 's/.*password=\([^;]*\).*/\1/p')
+                [ -z "$pass" ] && pass=$(echo "$obj" | jq -r '.users[0].password // empty' 2>/dev/null)
+                sni=$(echo "$ex" | sed -n 's/.*sni=\([^;]*\).*/\1/p')
+                [ -z "$sni" ] && sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null)
+                [ -z "$sni" ] && sni="www.bing.com"
+                link="hysteria2://$(url_encode "$pass")@${server_ip_url}:${port}?insecure=1&alpn=h3&sni=${sni}#$(url_encode "$nn")" ;;
+            tuic)
+                local uuid pass sni
+                uuid=$(echo "$ex" | sed -n 's/.*uuid=\([^;]*\).*/\1/p')
+                [ -z "$uuid" ] && uuid=$(echo "$obj" | jq -r '.users[0].uuid // empty' 2>/dev/null)
+                pass=$(echo "$ex" | sed -n 's/.*password=\([^;]*\).*/\1/p')
+                [ -z "$pass" ] && pass=$(echo "$obj" | jq -r '.users[0].password // empty' 2>/dev/null)
+                sni=$(echo "$ex" | sed -n 's/.*sni=\([^;]*\).*/\1/p')
+                [ -z "$sni" ] && sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null)
+                [ -z "$sni" ] && sni="www.bing.com"
+                link="tuic://${uuid}:$(url_encode "$pass")@${server_ip_url}:${port}?congestion_control=bbr&alpn=h3&sni=${sni}&allow_insecure=1#$(url_encode "$nn")" ;;
+        esac
+        [ -n "$link" ] && echo -e "${C}${link}${R}\n"
+        
+        idx=$((idx + 1)); has_any=1
     done < <(jq -r '.inbounds[] | @base64' "$SB_CONF" 2>/dev/null)
+    
     [ "$has_any" -eq 0 ] && { echo -e "${Y}无节点可删除${R}"; read -rs -n 1 -p ""; return; }
+    
     read -e -p "请输入要删除的端口号: " del_input
     [ -z "$del_input" ] || [[ "$del_input" == "0" ]] && return
     
@@ -1459,7 +1574,7 @@ sb_del_node() {
         return
     fi
 
-    local found_tag=$(jq -r --argjson p "$del_input" '.inbounds[] | select(.listen_port == $p) | .tag' "$SB_CONF" 2>/dev/null | head -1)
+    local found_tag=$(jq -r --arg p "$del_input" '.inbounds[] | select(.listen_port == ($p|tonumber)) | .tag' "$SB_CONF" 2>/dev/null | head -1)
     [ -z "$found_tag" ] && { echo -e "${RED}未找到节点${R}"; return; }
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
     jq --arg t "$found_tag" 'del(.inbounds[] | select(.tag == $t))' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
