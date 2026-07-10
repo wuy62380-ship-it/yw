@@ -1074,7 +1074,6 @@ sb_add_reality() {
     
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
     
-    # 修复：补全 alpn 参数，完全对齐 3x-ui 的配置结构
     jq --arg p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" \
        '.inbounds += [{
            "type": "vless",
@@ -1105,7 +1104,6 @@ sb_add_reality() {
             local server_ip=$(get_my_ip); local server_ip_url="$server_ip"
             if [[ "$server_ip" =~ : ]]; then server_ip_url="[$server_ip]"; fi
             
-            # 修复：链接格式对齐 3x-ui，加入 spx，去掉 headerType
             local spx_path="%2F$(openssl rand -hex 8)"
             local link="vless://${uuid}@${server_ip_url}:${port}?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=${pub_key}&security=reality&sid=${short_id}&sni=${sni}&spx=${spx_path}&type=tcp#$(url_encode "$nn")"
             
@@ -1211,7 +1209,6 @@ sb_add_hysteria2() {
     
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
     
-    # 修复：移除 1.10.x 已废弃的 congestion_control 等字段，完全兼容新版核心
     jq --arg p "$port" --arg pass "$pass" --arg c "${cert_dir}/cert.pem" --arg k "${cert_dir}/key.pem" --arg s "$sni" \
        '.inbounds += [{
            "type": "hysteria2",
@@ -1274,7 +1271,6 @@ sb_add_tuic() {
     
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
     
-    # 修复：移除 1.10.x 已废弃的 congestion_control 和 udp_relay_mode 字段
     jq --arg p "$port" --arg u "$uuid" --arg pass "$pass" --arg c "${cert_dir}/cert.pem" --arg k "${cert_dir}/key.pem" --arg s "$sni" \
        '.inbounds += [{
            "type": "tuic",
@@ -2164,7 +2160,7 @@ prompt_yes_no() {
     [[ "$yn" =~ ^[Yy]$ ]] && return 0 || return 1
 }
 
-# ================= Realm 中转管理 =================
+# ================= Realm 中转机网络优化与管理 =================
 REALM_BIN="/usr/local/bin/realm"
 REALM_CONF="/etc/realm/config.toml"
 REALM_SERVICE="/etc/systemd/system/realm.service"
@@ -2176,6 +2172,36 @@ _wait_for_realm_active() {
         sleep 0.5; i=$((i+1))
     done
     return 1
+}
+
+realm_network_optimize() {
+    clear
+    echo -e "${G}╔═══════════════════════════════════════════╗"
+    echo -e "║       🔄 Realm 中转机网络优化               ║"
+    echo -e "╚═══════════════════════════════════════════╝${R}"
+    echo ""
+    echo -e "${Y}此优化专为 Realm 中转机设计：${R}"
+    echo -e "  ✅ 开启 IPv4/IPv6 转发"
+    echo -e "  ✅ 优化 Conntrack 表 (防止高并发丢包)"
+    echo -e "  ✅ 优化网络队列与 BBR 算法"
+    echo -e "  ✅ 调整缓冲区适配大流量转发"
+    echo ""
+    
+    if prompt_yes_no "开始优化中转机网络？" "y"; then
+        _kernel_optimize_core "Realm中转网关" "gateway"
+        
+        # 确保转发开启
+        echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null
+        echo 1 > /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null
+        
+        # 加载 nf_conntrack 模块
+        modprobe nf_conntrack 2>/dev/null
+        modprobe nf_conntrack_ipv6 2>/dev/null
+        
+        echo -e "${G}✅ Realm 中转机网络优化完成！${R}"
+        echo -e "${Y}建议重启服务器以完全应用优化${R}"
+        read -rs -n 1 -p "按任意键继续..."
+    fi
 }
 
 realm_install() {
@@ -2382,7 +2408,7 @@ optimization_center_menu() {
         echo ""
         echo -e "    ${Y}⚠️  提示: 选下面其中一个即可，重复优化会互相覆盖${R}"
         echo ""
-        echo -e "    ${C}【落地机优化】${R}"
+        echo -e "    ${C}【 落地机优化 】${R}"
         echo -e "    ${G}[1] 智能自动优化 (推荐，适合99%用户)${R}"
         echo -e "        自动检测系统 + 网络优化 + 内存优化 + TikTok优化"
         echo -e "    ${H}[2] Linux内核网络优化${R}"
@@ -2391,12 +2417,13 @@ optimization_center_menu() {
         echo -e "    ${H}[5] 低配置服务器优化${R}"
         echo -e "    ${H}[6] Swap管理${R}"
         echo ""
-        echo -e "    ${C}【中转机优化】${R}"
-        echo -e "    ${H}[7] Realm 中转管理${R}"
+        echo -e "    ${C}【 中转机优化 (Realm) 】${R}"
+        echo -e "    ${G}[7] Realm 中转机网络优化 (一键网关优化)${R}"
+        echo -e "    ${H}[8] Realm 中转管理面板 (安装/配置转发)${R}"
         echo ""
         echo -e "    ${H}[0] 返回主菜单${R}"
         echo ""
-        read -e -p "  请选择 (推荐选1): " c
+        read -e -p "  请选择: " c
         case "$c" in
             1) clear; smart_auto_optimize ;;
             2) clear; Kernel_optimize ;;
@@ -2404,7 +2431,8 @@ optimization_center_menu() {
             4) clear; tiktok_live_menu ;;
             5) clear; low_profile_menu ;;
             6) clear; change_swap_size ;;
-            7) clear; realm_menu ;;
+            7) clear; realm_network_optimize ;;
+            8) clear; realm_menu ;;
             0|"") break ;;
             *) echo -e "${RED}无效选择${R}"; sleep 1 ;;
         esac
