@@ -643,15 +643,11 @@ Kernel_optimize() {
     done
 }
 
-# ================= 顶级大厂域名优选模块 (3x-ui 官方完整版 37域名) =================
+# ================= 顶级大厂域名优选模块 (使用 openssl 串行测速，绝不失败) =================
 SNI_DOMAINS=(
-    "google-analytics.com" "www.microsoft.com" "www.cloudflare.com" "www.amazon.com" "www.apple.com" "www.bing.com"
-    "www.yahoo.com" "www.icloud.com" "www.office.com" "aws.amazon.com" "azure.microsoft.com" "dl.google.com"
-    "cdn.apple.com" "api.apple.com" "init.push.apple.com" "www.sony.com" "www.oracle.com" "www.ibm.com"
-    "www.nvidia.com" "images.nvidia.com" "www.intel.com" "www.amd.com" "www.ebay.com" "www.paypal.com"
-    "www.tesla.com" "www.mozilla.org" "www.lovelive-anime.jp" "www.cisco.com" "www.sap.com" "www.samsung.com"
-    "www.huawei.com" "www.dell.com" "www.hp.com" "www.canva.com" "www.cdn77.org" "www.fastly.com"
-    "www.akamai.com" "www.digitalocean.com"
+    "google-analytics.com" "www.microsoft.com" "www.cloudflare.com" "www.amazon.com"
+    "www.apple.com" "www.bing.com" "www.icloud.com" "aws.amazon.com" "azure.microsoft.com"
+    "dl.google.com" "cdn.apple.com" "api.apple.com"
 )
 CDN_DOMAINS=(
     "visa.com.sg" "www.visa.com" "www.bing.com" "www.microsoft.com" "www.icloud.com" "www.apple.com"
@@ -659,16 +655,21 @@ CDN_DOMAINS=(
 )
 
 _test_domain_latency() {
-    local domain="$1" result_file="$2"
-    # 错峰并发：随机休眠 0~0.9 秒，彻底错开并发，防防火墙拦截
-    sleep 0.$(( RANDOM % 10 ))
-    # 严格强制 TLS 1.3，恢复 time_appconnect 握手时间测速，完全对齐 3x-ui 验证标准
-    local time_appconnect=$(curl -4 -s --tlsv1.3 -o /dev/null --connect-timeout 2 --max-time 4 -w "%{time_appconnect}" "https://${domain}" 2>/dev/null)
-    if [[ "$time_appconnect" =~ ^[0-9]+(\.[0-9]+)?$ && "$time_appconnect" != "0.000000" ]]; then
-        local ms=$(awk "BEGIN{printf \"%.0f\", ${time_appconnect}*1000}")
-        echo "${ms} ${domain}" >> "$result_file"
+    local host="$1" result_file="$2"
+    local t1 t2 ms
+    
+    # 使用毫秒级时间戳，兼容不支持 %3N 的系统
+    t1=$(date +%s%3N 2>/dev/null)
+    [[ ! "$t1" =~ ^[0-9]+$ ]] && t1=$(date +%s)000
+    
+    # 使用 openssl s_client 测试 TLS 握手，容错率远高于 curl
+    if timeout 2 openssl s_client -connect "${host}:443" -servername "${host}" </dev/null &>/dev/null; then
+        t2=$(date +%s%3N 2>/dev/null)
+        [[ ! "$t2" =~ ^[0-9]+$ ]] && t2=$(date +%s)000
+        ms=$((t2 - t1))
+        [ "$ms" -ge 0 ] 2>/dev/null && echo "${ms} ${host}" >> "$result_file" || echo "9999 ${host}" >> "$result_file"
     else
-        echo "9999 ${domain}" >> "$result_file"
+        echo "9999 ${host}" >> "$result_file"
     fi
 }
 
@@ -685,7 +686,7 @@ select_best_domain() {
         echo -e "${G}╚══════════════════════════════════════╝${R}" >&2
         echo -e "当前用途: ${Y}${purpose}${R}" >&2
         echo "" >&2
-        echo -e "${C}1.${R} 自动并发测速优选 (推荐)" >&2
+        echo -e "${C}1.${R} 自动测速优选 (推荐)" >&2
         echo -e "${C}2.${R} 手动输入域名" >&2
         echo -e "${C}3.${R} 使用默认域名 (google-analytics.com)" >&2
         echo -e "${H}0.${R} 返回上层" >&2
@@ -693,18 +694,13 @@ select_best_domain() {
         read -e -p "请选择 [1-3]: " choice
         case "$choice" in
             1)
-                echo -e "${Y}[*] 正在并发测试 ${#domains[@]} 个大厂域名...${R}" >&2
+                echo -e "${Y}[*] 正在测试 ${#domains[@]} 个大厂域名 (使用 openssl 严格握手)...${R}" >&2
                 local tmp_res="$TMP_DIR/sb_domain_speed"
                 > "$tmp_res"
-                for domain in "${domains[@]}"; do _test_domain_latency "$domain" "$tmp_res" & done
-                
-                local total=${#domains[@]}
-                while true; do
-                    local done_count; done_count=$(wc -l < "$tmp_res" 2>/dev/null || echo 0)
-                    [ "$((total - done_count))" -le 0 ] && break
-                    sleep 0.2
+                # 恢复串行测试，避免并发被防火墙拦截，虽然稍慢但极其准确
+                for domain in "${domains[@]}"; do
+                    _test_domain_latency "$domain" "$tmp_res"
                 done
-                wait 
                 echo -e "\n${G}✅ 测速完成！${R}" >&2
                 
                 local sorted_domains=$(grep -v "^9999" "$tmp_res" | sort -n)
