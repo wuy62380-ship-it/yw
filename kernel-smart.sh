@@ -142,6 +142,19 @@ _optimize_nic_queues() {
     [ -f /proc/sys/net/core/rps_sock_flow_entries ] && [ -w /proc/sys/net/core/rps_sock_flow_entries ] && echo 32768 > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null
 }
 
+get_current_opt_mode() {
+    if [ -f /etc/sysctl.d/99-yw-optimize.conf ]; then
+        grep "^# 模式:" /etc/sysctl.d/99-yw-optimize.conf 2>/dev/null | sed 's/^# 模式: //' | awk -F'|' '{print $1}' | tr -d ' \t'
+    elif [ -f /etc/sysctl.d/99-tiktok-live.conf ]; then echo "TikTok直播优化"
+    elif [ -f /etc/sysctl.d/99-tiktok-udp.conf ]; then echo "TikTok UDP优化"
+    elif [ -f /etc/sysctl.d/99-bandwidth.conf ]; then echo "带宽优化"
+    elif [ -f /etc/sysctl.d/99-lowmemory-optimize.conf ]; then echo "低内存优化"
+    elif [ -f /etc/sysctl.d/99-lowprofile-optimize.conf ]; then echo "低配置服务器优化"
+    elif [ -f /etc/sysctl.d/99-smart.conf ]; then echo "智能自动优化"
+    else echo "系统默认(未优化)"
+    fi
+}
+
 # ================= 内核与网络深度优化 =================
 _kernel_optimize_core() {
     local mode_name="$1" scene="${2:-stream_game}" CONF="/etc/sysctl.d/99-yw-optimize.conf"
@@ -471,13 +484,18 @@ bbrv3() {
     else clear; echo "设置BBR3"; read -e -p "继续？: " c; [[ "$c" =~ ^[Yy]$ ]] && check_disk_space 3 && check_swap && xanmod_add_repo && apt update -y && apt install -y $(xanmod_detect_package) && bbr_on && server_reboot; fi
 }
 restore_defaults() {
+    clear
+    echo -e "${Y}正在还原所有网络与内核优化设置...${R}"
     rm -f /etc/sysctl.d/99-yw-optimize.conf /etc/sysctl.d/99-network-optimize.conf /etc/sysctl.d/99-smart.conf /etc/sysctl.d/99-tiktok-live.conf /etc/sysctl.d/99-tiktok-udp.conf /etc/sysctl.d/99-bandwidth.conf /etc/sysctl.d/99-lowprofile-optimize.conf /etc/sysctl.d/99-lowmemory-optimize.conf
     sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf 2>/dev/null
     sysctl --system >/dev/null 2>&1
-    [ -f /sys/kernel/mm/transparent_hugepage/enabled ] && echo always > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null; sed -i '/# YW-optimize/,+4d' /etc/security/limits.conf 2>/dev/null
-    [ -f /sys/module/zswap/parameters/enabled ] && echo N > /sys/module/zswap/parameters/enabled 2>/dev/null; sed -i '/vm.zswap.enabled/d' /etc/sysctl.conf 2>/dev/null
+    [ -f /sys/kernel/mm/transparent_hugepage/enabled ] && echo always > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null
+    sed -i '/# YW-optimize/,+4d' /etc/security/limits.conf 2>/dev/null
+    [ -f /sys/module/zswap/parameters/enabled ] && echo N > /sys/module/zswap/parameters/enabled 2>/dev/null
+    sed -i '/vm.zswap.enabled/d' /etc/sysctl.conf 2>/dev/null
     systemctl is-enabled zramswap >/dev/null 2>&1 && { systemctl stop zramswap >/dev/null 2>&1; systemctl disable zramswap >/dev/null 2>&1; }
-    echo -e "${G}已还原所有设置${R}"; read -rs -n 1 -p ""
+    echo -e "${G}✅ 已还原所有设置至系统初始状态！${R}"
+    read -rs -n 1 -p "按任意键继续..."
 }
 verify_network_status() {
     clear; local rmem=$(sysctl -n net.core.rmem_max 2>/dev/null) mode="未知"
@@ -613,9 +631,12 @@ Kernel_optimize() {
         clear
         local cur_scene=""
         [ -f /etc/sysctl.d/99-yw-optimize.conf ] && cur_scene=$(grep "^# 模式:" /etc/sysctl.d/99-yw-optimize.conf 2>/dev/null | sed 's/^# 模式: //' | awk -F'|' '{print $2}' | tr -d ' \t')
+        local current_mode=$(get_current_opt_mode)
         echo -e "${G}╔═══════════════════════════════════╗"
         echo -e "║       Linux 内核网络优化            ║"
         echo -e "╚═══════════════════════════════════╝${R}"
+        echo ""
+        echo -e "    ${C}当前网络状态: ${Y}${current_mode}${R}"
         echo ""
         echo -e "    ${Y}🤖 [1] 智能检测与自动优化 (推荐小白)${R}"
         echo -e "    ${H}─────────────────────────────${R}"
@@ -627,7 +648,8 @@ Kernel_optimize() {
             i=$((i + 1))
         done
         echo -e "    ${H}─────────────────────────────${R}"
-        echo -e "    ${H}[9] 还原默认  [10] 远程脚本  [11] 释放缓存  [12] 验证状态  [0] 返回${R}"
+        echo -e "    ${H}[9] ⚠️ 一键还原系统默认设置${R}"
+        echo -e "    ${H}[10] 远程脚本  [11] 释放缓存  [12] 验证状态  [0] 返回${R}"
         echo ""
         read -e -p "  选择: " c
         case $c in
@@ -2075,17 +2097,21 @@ EOF
 tiktok_live_menu() {
     while true; do
         clear
+        local current_mode=$(get_current_opt_mode)
         echo -e "${G}╔═══════════════════════════════════════════╗"
         echo -e "║       TikTok 直播优化菜单                  ║"
         echo -e "╚═══════════════════════════════════════════╝${R}"
+        echo ""
+        echo -e "    ${C}当前网络状态: ${Y}${current_mode}${R}"
         echo ""
         echo -e "    ${Y}[1] TikTok 直播一键优化${R}"
         echo -e "    ${H}[2] 仅UDP流媒体优化${R}"
         echo -e "    ${H}[3] 网络低延迟配置${R}"
         echo -e "    ${H}[4] 连接稳定性优化${R}"
         echo -e "    ${H}[5] 上下行带宽智能优化${R}"
+        echo -e "    ${H}[6] ⚠️ 一键还原系统默认设置${R}"
         echo ""
-        echo -e "    ${H}[0] 返回主菜单${R}"
+        echo -e "    ${H}[0] 返回优化中心${R}"
         echo ""
         read -e -p "  请选择: " c
         case "$c" in
@@ -2112,6 +2138,7 @@ tiktok_live_menu() {
                 read -rs -n 1 -p "按任意键继续..."
                 ;;
             5) clear; tiktok_bandwidth_optimize ;;
+            6) clear; restore_defaults ;;
             0|"") break ;;
             *) echo -e "${RED}无效选择${R}"; sleep 1 ;;
         esac
@@ -2121,11 +2148,13 @@ tiktok_live_menu() {
 low_profile_menu() {
     while true; do
         clear
+        local current_mode=$(get_current_opt_mode)
         local mem_mb=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo)
         echo -e "${G}╔════════════════════════════════════════╗"
         echo -e "║       低配置服务器优化                   ║"
         echo -e "╚════════════════════════════════════════╝${R}"
         echo ""
+        echo -e "    ${C}当前网络状态: ${Y}${current_mode}${R}"
         echo -e "    检测到内存: ${Y}${mem_mb}MB${R}"
         if [ "$mem_mb" -lt 512 ]; then
             echo -e "    ${RED}⚠ 极低内存，建议使用一键优化${R}"
@@ -2137,8 +2166,9 @@ low_profile_menu() {
         echo -e "    ${H}[2] 仅内存优化${R}"
         echo -e "    ${H}[3] 仅磁盘I/O优化${R}"
         echo -e "    ${H}[4] Sing-Box 资源限制${R}"
+        echo -e "    ${H}[5] ⚠️ 一键还原系统默认设置${R}"
         echo ""
-        echo -e "    ${H}[0] 返回主菜单${R}"
+        echo -e "    ${H}[0] 返回优化中心${R}"
         echo ""
         read -e -p "  请选择: " c
         case "$c" in
@@ -2146,6 +2176,7 @@ low_profile_menu() {
             2) clear; low_memory_optimize ;;
             3) clear; low_disk_optimize ;;
             4) clear; low_sb_optimize ;;
+            5) clear; restore_defaults ;;
             0|"") break ;;
             *) echo -e "${RED}无效选择${R}"; sleep 1 ;;
         esac
@@ -2241,21 +2272,21 @@ main_menu() {
         echo -e "║          🎉 YW 服务器优化工具箱             ║"
         echo -e "╚═══════════════════════════════════════════╝${R}"
         echo ""
-        echo -e "    ${Y}[1] 🚀 优化中心（推荐）${R}"
+        echo -e "    ${Y}[1] 📊 系统信息查询${R}"
+        echo ""
+        echo -e "    ${Y}[2] 🚀 优化中心（推荐）${R}"
         echo -e "    ${H}   - 所有优化功能都在这里${R}"
         echo ""
-        echo -e "    ${Y}[2] 📦 Sing-Box 管理面板${R}"
-        echo ""
-        echo -e "    ${Y}[3] 📊 系统信息查询${R}"
+        echo -e "    ${Y}[3] 📦 Sing-Box 管理面板${R}"
         echo ""
         echo -e "    ${H}[0] 退出${R}"
         echo ""
-        read -e -p "  请选择 (推荐选1): " c
+        read -e -p "  请选择 (推荐选2): " c
         c=$(echo "$c" | tr -d '[:space:]')
         case "$c" in
-            1) clear; optimization_center_menu ;;
-            2) clear; sb_menu ;;
-            3) clear; show_sys_info ;;
+            1) clear; show_sys_info ;;
+            2) clear; optimization_center_menu ;;
+            3) clear; sb_menu ;;
             0|"") echo -e "${G}再见！${R}"; exit 0 ;; *) echo -e "${RED}无效选择${R}"; sleep 1 ;;
         esac
     done
