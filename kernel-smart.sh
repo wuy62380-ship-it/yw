@@ -1205,12 +1205,14 @@ sb_add_hysteria2() {
     [ -z "$sni" ] && { echo -e "${Y}已取消添加。${R}"; return; }
     
     local cert_dir="/etc/sing-box/certs/hy2-${port}"; mkdir -p "$cert_dir"
+    # 优化：使用 ECDSA 证书，性能更高
     openssl ecparam -genkey -name prime256v1 -out "${cert_dir}/key.pem" 2>/dev/null
     openssl req -new -x509 -days 3650 -key "${cert_dir}/key.pem" -out "${cert_dir}/cert.pem" -subj "/CN=${sni}" 2>/dev/null
     chmod 600 "${cert_dir}/key.pem"
     
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
     
+    # 修复：ignore_client_bandwidth 改为 false，alpn 仅保留 h3
     jq --arg p "$port" --arg pass "$pass" --arg c "${cert_dir}/cert.pem" --arg k "${cert_dir}/key.pem" --arg s "$sni" \
        '.inbounds += [{
            "type": "hysteria2",
@@ -1221,14 +1223,14 @@ sb_add_hysteria2() {
            "tls": {
                "enabled": true,
                "server_name": $s,
-               "alpn": ["h3", "h2", "http/1.1"],
-               "min_version": "1.2",
+               "alpn": ["h3"],
+               "min_version": "1.3",
                "certificate_path": $c,
                "key_path": $k
            },
            "congestion_control": "bbr",
            "udp_disable_fragment": false,
-           "ignore_client_bandwidth": true,
+           "ignore_client_bandwidth": false,
            "disable_mtu_discovery": false
        }]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
     
@@ -1271,12 +1273,14 @@ sb_add_tuic() {
     [ -z "$sni" ] && { echo -e "${Y}已取消添加。${R}"; return; }
     
     local cert_dir="/etc/sing-box/certs/tuic-${port}"; mkdir -p "$cert_dir"
+    # 优化：使用 ECDSA 证书
     openssl ecparam -genkey -name prime256v1 -out "${cert_dir}/key.pem" 2>/dev/null
     openssl req -new -x509 -days 3650 -key "${cert_dir}/key.pem" -out "${cert_dir}/cert.pem" -subj "/CN=${sni}" 2>/dev/null
     chmod 600 "${cert_dir}/key.pem"
     
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
     
+    # 修复：alpn 仅保留 h3
     jq --arg p "$port" --arg u "$uuid" --arg pass "$pass" --arg c "${cert_dir}/cert.pem" --arg k "${cert_dir}/key.pem" --arg s "$sni" \
        '.inbounds += [{
            "type": "tuic",
@@ -1289,8 +1293,8 @@ sb_add_tuic() {
            "tls": {
                "enabled": true,
                "server_name": $s,
-               "alpn": ["h3", "h2", "http/1.1"],
-               "min_version": "1.2",
+               "alpn": ["h3"],
+               "min_version": "1.3",
                "certificate_path": $c,
                "key_path": $k
            }
@@ -2092,7 +2096,7 @@ tiktok_live_menu() {
         echo -e "    ${H}[2] 仅UDP流媒体优化${R}"
         echo -e "    ${H}[3] 网络低延迟配置${R}"
         echo -e "    ${H}[4] 连接稳定性优化${R}"
-    echo -e "    ${H}[5] 上下行带宽智能优化${R}"
+        echo -e "    ${H}[5] 上下行带宽智能优化${R}"
         echo ""
         echo -e "    ${H}[0] 返回主菜单${R}"
         echo ""
