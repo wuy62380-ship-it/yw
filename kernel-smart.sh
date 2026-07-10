@@ -645,13 +645,13 @@ Kernel_optimize() {
 
 # ================= 顶级大厂域名优选模块 (3x-ui 官方完整版 37域名) =================
 SNI_DOMAINS=(
-    "www.microsoft.com" "www.cloudflare.com" "www.amazon.com" "www.apple.com" "www.bing.com" "www.yahoo.com"
-    "www.icloud.com" "www.office.com" "aws.amazon.com" "azure.microsoft.com" "dl.google.com" "cdn.apple.com"
-    "api.apple.com" "init.push.apple.com" "www.sony.com" "www.oracle.com" "www.ibm.com" "www.nvidia.com"
-    "images.nvidia.com" "www.intel.com" "www.amd.com" "www.ebay.com" "www.paypal.com" "www.tesla.com"
-    "www.mozilla.org" "www.lovelive-anime.jp" "www.cisco.com" "www.sap.com" "www.samsung.com" "www.huawei.com"
-    "www.dell.com" "www.hp.com" "www.canva.com" "www.cdn77.org" "www.fastly.com" "www.akamai.com"
-    "www.digitalocean.com"
+    "google-analytics.com" "www.microsoft.com" "www.cloudflare.com" "www.amazon.com" "www.apple.com" "www.bing.com"
+    "www.yahoo.com" "www.icloud.com" "www.office.com" "aws.amazon.com" "azure.microsoft.com" "dl.google.com"
+    "cdn.apple.com" "api.apple.com" "init.push.apple.com" "www.sony.com" "www.oracle.com" "www.ibm.com"
+    "www.nvidia.com" "images.nvidia.com" "www.intel.com" "www.amd.com" "www.ebay.com" "www.paypal.com"
+    "www.tesla.com" "www.mozilla.org" "www.lovelive-anime.jp" "www.cisco.com" "www.sap.com" "www.samsung.com"
+    "www.huawei.com" "www.dell.com" "www.hp.com" "www.canva.com" "www.cdn77.org" "www.fastly.com"
+    "www.akamai.com" "www.digitalocean.com"
 )
 CDN_DOMAINS=(
     "visa.com.sg" "www.visa.com" "www.bing.com" "www.microsoft.com" "www.icloud.com" "www.apple.com"
@@ -660,12 +660,12 @@ CDN_DOMAINS=(
 
 _test_domain_latency() {
     local domain="$1" result_file="$2"
-    # 修复：使用 $RANDOM 真正随机休眠 0~0.9 秒，彻底错开并发，防防火墙拦截
+    # 错峰并发：随机休眠 0~0.9 秒，彻底错开并发，防防火墙拦截
     sleep 0.$(( RANDOM % 10 ))
-    # 修复：测速指标改为 time_total (总耗时)，强制 IPv4 和 HTTP/1.1，容错率极高
-    local time_total=$(curl -4 --http1.1 -o /dev/null -s --connect-timeout 2 --max-time 4 -w "%{time_total}" "https://${domain}" 2>/dev/null)
-    if [[ "$time_total" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
-        local ms=$(awk "BEGIN{printf \"%.0f\", ${time_total}*1000}")
+    # 严格强制 TLS 1.3，恢复 time_appconnect 握手时间测速，完全对齐 3x-ui 验证标准
+    local time_appconnect=$(curl -4 -s --tlsv1.3 -o /dev/null --connect-timeout 2 --max-time 4 -w "%{time_appconnect}" "https://${domain}" 2>/dev/null)
+    if [[ "$time_appconnect" =~ ^[0-9]+(\.[0-9]+)?$ && "$time_appconnect" != "0.000000" ]]; then
+        local ms=$(awk "BEGIN{printf \"%.0f\", ${time_appconnect}*1000}")
         echo "${ms} ${domain}" >> "$result_file"
     else
         echo "9999 ${domain}" >> "$result_file"
@@ -687,7 +687,7 @@ select_best_domain() {
         echo "" >&2
         echo -e "${C}1.${R} 自动并发测速优选 (推荐)" >&2
         echo -e "${C}2.${R} 手动输入域名" >&2
-        echo -e "${C}3.${R} 使用默认域名 (www.microsoft.com)" >&2
+        echo -e "${C}3.${R} 使用默认域名 (google-analytics.com)" >&2
         echo -e "${H}0.${R} 返回上层" >&2
         echo "" >&2
         read -e -p "请选择 [1-3]: " choice
@@ -739,18 +739,17 @@ select_best_domain() {
                 manual_dom=$(echo "$manual_dom" | tr -d '[:space:]')
                 if [ -n "$manual_dom" ]; then echo "$manual_dom"; return 0; fi 
                 ;;
-            3) echo "www.microsoft.com"; return 0 ;;
+            3) echo "google-analytics.com"; return 0 ;;
             0|"") return 1 ;;
         esac
     done
 }
 
-# ================= Sing-Box 核心 (强制自愈版) =================
+# ================= Sing-Box 核心 (强制自愈与对齐 3x-ui 版) =================
 SB_BIN="/usr/local/bin/sing-box"
 SB_CONF="/etc/sing-box/config.json"
 META_FILE="/etc/sing-box/.nodes_meta"
 
-# 强化：多源 IP 获取 (参考 3x-ui 逻辑)
 get_my_ip() { 
     local URL_lists=(
         "https://api4.ipify.org"
@@ -803,7 +802,6 @@ check_port_occupied() {
     if ss -tunlpn | awk '{print $5}' | grep -qE ":${port}\$"; then return 0; else return 1; fi
 }
 
-# 终极修复：只要 sing-box check 不通过，直接强制重置配置文件，绝不允许在损坏的文件上叠加！
 sb_check() { 
     if ! command -v $SB_BIN >/dev/null 2>&1; then 
         echo -e "${RED}请先安装 Sing-Box${R}"; read -rs -n 1 -p ""; return 1; 
@@ -1037,7 +1035,7 @@ _get_port() {
     local port=$1; local input_port
     while true; do
         echo -e "${Y}提示：如果云服务器有安全组限制，请输入已在安全组放行的端口${R}" >&2
-        echo -e "${Y}提示：Reality 协议强烈建议使用 443 端口以防被阻断！${R}" >&2
+        echo -e "${Y}提示：建议使用随机高位端口(如 10000-65535) 避免被封！${R}" >&2
         read -e -p "端口 (回车默认随机 $port): " input_port
         input_port=$(echo "$input_port" | tr -d '[:space:]')
         if [[ "$input_port" =~ ^[0-9]{1,5}$ ]] && [ "$input_port" -ge 1 ] && [ "$input_port" -le 65535 ]; then
@@ -1054,7 +1052,7 @@ sb_add_reality() {
     sb_check || return
     force_sync_time
     
-    local port; port=$(_get_port 443)
+    local port; port=$(_get_port $(shuf -i 10000-65535 -n 1))
     port=$(echo "$port" | tr -d '[:space:]')
     
     local sni; sni=$(select_best_domain "sni")
@@ -1069,13 +1067,14 @@ sb_add_reality() {
         echo -e "${RED}密钥生成失败${R}"; return
     fi
     
-    local short_id=$($SB_BIN generate rand --hex 4 2>/dev/null || echo "aabbccdd")
+    local short_id=$($SB_BIN generate rand --hex 8 2>/dev/null || echo "aabbccdd")
     local nn; read -e -p "名称 (回车默认): " nn
     nn=$(echo "$nn" | tr -d '\r')
-    [ -z "$nn" ] && nn="VLESS-Reality-TikTok-${port}"
+    [ -z "$nn" ] && nn="VLESS-Reality-${port}"
     
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
     
+    # 修复：补全 alpn 参数，完全对齐 3x-ui 的配置结构
     jq --arg p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" \
        '.inbounds += [{
            "type": "vless",
@@ -1086,6 +1085,7 @@ sb_add_reality() {
            "tls": {
                "enabled": true,
                "server_name": $s,
+               "alpn": ["h2", "http/1.1"],
                "reality": {
                    "enabled": true,
                    "handshake": {"server": $s, "server_port": 443},
@@ -1097,14 +1097,18 @@ sb_add_reality() {
     
     local check_err
     if check_err=$($SB_BIN check -c "$SB_CONF" 2>&1); then
-        open_port_both "$port"; _save_node_meta "$port" "$nn" "vless-reality" "$pub_key" "short_id=${short_id};sni=${sni};tiktok_optimized=true"
+        open_port_both "$port"; _save_node_meta "$port" "$nn" "vless-reality" "$pub_key" "short_id=${short_id};sni=${sni}"
         systemctl restart sing-box
         if _wait_for_sb_active; then 
-            echo -e "${G}✅ TikTok专属VLESS-Reality部署成功！${R}"
+            echo -e "${G}✅ VLESS-Reality 部署成功！${R}"
             echo -e "${G}🔑 PublicKey: ${pub_key}${R}"
             local server_ip=$(get_my_ip); local server_ip_url="$server_ip"
             if [[ "$server_ip" =~ : ]]; then server_ip_url="[$server_ip]"; fi
-            local link="vless://${uuid}@${server_ip_url}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#$(url_encode "$nn")"
+            
+            # 修复：链接格式对齐 3x-ui，加入 spx，去掉 headerType
+            local spx_path="%2F$(openssl rand -hex 8)"
+            local link="vless://${uuid}@${server_ip_url}:${port}?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=${pub_key}&security=reality&sid=${short_id}&sni=${sni}&spx=${spx_path}&type=tcp#$(url_encode "$nn")"
+            
             echo -e "${C}节点链接: ${link}${R}"
             _persist_iptables; 
         else
@@ -1347,7 +1351,7 @@ sb_show_nodes_and_links() {
                     flow=$(echo "$obj" | jq -r '.users[0].flow // empty' 2>/dev/null)
                     local flow_param=""; [ -n "$flow" ] && flow_param="&flow=${flow}"
                     if [ -n "$pub_key" ]; then
-                        link="vless://${uuid}@${server_ip_url}:${port}?encryption=none${flow_param}&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#$(url_encode "$nn")"
+                        link="vless://${uuid}@${server_ip_url}:${port}?encryption=none${flow_param}&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp#$(url_encode "$nn")"
                     else
                         link="${RED}无法生成链接：缺少 PublicKey${R}"
                     fi
