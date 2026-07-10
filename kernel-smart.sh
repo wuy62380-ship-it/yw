@@ -643,13 +643,63 @@ Kernel_optimize() {
     done
 }
 
-# ================= 顶级大厂域名优选模块 (强化版) =================
-SNI_DOMAINS=("www.microsoft.com" "azure.microsoft.com" "www.bing.com" "www.office.com" "www.apple.com" "cdn.apple.com" "init.push.apple.com" "api.apple.com" "www.amazon.com" "aws.amazon.com" "cdn.amazon.com" "www.cloudflare.com" "dash.cloudflare.com" "www.oracle.com" "www.ibm.com" "www.nvidia.com" "images.nvidia.com" "www.intel.com" "www.amd.com" "www.ebay.com" "www.paypal.com" "www.tesla.com")
-CDN_DOMAINS=("visa.com.sg" "www.visa.com" "www.bing.com" "www.microsoft.com" "www.icloud.com" "www.apple.com" "www.amazon.com" "www.tesla.com" "dash.cloudflare.com")
+# ================= 顶级大厂域名优选模块 (3x-ui 官方完整版 37域名) =================
+SNI_DOMAINS=(
+    "www.microsoft.com"
+    "www.cloudflare.com"
+    "www.amazon.com"
+    "www.apple.com"
+    "www.bing.com"
+    "www.yahoo.com"
+    "www.icloud.com"
+    "www.office.com"
+    "aws.amazon.com"
+    "azure.microsoft.com"
+    "dl.google.com"
+    "cdn.apple.com"
+    "api.apple.com"
+    "init.push.apple.com"
+    "www.sony.com"
+    "www.oracle.com"
+    "www.ibm.com"
+    "www.nvidia.com"
+    "images.nvidia.com"
+    "www.intel.com"
+    "www.amd.com"
+    "www.ebay.com"
+    "www.paypal.com"
+    "www.tesla.com"
+    "www.mozilla.org"
+    "www.lovelive-anime.jp"
+    "www.cisco.com"
+    "www.sap.com"
+    "www.samsung.com"
+    "www.huawei.com"
+    "www.dell.com"
+    "www.hp.com"
+    "www.canva.com"
+    "www.cdn77.org"
+    "www.fastly.com"
+    "www.akamai.com"
+    "www.digitalocean.com"
+)
+CDN_DOMAINS=(
+    "visa.com.sg"
+    "www.visa.com"
+    "www.bing.com"
+    "www.microsoft.com"
+    "www.icloud.com"
+    "www.apple.com"
+    "www.amazon.com"
+    "www.tesla.com"
+    "dash.cloudflare.com"
+)
 
 _test_domain_latency() {
     local domain="$1" result_file="$2"
-    # 修复：放宽超时至5秒，强制 IPv4，且不依赖退出码，只要拿到握手时间即算成功
+    # 错峰并发：随机休眠 0~0.5 秒，防止瞬间并发被云厂商防火墙拦截
+    sleep $(awk 'BEGIN{srand(); print rand()/2}')
+    # 强制 IPv4，放宽超时，不依赖退出码，只看 TLS 握手时间
     local time_appconnect=$(curl -4 -o /dev/null -s --connect-timeout 3 --max-time 5 -w "%{time_appconnect}" "https://${domain}" 2>/dev/null)
     if [[ "$time_appconnect" =~ ^[0-9]+(\.[0-9]+)?$ && "$time_appconnect" != "0.000000" ]]; then
         local ms=$(awk "BEGIN{printf \"%.0f\", ${time_appconnect}*1000}")
