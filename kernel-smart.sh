@@ -645,64 +645,25 @@ Kernel_optimize() {
 
 # ================= 顶级大厂域名优选模块 (3x-ui 官方完整版 37域名) =================
 SNI_DOMAINS=(
-    "www.microsoft.com"
-    "www.cloudflare.com"
-    "www.amazon.com"
-    "www.apple.com"
-    "www.bing.com"
-    "www.yahoo.com"
-    "www.icloud.com"
-    "www.office.com"
-    "aws.amazon.com"
-    "azure.microsoft.com"
-    "dl.google.com"
-    "cdn.apple.com"
-    "api.apple.com"
-    "init.push.apple.com"
-    "www.sony.com"
-    "www.oracle.com"
-    "www.ibm.com"
-    "www.nvidia.com"
-    "images.nvidia.com"
-    "www.intel.com"
-    "www.amd.com"
-    "www.ebay.com"
-    "www.paypal.com"
-    "www.tesla.com"
-    "www.mozilla.org"
-    "www.lovelive-anime.jp"
-    "www.cisco.com"
-    "www.sap.com"
-    "www.samsung.com"
-    "www.huawei.com"
-    "www.dell.com"
-    "www.hp.com"
-    "www.canva.com"
-    "www.cdn77.org"
-    "www.fastly.com"
-    "www.akamai.com"
+    "www.microsoft.com" "www.cloudflare.com" "www.amazon.com" "www.apple.com" "www.bing.com" "www.yahoo.com"
+    "www.icloud.com" "www.office.com" "aws.amazon.com" "azure.microsoft.com" "dl.google.com" "cdn.apple.com"
+    "api.apple.com" "init.push.apple.com" "www.sony.com" "www.oracle.com" "www.ibm.com" "www.nvidia.com"
+    "images.nvidia.com" "www.intel.com" "www.amd.com" "www.ebay.com" "www.paypal.com" "www.tesla.com"
+    "www.mozilla.org" "www.lovelive-anime.jp" "www.cisco.com" "www.sap.com" "www.samsung.com" "www.huawei.com"
+    "www.dell.com" "www.hp.com" "www.canva.com" "www.cdn77.org" "www.fastly.com" "www.akamai.com"
     "www.digitalocean.com"
 )
 CDN_DOMAINS=(
-    "visa.com.sg"
-    "www.visa.com"
-    "www.bing.com"
-    "www.microsoft.com"
-    "www.icloud.com"
-    "www.apple.com"
-    "www.amazon.com"
-    "www.tesla.com"
-    "dash.cloudflare.com"
+    "visa.com.sg" "www.visa.com" "www.bing.com" "www.microsoft.com" "www.icloud.com" "www.apple.com"
+    "www.amazon.com" "www.tesla.com" "dash.cloudflare.com"
 )
 
 _test_domain_latency() {
     local domain="$1" result_file="$2"
-    # 修复1：使用 $RANDOM 真正随机休眠 0~0.9 秒，彻底错开并发，防防火墙拦截
+    # 修复：使用 $RANDOM 真正随机休眠 0~0.9 秒，彻底错开并发，防防火墙拦截
     sleep 0.$(( RANDOM % 10 ))
-    
-    # 修复2：测速指标改为 time_total (总耗时)，强制 IPv4 和 HTTP/1.1，容错率极高
+    # 修复：测速指标改为 time_total (总耗时)，强制 IPv4 和 HTTP/1.1，容错率极高
     local time_total=$(curl -4 --http1.1 -o /dev/null -s --connect-timeout 2 --max-time 4 -w "%{time_total}" "https://${domain}" 2>/dev/null)
-    
     if [[ "$time_total" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
         local ms=$(awk "BEGIN{printf \"%.0f\", ${time_total}*1000}")
         echo "${ms} ${domain}" >> "$result_file"
@@ -784,7 +745,7 @@ select_best_domain() {
     done
 }
 
-# ================= Sing-Box 核心 (强化版) =================
+# ================= Sing-Box 核心 (强制自愈版) =================
 SB_BIN="/usr/local/bin/sing-box"
 SB_CONF="/etc/sing-box/config.json"
 META_FILE="/etc/sing-box/.nodes_meta"
@@ -809,7 +770,6 @@ get_my_ip() {
             break
         fi
     done
-    # 兜底：通过路由探测获取
     if [ -z "$server_ip" ]; then
         server_ip=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++)if($i=="src")print $(i+1)}')
     fi
@@ -817,7 +777,6 @@ get_my_ip() {
     echo "$server_ip"
 }
 
-# 强化：强制时间同步 (Reality 必备)
 force_sync_time() {
     echo -e "${Y}[*] 正在校准系统时间 (Reality 协议对时间极其敏感)...${R}"
     command -v timedatectl >/dev/null 2>&1 && timedatectl set-ntp true >/dev/null 2>&1
@@ -844,15 +803,24 @@ check_port_occupied() {
     if ss -tunlpn | awk '{print $5}' | grep -qE ":${port}\$"; then return 0; else return 1; fi
 }
 
+# 终极修复：只要 sing-box check 不通过，直接强制重置配置文件，绝不允许在损坏的文件上叠加！
 sb_check() { 
     if ! command -v $SB_BIN >/dev/null 2>&1; then 
         echo -e "${RED}请先安装 Sing-Box${R}"; read -rs -n 1 -p ""; return 1; 
     fi
     
-    # 修复：检测如果文件为空或损坏，自动恢复初始配置
+    local need_reset=0
     if [ ! -s "$SB_CONF" ] || ! jq -e . "$SB_CONF" >/dev/null 2>&1; then
-        echo -e "${Y}检测到配置文件损坏或为空，正在重新初始化...${R}"
-        mv "$SB_CONF" "${SB_CONF}.eof_bak.$(date +%s)" 2>/dev/null
+        need_reset=1
+    else
+        if ! $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
+            need_reset=1
+        fi
+    fi
+
+    if [ "$need_reset" -eq 1 ]; then
+        echo -e "${Y}检测到配置文件损坏或校验失败，正在强制重置为初始状态...${R}"
+        mv "$SB_CONF" "${SB_CONF}.corrupted.$(date +%s)" 2>/dev/null
         sb_init_conf
         systemctl restart sing-box >/dev/null 2>&1
     fi
@@ -862,10 +830,14 @@ sb_check() {
         if jq 'del(.dns.cache_size) | (.inbounds[]? |= del(.packet_encoding)) | (.inbounds[]? | select(.tls.reality != null) |= del(.tls.min_version, .tls.alpn, .tls.cipher_suites))' "$SB_CONF" > "$tmp_clean" 2>/dev/null; then
             if [ -s "$tmp_clean" ]; then
                 if ! cmp -s "$SB_CONF" "$tmp_clean"; then
-                    mv -f "$tmp_clean" "$SB_CONF"
-                    systemctl restart sing-box >/dev/null 2>&1
-                    echo -e "${Y}已自动深度清理不兼容的旧版残留字段并重启服务！${R}"
-                    sleep 1
+                    if $SB_BIN check -c "$tmp_clean" >/dev/null 2>&1; then
+                        mv -f "$tmp_clean" "$SB_CONF"
+                        systemctl restart sing-box >/dev/null 2>&1
+                        echo -e "${Y}已自动深度清理不兼容字段并重启服务！${R}"
+                        sleep 1
+                    else
+                        rm -f "$tmp_clean"
+                    fi
                 else
                     rm -f "$tmp_clean"
                 fi
@@ -1080,7 +1052,7 @@ _get_port() {
 
 sb_add_reality() {
     sb_check || return
-    force_sync_time # 强制时间同步
+    force_sync_time
     
     local port; port=$(_get_port 443)
     port=$(echo "$port" | tr -d '[:space:]')
@@ -1104,7 +1076,6 @@ sb_add_reality() {
     
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
     
-    # 修复：使用内联 jq 避免 JSON 结构错误
     jq --arg p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" \
        '.inbounds += [{
            "type": "vless",
