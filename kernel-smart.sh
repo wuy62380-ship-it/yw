@@ -643,11 +643,15 @@ Kernel_optimize() {
     done
 }
 
-# ================= 顶级大厂域名优选模块 (使用 openssl 串行测速，绝不失败) =================
+# ================= 顶级大厂域名优选模块 (3x-ui 官方完整版 37域名) =================
 SNI_DOMAINS=(
-    "google-analytics.com" "www.microsoft.com" "www.cloudflare.com" "www.amazon.com"
-    "www.apple.com" "www.bing.com" "www.icloud.com" "aws.amazon.com" "azure.microsoft.com"
-    "dl.google.com" "cdn.apple.com" "api.apple.com"
+    "google-analytics.com" "www.microsoft.com" "www.cloudflare.com" "www.amazon.com" "www.apple.com" "www.bing.com"
+    "www.yahoo.com" "www.icloud.com" "www.office.com" "aws.amazon.com" "azure.microsoft.com" "dl.google.com"
+    "cdn.apple.com" "api.apple.com" "init.push.apple.com" "www.sony.com" "www.oracle.com" "www.ibm.com"
+    "www.nvidia.com" "images.nvidia.com" "www.intel.com" "www.amd.com" "www.ebay.com" "www.paypal.com"
+    "www.tesla.com" "www.mozilla.org" "www.lovelive-anime.jp" "www.cisco.com" "www.sap.com" "www.samsung.com"
+    "www.huawei.com" "www.dell.com" "www.hp.com" "www.canva.com" "www.cdn77.org" "www.fastly.com"
+    "www.akamai.com" "www.digitalocean.com"
 )
 CDN_DOMAINS=(
     "visa.com.sg" "www.visa.com" "www.bing.com" "www.microsoft.com" "www.icloud.com" "www.apple.com"
@@ -2088,7 +2092,7 @@ tiktok_live_menu() {
         echo -e "    ${H}[2] 仅UDP流媒体优化${R}"
         echo -e "    ${H}[3] 网络低延迟配置${R}"
         echo -e "    ${H}[4] 连接稳定性优化${R}"
-        echo -e "    ${H}[5] 上下行带宽智能优化${R}"
+    echo -e "    ${H}[5] 上下行带宽智能优化${R}"
         echo ""
         echo -e "    ${H}[0] 返回主菜单${R}"
         echo ""
