@@ -649,10 +649,11 @@ CDN_DOMAINS=("visa.com.sg" "www.visa.com" "www.bing.com" "www.microsoft.com" "ww
 
 _test_domain_latency() {
     local domain="$1" result_file="$2"
-    # 强制验证 TLS 1.3 支持，过滤掉假死或不支持 TLS1.3 的节点
-    local time_appconnect=$(curl -o /dev/null -s --connect-timeout 2 --max-time 3 --tlsv1.3 -w "%{time_appconnect}" "https://${domain}" 2>/dev/null)
-    if [[ "$time_appconnect" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
-        local ms=$(awk "BEGIN{printf \"%d\", ${time_appconnect}*1000}")
+    # 恢复标准测速，增加退出码和 0.000000 假死过滤
+    local time_appconnect=$(curl -o /dev/null -s --connect-timeout 2 --max-time 3 -w "%{time_appconnect}" "https://${domain}" 2>/dev/null)
+    local ret=$?
+    if [[ $ret -eq 0 && "$time_appconnect" =~ ^[0-9]+(\.[0-9]+)?$ && "$time_appconnect" != "0.000000" ]]; then
+        local ms=$(awk "BEGIN{printf \"%.0f\", ${time_appconnect}*1000}")
         echo "${ms} ${domain}" >> "$result_file"
     else
         echo "9999 ${domain}" >> "$result_file"
@@ -680,7 +681,7 @@ select_best_domain() {
         read -e -p "请选择 [1-3]: " choice
         case "$choice" in
             1)
-                echo -e "${Y}[*] 正在并发测试 ${#domains[@]} 个大厂域名 (强制要求支持 TLS 1.3)...${R}" >&2
+                echo -e "${Y}[*] 正在并发测试 ${#domains[@]} 个大厂域名...${R}" >&2
                 local tmp_res="$TMP_DIR/sb_domain_speed"
                 > "$tmp_res"
                 for domain in "${domains[@]}"; do _test_domain_latency "$domain" "$tmp_res" & done
@@ -1051,27 +1052,26 @@ sb_add_reality() {
     [ -z "$nn" ] && nn="VLESS-Reality-TikTok-${port}"
     
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
-    local ij=$(jq -n --arg p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" '{
-        "type": "vless",
-        "tag": ("vless-reality-"+($p|tostring)),
-        "listen": "::",
-        "listen_port": ($p|tonumber),
-        "users": [{"uuid": $u, "flow": "xtls-rprx-vision"}],
-        "tls": {
-            "enabled": true,
-            "server_name": $s,
-            "reality": {
-                "enabled": true,
-                "handshake": {
-                    "server": $s,
-                    "server_port": 443
-                },
-                "private_key": $pk,
-                "short_id": [$sid]
-            }
-        }
-    }')
-    jq --argjson inb "$ij" '.inbounds += [$inb]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
+    
+    # 修复：使用内联 jq 避免 JSON 结构错误
+    jq --arg p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" \
+       '.inbounds += [{
+           "type": "vless",
+           "tag": ("vless-reality-"+($p|tostring)),
+           "listen": "::",
+           "listen_port": ($p|tonumber),
+           "users": [{"uuid": $u, "flow": "xtls-rprx-vision"}],
+           "tls": {
+               "enabled": true,
+               "server_name": $s,
+               "reality": {
+                   "enabled": true,
+                   "handshake": {"server": $s, "server_port": 443},
+                   "private_key": $pk,
+                   "short_id": [$sid]
+               }
+           }
+       }]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
     
     local check_err
     if check_err=$($SB_BIN check -c "$SB_CONF" 2>&1); then
@@ -1127,8 +1127,16 @@ sb_add_vless_ws() {
     fi
 
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
-    local ij=$(jq -n --arg p "$port" --arg u "$uuid" --arg wp "$ws_path" '{"type":"vless","tag":("vless-ws-"+($p|tostring)),"listen":"::","listen_port":($p|tonumber),"users":[{"uuid":$u}],"transport":{"type":"ws","path":$wp}}')
-    jq --argjson inb "$ij" '.inbounds += [$inb]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
+    
+    jq --arg p "$port" --arg u "$uuid" --arg wp "$ws_path" \
+       '.inbounds += [{
+           "type": "vless",
+           "tag": ("vless-ws-"+($p|tostring)),
+           "listen": "::",
+           "listen_port": ($p|tonumber),
+           "users": [{"uuid": $u}],
+           "transport": {"type": "ws", "path": $wp}
+       }]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
     
     local check_err
     if check_err=$($SB_BIN check -c "$SB_CONF" 2>&1); then
@@ -1176,26 +1184,27 @@ sb_add_hysteria2() {
     chmod 600 "${cert_dir}/key.pem"
     
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
-    local ij=$(jq -n --arg p "$port" --arg pass "$pass" --arg c "${cert_dir}/cert.pem" --arg k "${cert_dir}/key.pem" --arg s "$sni" '{
-        "type": "hysteria2",
-        "tag": ("hysteria2-"+($p|tostring)),
-        "listen": "::",
-        "listen_port": ($p|tonumber),
-        "users": [{"password": $pass}],
-        "tls": {
-            "enabled": true,
-            "server_name": $s,
-            "alpn": ["h3", "h2", "http/1.1"],
-            "min_version": "1.2",
-            "certificate_path": $c,
-            "key_path": $k
-        },
-        "congestion_control": "bbr",
-        "udp_disable_fragment": false,
-        "ignore_client_bandwidth": true,
-        "disable_mtu_discovery": false
-    }')
-    jq --argjson inb "$ij" '.inbounds += [$inb]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
+    
+    jq --arg p "$port" --arg pass "$pass" --arg c "${cert_dir}/cert.pem" --arg k "${cert_dir}/key.pem" --arg s "$sni" \
+       '.inbounds += [{
+           "type": "hysteria2",
+           "tag": ("hysteria2-"+($p|tostring)),
+           "listen": "::",
+           "listen_port": ($p|tonumber),
+           "users": [{"password": $pass}],
+           "tls": {
+               "enabled": true,
+               "server_name": $s,
+               "alpn": ["h3", "h2", "http/1.1"],
+               "min_version": "1.2",
+               "certificate_path": $c,
+               "key_path": $k
+           },
+           "congestion_control": "bbr",
+           "udp_disable_fragment": false,
+           "ignore_client_bandwidth": true,
+           "disable_mtu_discovery": false
+       }]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
     
     local check_err
     if check_err=$($SB_BIN check -c "$SB_CONF" 2>&1); then
@@ -1241,24 +1250,25 @@ sb_add_tuic() {
     chmod 600 "${cert_dir}/key.pem"
     
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
-    local ij=$(jq -n --arg p "$port" --arg u "$uuid" --arg pass "$pass" --arg c "${cert_dir}/cert.pem" --arg k "${cert_dir}/key.pem" --arg s "$sni" '{
-        "type": "tuic",
-        "tag": ("tuic-"+($p|tostring)),
-        "listen": "::",
-        "listen_port": ($p|tonumber),
-        "users": [{"uuid": $u, "password": $pass}],
-        "congestion_control": "bbr",
-        "udp_relay_mode": "native",
-        "tls": {
-            "enabled": true,
-            "server_name": $s,
-            "alpn": ["h3", "h2", "http/1.1"],
-            "min_version": "1.2",
-            "certificate_path": $c,
-            "key_path": $k
-        }
-    }')
-    jq --argjson inb "$ij" '.inbounds += [$inb]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
+    
+    jq --arg p "$port" --arg u "$uuid" --arg pass "$pass" --arg c "${cert_dir}/cert.pem" --arg k "${cert_dir}/key.pem" --arg s "$sni" \
+       '.inbounds += [{
+           "type": "tuic",
+           "tag": ("tuic-"+($p|tostring)),
+           "listen": "::",
+           "listen_port": ($p|tonumber),
+           "users": [{"uuid": $u, "password": $pass}],
+           "congestion_control": "bbr",
+           "udp_relay_mode": "native",
+           "tls": {
+               "enabled": true,
+               "server_name": $s,
+               "alpn": ["h3", "h2", "http/1.1"],
+               "min_version": "1.2",
+               "certificate_path": $c,
+               "key_path": $k
+           }
+       }]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
     
     local check_err
     if check_err=$($SB_BIN check -c "$SB_CONF" 2>&1); then
