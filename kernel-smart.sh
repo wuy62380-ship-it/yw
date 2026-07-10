@@ -1205,14 +1205,13 @@ sb_add_hysteria2() {
     [ -z "$sni" ] && { echo -e "${Y}已取消添加。${R}"; return; }
     
     local cert_dir="/etc/sing-box/certs/hy2-${port}"; mkdir -p "$cert_dir"
-    # 优化：使用 ECDSA 证书，性能更高
     openssl ecparam -genkey -name prime256v1 -out "${cert_dir}/key.pem" 2>/dev/null
     openssl req -new -x509 -days 3650 -key "${cert_dir}/key.pem" -out "${cert_dir}/cert.pem" -subj "/CN=${sni}" 2>/dev/null
     chmod 600 "${cert_dir}/key.pem"
     
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
     
-    # 修复：ignore_client_bandwidth 改为 false，alpn 仅保留 h3
+    # 修复：移除 1.10.x 已废弃的 congestion_control 等字段，完全兼容新版核心
     jq --arg p "$port" --arg pass "$pass" --arg c "${cert_dir}/cert.pem" --arg k "${cert_dir}/key.pem" --arg s "$sni" \
        '.inbounds += [{
            "type": "hysteria2",
@@ -1224,14 +1223,10 @@ sb_add_hysteria2() {
                "enabled": true,
                "server_name": $s,
                "alpn": ["h3"],
-               "min_version": "1.3",
                "certificate_path": $c,
                "key_path": $k
            },
-           "congestion_control": "bbr",
-           "udp_disable_fragment": false,
-           "ignore_client_bandwidth": false,
-           "disable_mtu_discovery": false
+           "ignore_client_bandwidth": false
        }]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
     
     local check_err
@@ -1273,14 +1268,13 @@ sb_add_tuic() {
     [ -z "$sni" ] && { echo -e "${Y}已取消添加。${R}"; return; }
     
     local cert_dir="/etc/sing-box/certs/tuic-${port}"; mkdir -p "$cert_dir"
-    # 优化：使用 ECDSA 证书
     openssl ecparam -genkey -name prime256v1 -out "${cert_dir}/key.pem" 2>/dev/null
     openssl req -new -x509 -days 3650 -key "${cert_dir}/key.pem" -out "${cert_dir}/cert.pem" -subj "/CN=${sni}" 2>/dev/null
     chmod 600 "${cert_dir}/key.pem"
     
     cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
     
-    # 修复：alpn 仅保留 h3
+    # 修复：移除 1.10.x 已废弃的 congestion_control 和 udp_relay_mode 字段
     jq --arg p "$port" --arg u "$uuid" --arg pass "$pass" --arg c "${cert_dir}/cert.pem" --arg k "${cert_dir}/key.pem" --arg s "$sni" \
        '.inbounds += [{
            "type": "tuic",
@@ -1288,13 +1282,10 @@ sb_add_tuic() {
            "listen": "::",
            "listen_port": ($p|tonumber),
            "users": [{"uuid": $u, "password": $pass}],
-           "congestion_control": "bbr",
-           "udp_relay_mode": "native",
            "tls": {
                "enabled": true,
                "server_name": $s,
                "alpn": ["h3"],
-               "min_version": "1.3",
                "certificate_path": $c,
                "key_path": $k
            }
