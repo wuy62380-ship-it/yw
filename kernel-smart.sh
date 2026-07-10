@@ -966,7 +966,24 @@ sb_install() {
             if "$tmp_bin" version >/dev/null 2>&1; then
                 mv -f "$tmp_bin" $SB_BIN
                 sb_init_conf
-                cat > /etc/systemd/system/sing-box.service <<EOF
+                sb_setup_service
+                systemctl start sing-box
+                echo -e "${G}✅ 安装成功 | 版本: $($SB_BIN version 2>/dev/null | head -1)${R}"
+            else
+                echo -e "${RED}❌ 下载的执行文件无法运行，可能架构不匹配或文件损坏！${R}"
+                rm -f "$tmp_bin"
+            fi
+        else
+            echo -e "${RED}❌ 解压失败，可能是 GitHub 限流返回了 HTML 错误页。${R}"
+            rm -f "$TMP_DIR/sb.tar.gz"
+        fi
+    else echo -e "${RED}❌ 下载失败${R}"; fi
+    read -rs -n 1 -p ""
+}
+
+sb_setup_service() {
+    if ! command -v $SB_BIN >/dev/null 2>&1; then echo -e "${RED}请先安装 Sing-Box${R}"; read -rs -n 1 -p ""; return; fi
+    cat > /etc/systemd/system/sing-box.service <<EOF
 [Unit]
 After=network.target nss-lookup.target
 [Service]
@@ -984,17 +1001,10 @@ OOMScoreAdjust=-1000
 [Install]
 WantedBy=multi-user.target
 EOF
-                systemctl daemon-reload; systemctl enable sing-box >/dev/null 2>&1; systemctl start sing-box
-                echo -e "${G}✅ 安装成功 | 版本: $($SB_BIN version 2>/dev/null | head -1)${R}"
-            else
-                echo -e "${RED}❌ 下载的执行文件无法运行，可能架构不匹配或文件损坏！${R}"
-                rm -f "$tmp_bin"
-            fi
-        else
-            echo -e "${RED}❌ 解压失败，可能是 GitHub 限流返回了 HTML 错误页。${R}"
-            rm -f "$TMP_DIR/sb.tar.gz"
-        fi
-    else echo -e "${RED}❌ 下载失败${R}"; fi
+    systemctl daemon-reload
+    systemctl enable sing-box >/dev/null 2>&1
+    systemctl restart sing-box >/dev/null 2>&1
+    echo -e "${G}✅ Sing-Box 服务配置已修复并设置开机自启！${R}"
     read -rs -n 1 -p ""
 }
 
@@ -1528,6 +1538,7 @@ sb_menu() {
         echo -e "${H}[10] 重启 Sing-Box${R}"
         echo -e "${H}[11] 查看 Sing-Box 日志${R}"
         echo -e "${H}[12] 手动开放端口${R}"
+        echo -e "${H}[13] 配置开机自启 (修复服务)${R}"
         echo ""
         echo -e "${H}[0] 返回主菜单${R}"
         echo ""
@@ -1540,7 +1551,9 @@ sb_menu() {
             5) clear; sb_show_nodes_and_links ;; 6) clear; sb_del_node ;;
             7) clear; sb_install ;; 8) clear; sb_update ;; 9) clear; sb_uninstall ;;
             10) clear; systemctl restart sing-box && echo -e "${G}✅ 已重启${R}" || echo -e "${RED}重启失败${R}"; read -rs -n 1 -p "" ;;
-            11) clear; sb_view_log ;; 12) clear; manual_open_port ;; 0|"") break ;; *) echo -e "${RED}无效${R}"; sleep 1 ;;
+            11) clear; sb_view_log ;; 12) clear; manual_open_port ;;
+            13) clear; sb_setup_service ;;
+            0|"") break ;; *) echo -e "${RED}无效${R}"; sleep 1 ;;
         esac
     done
 }
