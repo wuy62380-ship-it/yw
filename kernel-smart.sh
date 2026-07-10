@@ -697,12 +697,14 @@ CDN_DOMAINS=(
 
 _test_domain_latency() {
     local domain="$1" result_file="$2"
-    # 错峰并发：随机休眠 0~0.5 秒，防止瞬间并发被云厂商防火墙拦截
-    sleep $(awk 'BEGIN{srand(); print rand()/2}')
-    # 强制 IPv4，放宽超时，不依赖退出码，只看 TLS 握手时间
-    local time_appconnect=$(curl -4 -o /dev/null -s --connect-timeout 3 --max-time 5 -w "%{time_appconnect}" "https://${domain}" 2>/dev/null)
-    if [[ "$time_appconnect" =~ ^[0-9]+(\.[0-9]+)?$ && "$time_appconnect" != "0.000000" ]]; then
-        local ms=$(awk "BEGIN{printf \"%.0f\", ${time_appconnect}*1000}")
+    # 修复1：使用 $RANDOM 真正随机休眠 0~0.9 秒，彻底错开并发，防防火墙拦截
+    sleep 0.$(( RANDOM % 10 ))
+    
+    # 修复2：测速指标改为 time_total (总耗时)，强制 IPv4 和 HTTP/1.1，容错率极高
+    local time_total=$(curl -4 --http1.1 -o /dev/null -s --connect-timeout 2 --max-time 4 -w "%{time_total}" "https://${domain}" 2>/dev/null)
+    
+    if [[ "$time_total" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        local ms=$(awk "BEGIN{printf \"%.0f\", ${time_total}*1000}")
         echo "${ms} ${domain}" >> "$result_file"
     else
         echo "9999 ${domain}" >> "$result_file"
