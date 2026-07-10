@@ -649,10 +649,9 @@ CDN_DOMAINS=("visa.com.sg" "www.visa.com" "www.bing.com" "www.microsoft.com" "ww
 
 _test_domain_latency() {
     local domain="$1" result_file="$2"
-    # 恢复标准测速，增加退出码和 0.000000 假死过滤
-    local time_appconnect=$(curl -o /dev/null -s --connect-timeout 2 --max-time 3 -w "%{time_appconnect}" "https://${domain}" 2>/dev/null)
-    local ret=$?
-    if [[ $ret -eq 0 && "$time_appconnect" =~ ^[0-9]+(\.[0-9]+)?$ && "$time_appconnect" != "0.000000" ]]; then
+    # 修复：放宽超时至5秒，强制 IPv4，且不依赖退出码，只要拿到握手时间即算成功
+    local time_appconnect=$(curl -4 -o /dev/null -s --connect-timeout 3 --max-time 5 -w "%{time_appconnect}" "https://${domain}" 2>/dev/null)
+    if [[ "$time_appconnect" =~ ^[0-9]+(\.[0-9]+)?$ && "$time_appconnect" != "0.000000" ]]; then
         local ms=$(awk "BEGIN{printf \"%.0f\", ${time_appconnect}*1000}")
         echo "${ms} ${domain}" >> "$result_file"
     else
@@ -1588,7 +1587,7 @@ low_disk_optimize() {
         sed -i 's/^\(.*\)\*\.\*/#\1\*.\*/' /etc/syslog.conf 2>/dev/null || true
     fi
     if [ -f /etc/systemd/journald.conf ]; then
-        sed -i 's/^#RateLimitBurst=.*/RateLimitBurst=50/' /etc/systemd/journald.conf 2>/dev/null || true
+        sed -i 's/^#RateLimitBurst=.*/RateLimitBurst=50}' /etc/systemd/journald.conf 2>/dev/null || true
         sed -i 's/^#RateLimitIntervalSec=.*/RateLimitIntervalSec=1m}' /etc/systemd/journald.conf 2>/dev/null || true
     fi
     echo -e "${G}✅ 完成${R}"
