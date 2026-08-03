@@ -158,16 +158,13 @@ get_current_opt_mode() {
     fi
 }
 
-# ================= 内核与网络深度优化 (极简安全版，参考yonggekkk) =================
+# ================= 内核与网络深度优化 (极简安全版) =================
 _kernel_optimize_core() {
     local mode_name="$1" CONF="/etc/sysctl.d/99-yw-optimize.conf"
     
-    # 清理旧的激进配置文件
     rm -f /etc/sysctl.d/99-tiktok-live.conf /etc/sysctl.d/99-smart.conf /etc/sysctl.d/99-tiktok-udp.conf /etc/sysctl.d/99-bandwidth.conf /etc/sysctl.d/99-lowprofile-optimize.conf 2>/dev/null || true
     
     [ -f "$CONF" ] && cp "$CONF" "${CONF}.bak.$(date +%s)"
-    
-    # 极简配置：只开 BBR + fq，绝不碰缓冲区大小和 ECN
     cat > "$CONF" << EOF
 # 模式: ${mode_name}|极简稳定版
 net.ipv4.ip_forward = 1
@@ -190,15 +187,10 @@ fs.nr_open = 1048576
 EOF
     local err=$(sysctl -p "$CONF" 2>&1 | grep -cE "Invalid|No such|unknown key" 2>/dev/null) || err=0
     echo -e "${G}应用完成，跳过 ${err} 项不支持参数${R}"
-    
-    if ! grep -q "# YW-optimize" /etc/security/limits.conf 2>/dev/null; then 
-        echo -e "\n# YW-optimize\n* soft nofile 1048576\n* hard nofile 1048576" >> /etc/security/limits.conf
-    fi
-    ulimit -n 1048576 2>/dev/null
-    check_swap >/dev/null 2>&1
+    if ! grep -q "# YW-optimize" /etc/security/limits.conf 2>/dev/null; then echo -e "\n# YW-optimize\n* soft nofile 1048576\n* hard nofile 1048576" >> /etc/security/limits.conf; fi
+    ulimit -n 1048576 2>/dev/null; check_swap >/dev/null 2>&1
     _optimize_nic_queues
-    echo -e "${G}${mode_name} 完成！已启用极简安全 BBR 模式。${R}"
-    read -rs -n 1 -p ""
+    echo -e "${G}${mode_name} 完成！已启用极简安全 BBR 模式。${R}"; read -rs -n 1 -p ""
 }
 
 # ================= 智能自动优化 (安全稳定版) =================
@@ -210,11 +202,9 @@ smart_auto_optimize() {
     echo ""
     echo -e "${Y}即将应用安全稳定的网络优化参数 (BBR+fq)...${R}"
     sleep 1
-    
     if prompt_yes_no "开始优化？(推荐直接回车) " "y"; then
         echo ""
         _kernel_optimize_core "智能自动优化"
-        
         echo -e "${G}✅ 优化完成！${R}"
         echo -e "${Y}建议重启服务器获得最佳效果${R}"
         if prompt_yes_no "是否现在重启？" "n"; then
@@ -231,7 +221,6 @@ xanmod_add_repo() {
     if echo "jammy focal buster releases" | grep -qw "$os_codename"; then echo -e "${RED}XanMod 已停止支持${R}"; return 1; fi
     [ -z "$os_codename" ] && { echo "无法获取代号"; return 1; }
     apt-get install -y wget gnupg ca-certificates >/dev/null 2>&1; mkdir -p /usr/share/keyrings /etc/apt/sources.list.d
-    
     if ! wget -qO - "https://dl.xanmod.org/archive.key" | gpg --dearmor -o "$keyring" --yes 2>/dev/null; then
         echo -e "${RED}❌ XanMod 密钥下载/转换失败！${R}"
         rm -f "$keyring"
@@ -251,7 +240,6 @@ xanmod_detect_package() {
         fi
         return 1
     fi
-
     local psabi_level=$(awk -F: '/^flags/{ if(/lm/&&/cmov/&&/cx8/&&/fpu/&&/fxsr/&&/mmx/&&/syscall/&&/sse2/) level=1; if(level==1&&/cx16/&&/lahf/&&/popcnt/&&/sse4_1/&&/sse4_2/&&/ssse3/) level=2; if(level==2&&/avx/&&/avx2/&&/bmi1/&&/bmi2/&&/f16c/&&/fma/&&/abm/&&/movbe/&&/xsave/) level=3; if(level>0){print level;exit} }' /proc/cpuinfo 2>/dev/null)
     if [ -z "$psabi_level" ]; then return 1; fi
     [ "$psabi_level" -gt 3 ] && psabi_level=3
@@ -400,105 +388,6 @@ Kernel_optimize() {
     done
 }
 
-# ================= 顶级大厂域名优选模块 =================
-SNI_DOMAINS=(
-    "google-analytics.com" "www.microsoft.com" "www.cloudflare.com" "www.amazon.com" "www.apple.com" "www.bing.com"
-    "www.yahoo.com" "www.icloud.com" "www.office.com" "aws.amazon.com" "azure.microsoft.com" "dl.google.com"
-    "cdn.apple.com" "api.apple.com" "init.push.apple.com" "www.sony.com" "www.oracle.com" "www.ibm.com"
-    "www.nvidia.com" "images.nvidia.com" "www.intel.com" "www.amd.com" "www.ebay.com" "www.paypal.com"
-    "www.tesla.com" "www.mozilla.org" "www.lovelive-anime.jp" "www.cisco.com" "www.sap.com" "www.samsung.com"
-    "www.huawei.com" "www.dell.com" "www.hp.com" "www.canva.com" "www.cdn77.org" "www.fastly.com"
-    "www.akamai.com" "www.digitalocean.com"
-)
-CDN_DOMAINS=(
-    "visa.com.sg" "www.visa.com" "www.bing.com" "www.microsoft.com" "www.icloud.com" "www.apple.com"
-    "www.amazon.com" "www.tesla.com" "dash.cloudflare.com"
-)
-
-_test_domain_latency() {
-    local host="$1" result_file="$2"
-    local t1 t2 ms
-    
-    t1=$(date +%s%3N 2>/dev/null)
-    [[ ! "$t1" =~ ^[0-9]+$ ]] && t1=$(date +%s)000
-    
-    if timeout 2 openssl s_client -connect "${host}:443" -servername "${host}" </dev/null &>/dev/null; then
-        t2=$(date +%s%3N 2>/dev/null)
-        [[ ! "$t2" =~ ^[0-9]+$ ]] && t2=$(date +%s)000
-        ms=$((t2 - t1))
-        [ "$ms" -ge 0 ] 2>/dev/null && echo "${ms} ${host}" >> "$result_file" || echo "9999 ${host}" >> "$result_file"
-    else
-        echo "9999 ${host}" >> "$result_file"
-    fi
-}
-
-select_best_domain() {
-    local mode="${1:-sni}" user_host="${2:-}"
-    local domains=() purpose=""
-    if [ "$mode" = "cdn" ]; then domains=("${CDN_DOMAINS[@]}"); purpose="Cloudflare CDN 大厂代理节点优选"
-    else domains=("${SNI_DOMAINS[@]}"); purpose="大厂 SNI (TLS 偷步) 优选"; fi
-    
-    while true; do
-        clear >&2
-        echo -e "${G}╔══════════════════════════════════════╗${R}" >&2
-        echo -e "${G}║       顶级大厂域名优选模块            ║${R}" >&2
-        echo -e "${G}╚══════════════════════════════════════╝${R}" >&2
-        echo -e "当前用途: ${Y}${purpose}${R}" >&2
-        echo "" >&2
-        echo -e "${C}1.${R} 自动测速优选 (推荐)" >&2
-        echo -e "${C}2.${R} 手动输入域名" >&2
-        echo -e "${C}3.${R} 使用默认域名 (google-analytics.com)" >&2
-        echo -e "${H}0.${R} 返回上层" >&2
-        echo "" >&2
-        read -e -p "请选择 [1-3]: " choice
-        case "$choice" in
-            1)
-                echo -e "${Y}[*] 正在测试 ${#domains[@]} 个大厂域名 (使用 openssl 严格握手)...${R}" >&2
-                local tmp_res="$TMP_DIR/sb_domain_speed"
-                > "$tmp_res"
-                for domain in "${domains[@]}"; do
-                    _test_domain_latency "$domain" "$tmp_res"
-                done
-                echo -e "\n${G}✅ 测速完成！${R}" >&2
-                
-                local sorted_domains=$(grep -v "^9999" "$tmp_res" | sort -n)
-                rm -f "$tmp_res"
-                if [ -z "$sorted_domains" ]; then 
-                    echo -e "${RED}❌ 所有域名测速失败！可能是服务器网络异常，请尝试手动输入。${R}" >&2
-                    read -rs -n 1 -p "按任意键继续..." >&2
-                    continue
-                fi
-                
-                echo -e "${G}-----------------------------------------${R}" >&2
-                local top_domains=() i=1
-                while IFS= read -r line; do
-                    local latency=$(echo "$line" | awk '{print $1}')
-                    local dom=$(echo "$line" | awk '{print $2}')
-                    printf "  ${G}[%d]${R} %-30s ${Y}%s ms${R}\n" "$i" "$dom" "$latency" >&2
-                    top_domains+=("$dom"); i=$((i+1))
-                    [ $i -gt 5 ] && break
-                done <<< "$sorted_domains"
-                echo -e "${G}-----------------------------------------${R}" >&2
-                
-                read -e -p "请输入序号选用 [1-5, 默认1]: " sel
-                sel=$(echo "$sel" | tr -d '[:space:]')
-                [ -z "$sel" ] && sel=1
-                if [[ "$sel" =~ ^[1-5]$ ]] && [ ${#top_domains[@]} -ge $sel ]; then
-                    echo "${top_domains[$((sel-1))]}"
-                    return 0
-                else echo -e "${RED}选择无效${R}" >&2; sleep 1; fi
-                ;;
-            2) 
-                read -e -p "请输入域名 (如 www.example.com): " manual_dom
-                manual_dom=$(echo "$manual_dom" | tr -d '[:space:]')
-                if [ -n "$manual_dom" ]; then echo "$manual_dom"; return 0; fi 
-                ;;
-            3) echo "google-analytics.com"; return 0 ;;
-            0|"") return 1 ;;
-        esac
-    done
-}
-
 # ================= Sing-Box 核心 =================
 SB_BIN="/usr/local/bin/sing-box"
 SB_CONF="/etc/sing-box/config.json"
@@ -563,7 +452,6 @@ sb_check() {
     if ! command -v $SB_BIN >/dev/null 2>&1; then 
         echo -e "${RED}请先安装 Sing-Box${R}"; read -rs -n 1 -p ""; return 1; 
     fi
-    
     local need_reset=0
     if [ ! -s "$SB_CONF" ] || ! jq -e . "$SB_CONF" >/dev/null 2>&1; then
         need_reset=1
@@ -572,7 +460,6 @@ sb_check() {
             need_reset=1
         fi
     fi
-
     if [ "$need_reset" -eq 1 ]; then
         echo -e "${Y}检测到配置文件损坏或校验失败，正在强制重置为初始状态...${R}"
         mv "$SB_CONF" "${SB_CONF}.corrupted.$(date +%s)" 2>/dev/null
@@ -676,7 +563,6 @@ EOF
 _get_latest_sb_version() {
     local latest_ver
     latest_ver=$(curl -sL https://api.github.com/repos/SagerNet/sing-box/releases/latest 2>/dev/null | jq -r '.tag_name // empty' | sed 's/v//')
-    
     if [[ ! "$latest_ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         log_debug "GitHub API 获取版本失败，尝试备用地址"
         latest_ver=$(curl -sL https://sing-box.app/version 2>/dev/null | head -1)
@@ -685,7 +571,6 @@ _get_latest_sb_version() {
             latest_ver="1.13.7"
         fi
     fi
-    
     echo "$latest_ver"
 }
 
@@ -728,7 +613,6 @@ sb_install() {
     fi
     
     echo -e "${Y}即将安装 Sing-Box v${latest_ver} (${arch})${R}"; read -e -p "继续？: " c; [[ ! "$c" =~ ^[Yy]$ ]] && return
-    
     log_debug "使用版本: $latest_ver"
     
     mkdir -p /etc/sing-box
@@ -908,9 +792,11 @@ sb_add_reality() {
     local uuid=$(echo "$common_data" | cut -d'|' -f2)
     local nn=$(echo "$common_data" | cut -d'|' -f3)
     
-    local sni; sni=$(select_best_domain "sni")
+    # 甬哥极简模式：默认 www.apple.com
+    local sni
+    read -e -p "请输入SNI域名 (回车默认 www.apple.com): " sni
     sni=$(echo "$sni" | tr -d '[:space:]')
-    [ -z "$sni" ] && { echo -e "${Y}已取消添加。${R}"; return; }
+    sni=${sni:-"www.apple.com"}
     
     local keys_output priv_key pub_key; keys_output=$($SB_BIN generate reality-keypair 2>&1)
     priv_key=$(echo "$keys_output" | awk '/PrivateKey/{print $2}' | tr -d '\r'); pub_key=$(echo "$keys_output" | awk '/PublicKey/{print $2}' | tr -d '\r')
@@ -957,6 +843,202 @@ sb_add_reality() {
             local spx_path="%2F$(openssl rand -hex 8)"
             local link="vless://${uuid}@${server_ip_url}:${port}?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=${pub_key}&security=reality&sid=${short_id}&sni=${sni}&spx=${spx_path}&type=tcp#$(url_encode "$nn")"
             
+            echo -e "${C}节点链接: ${link}${R}"
+            _persist_iptables; 
+        else
+            echo -e "${RED}启动失败${R}"
+            (
+                flock -x 200
+                local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
+            ) 200>"$SB_CONF_LOCK"
+            del_port_both "$port"; _del_node_meta "$port"
+        fi
+    else 
+        echo -e "${RED}校验失败${R}"
+        (
+            flock -x 200
+            local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
+        ) 200>"$SB_CONF_LOCK"
+        _del_node_meta "$port"
+    fi
+    _clean_bak; read -rs -n 1 -p ""
+}
+
+sb_add_hysteria2() {
+    sb_check || return
+    local common_data; common_data=$(_sb_add_common "Hysteria2")
+    local port=$(echo "$common_data" | cut -d'|' -f1)
+    local uuid=$(echo "$common_data" | cut -d'|' -f2)
+    local nn=$(echo "$common_data" | cut -d'|' -f3)
+    local pass=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)
+    
+    local sni
+    read -e -p "请输入SNI域名 (回车默认 www.apple.com): " sni
+    sni=$(echo "$sni" | tr -d '[:space:]')
+    sni=${sni:-"www.apple.com"}
+    
+    local cert_dir="/etc/sing-box/certs/hy2-${port}"; mkdir -p "$cert_dir"
+    openssl ecparam -genkey -name prime256v1 -out "${cert_dir}/key.pem" 2>/dev/null
+    openssl req -new -x509 -days 3650 -key "${cert_dir}/key.pem" -out "${cert_dir}/cert.pem" -subj "/CN=${sni}" 2>/dev/null
+    chmod 600 "${cert_dir}/key.pem"
+    
+    (
+        flock -x 200
+        jq --arg p "$port" --arg pass "$pass" --arg c "${cert_dir}/cert.pem" --arg k "${cert_dir}/key.pem" --arg s "$sni" \
+           '.inbounds += [{
+               "type": "hysteria2",
+               "tag": ("hysteria2-"+($p|tostring)),
+               "listen": "::",
+               "listen_port": ($p|tonumber),
+               "users": [{"password": $pass}],
+               "tls": {
+                   "enabled": true,
+                   "server_name": $s,
+                   "alpn": ["h3"],
+                   "certificate_path": $c,
+                   "key_path": $k
+               },
+               "ignore_client_bandwidth": false
+           }]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
+    ) 200>"$SB_CONF_LOCK"
+    
+    _save_node_meta "$port" "$nn" "hysteria2" "" "password=${pass};tls_method=selfsign;sni=${sni}"
+    
+    if $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
+        open_port_both "$port"; systemctl restart sing-box
+        if _wait_for_sb_active; then 
+            echo -e "${G}✅ Hysteria2 部署成功！${R}"
+            echo -e "${G}🔑 密码: ${pass}${R}"
+            local server_ip=$(get_my_ip); local server_ip_url="$server_ip"
+            if [[ "$server_ip" =~ : ]]; then server_ip_url="[$server_ip]"; fi
+            local link="hysteria2://$(url_encode "$pass")@${server_ip_url}:${port}?insecure=1&alpn=h3&sni=${sni}#$(url_encode "$nn")"
+            echo -e "${C}节点链接: ${link}${R}"
+            _persist_iptables; 
+        else
+            echo -e "${RED}启动失败${R}"
+            (
+                flock -x 200
+                local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
+            ) 200>"$SB_CONF_LOCK"
+            del_port_both "$port"; _del_node_meta "$port"; rm -rf "$cert_dir"
+        fi
+    else 
+        echo -e "${RED}校验失败${R}"
+        (
+            flock -x 200
+            local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
+        ) 200>"$SB_CONF_LOCK"
+        _del_node_meta "$port"; rm -rf "$cert_dir"
+    fi
+    _clean_bak; read -rs -n 1 -p ""
+}
+
+sb_add_tuic() {
+    sb_check || return
+    local common_data; common_data=$(_sb_add_common "TUIC")
+    local port=$(echo "$common_data" | cut -d'|' -f1)
+    local uuid=$(echo "$common_data" | cut -d'|' -f2)
+    local nn=$(echo "$common_data" | cut -d'|' -f3)
+    local pass=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)
+    
+    local sni
+    read -e -p "请输入SNI域名 (回车默认 www.apple.com): " sni
+    sni=$(echo "$sni" | tr -d '[:space:]')
+    sni=${sni:-"www.apple.com"}
+    
+    local cert_dir="/etc/sing-box/certs/tuic-${port}"; mkdir -p "$cert_dir"
+    openssl ecparam -genkey -name prime256v1 -out "${cert_dir}/key.pem" 2>/dev/null
+    openssl req -new -x509 -days 3650 -key "${cert_dir}/key.pem" -out "${cert_dir}/cert.pem" -subj "/CN=${sni}" 2>/dev/null
+    chmod 600 "${cert_dir}/key.pem"
+    
+    (
+        flock -x 200
+        jq --arg p "$port" --arg u "$uuid" --arg pass "$pass" --arg c "${cert_dir}/cert.pem" --arg k "${cert_dir}/key.pem" --arg s "$sni" \
+           '.inbounds += [{
+               "type": "tuic",
+               "tag": ("tuic-"+($p|tostring)),
+               "listen": "::",
+               "listen_port": ($p|tonumber),
+               "users": [{"uuid": $u, "password": $pass}],
+               "tls": {
+                   "enabled": true,
+                   "server_name": $s,
+                   "alpn": ["h3"],
+                   "certificate_path": $c,
+                   "key_path": $k
+               }
+           }]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
+    ) 200>"$SB_CONF_LOCK"
+    
+    _save_node_meta "$port" "$nn" "tuic" "" "uuid=${uuid};password=${pass};tls_method=selfsign;sni=${sni}"
+    
+    if $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
+        open_port_both "$port"; systemctl restart sing-box
+        if _wait_for_sb_active; then 
+            echo -e "${G}✅ TUIC 部署成功！${R}"
+            echo -e "${G}UUID: ${uuid}${R}"
+            echo -e "${G}密码: ${pass}${R}"
+            local server_ip=$(get_my_ip); local server_ip_url="$server_ip"
+            if [[ "$server_ip" =~ : ]]; then server_ip_url="[$server_ip]"; fi
+            local link="tuic://${uuid}:$(url_encode "$pass")@${server_ip_url}:${port}?congestion_control=bbr&alpn=h3&sni=${sni}&allow_insecure=1#$(url_encode "$nn")"
+            echo -e "${C}节点链接: ${link}${R}"
+            _persist_iptables; 
+        else
+            echo -e "${RED}启动失败${R}"
+            (
+                flock -x 200
+                local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
+            ) 200>"$SB_CONF_LOCK"
+            del_port_both "$port"; _del_node_meta "$port"; rm -rf "$cert_dir"
+        fi
+    else 
+        echo -e "${RED}校验失败${R}"
+        (
+            flock -x 200
+            local latest_bak=$(ls -t "${SB_CONF}.bak."* 2>/dev/null | head -1); [ -n "$latest_bak" ] && mv "$latest_bak" "$SB_CONF"
+        ) 200>"$SB_CONF_LOCK"
+        _del_node_meta "$port"; rm -rf "$cert_dir"
+    fi
+    _clean_bak; read -rs -n 1 -p ""
+}
+
+sb_add_vless_ws() {
+    sb_check || return
+    local common_data; common_data=$(_sb_add_common "VLESS-WS")
+    local port=$(echo "$common_data" | cut -d'|' -f1)
+    local uuid=$(echo "$common_data" | cut -d'|' -f2)
+    local nn=$(echo "$common_data" | cut -d'|' -f3)
+    
+    local ws_path="/$(openssl rand -hex 8)"; 
+    read -e -p "WS Path (回车默认随机): " wp
+    if [ -n "$wp" ]; then
+        wp=$(echo "$wp" | tr -d '\r')
+        [[ "$wp" != /* ]] && wp="/$wp"
+        ws_path="$wp"
+    fi
+
+    (
+        flock -x 200
+        jq --arg p "$port" --arg u "$uuid" --arg wp "$ws_path" \
+           '.inbounds += [{
+               "type": "vless",
+               "tag": ("vless-ws-"+($p|tostring)),
+               "listen": "::",
+               "listen_port": ($p|tonumber),
+               "users": [{"uuid": $u}],
+               "transport": {"type": "ws", "path": $wp}
+           }]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
+    ) 200>"$SB_CONF_LOCK"
+    
+    _save_node_meta "$port" "$nn" "vless-ws" "" "path=${ws_path}"
+    
+    if $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
+        open_port_both "$port"; systemctl restart sing-box
+        if _wait_for_sb_active; then 
+            echo -e "${G}✅ 成功 | Path: ${ws_path}${R}"
+            local server_ip=$(get_my_ip); local server_ip_url="$server_ip"
+            if [[ "$server_ip" =~ : ]]; then server_ip_url="[$server_ip]"; fi
+            local link="vless://${uuid}@${server_ip_url}:${port}?encryption=none&security=none&type=ws&path=$(url_encode "${ws_path:-/}")#$(url_encode "$nn")"
             echo -e "${C}节点链接: ${link}${R}"
             _persist_iptables; 
         else
@@ -1031,7 +1113,7 @@ sb_show_nodes_and_links() {
                 [ -z "$pass" ] && pass=$(echo "$obj" | jq -r '.users[0].password // empty' 2>/dev/null)
                 sni=$(echo "$ex" | sed -n 's/.*sni=\([^;]*\).*/\1/p')
                 [ -z "$sni" ] && sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null)
-                [ -z "$sni" ] && sni="www.bing.com"
+                [ -z "$sni" ] && sni="www.apple.com"
                 link="hysteria2://$(url_encode "$pass")@${server_ip_url}:${port}?insecure=1&alpn=h3&sni=${sni}#$(url_encode "$nn")" ;;
             tuic)
                 local uuid pass sni
@@ -1041,7 +1123,7 @@ sb_show_nodes_and_links() {
                 [ -z "$pass" ] && pass=$(echo "$obj" | jq -r '.users[0].password // empty' 2>/dev/null)
                 sni=$(echo "$ex" | sed -n 's/.*sni=\([^;]*\).*/\1/p')
                 [ -z "$sni" ] && sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null)
-                [ -z "$sni" ] && sni="www.bing.com"
+                [ -z "$sni" ] && sni="www.apple.com"
                 link="tuic://${uuid}:$(url_encode "$pass")@${server_ip_url}:${port}?congestion_control=bbr&alpn=h3&sni=${sni}&allow_insecure=1#$(url_encode "$nn")" ;;
         esac
         [ -n "$link" ] && echo -e "${C}${link}${R}\n"
