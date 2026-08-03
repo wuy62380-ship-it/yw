@@ -30,7 +30,6 @@ root_use() { [ "$(id -u)" -ne 0 ] && { echo -e "${RED}错误：请使用 root �
 check_env() {
     root_use
     local need_update=0
-    # 增加 shuf 和 wget 检查
     for cmd in curl wget jq openssl iptables tar python3 ip ss free modprobe ethtool shuf; do
         command -v $cmd >/dev/null 2>&1 || need_update=1
     done
@@ -242,7 +241,7 @@ xanmod_add_repo() {
 
 xanmod_detect_package() {
     local arch=$(uname -m)
-    if [ "$arch" = "aarch64" ]; then
+    if [ "$arch" = "aarch64" "; then
         apt update -y >/dev/null 2>&1
         if apt-cache policy "linux-xanmod-arm64" 2>/dev/null | grep -q 'Candidate: [0-9]'; then
             printf '%s\n' "linux-xanmod-arm64"; return 0
@@ -397,7 +396,7 @@ Kernel_optimize() {
     done
 }
 
-# ================= Sing-Box 核心 =================
+# ================= Sing-Box 核心 (甬哥模式) =================
 SB_BIN="/usr/local/bin/sing-box"
 SB_CONF="/etc/sing-box/config.json"
 META_FILE="/etc/sing-box/.nodes_meta"
@@ -481,8 +480,9 @@ sb_check() {
 sb_init_conf() { 
     if [ ! -f "$SB_CONF" ] || [ ! -s "$SB_CONF" ]; then 
         mkdir -p /etc/sing-box
-        # 生成与甬哥脚本一致的标准配置结构
-        echo '{
+        # 生成与甬哥脚本完全一致的标准配置结构
+        cat > "$SB_CONF" <<'EOF'
+{
   "log": {
     "level": "info",
     "timestamp": true
@@ -549,11 +549,12 @@ sb_init_conf() {
     "final": "proxy",
     "auto_detect_interface": true
   }
-}' > "$SB_CONF"
+}
+EOF
     elif ! jq -e . "$SB_CONF" >/dev/null 2>&1; then
         echo -e "${RED}警告：$SB_CONF 文件损坏，已自动备份至 ${SB_CONF}.corrupted${R}"
         mv "$SB_CONF" "${SB_CONF}.corrupted"
-        echo '{"log":{"level":"error"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct","auto_detect_interface":true}}' > "$SB_CONF"
+        sb_init_conf
     fi
 }
 
@@ -820,7 +821,6 @@ _get_port() {
 
 _sb_add_common() {
     local type=$1 port uuid nn
-    # 确保 shuf 命令存在
     if ! command -v shuf >/dev/null 2>&1; then
         echo -e "${RED}错误：缺少 shuf 命令，无法生成随机端口。${R}"
         return 1
@@ -889,13 +889,14 @@ sb_add_reality() {
     fi
     
     local short_id=$($SB_BIN generate rand --hex 8 2>/dev/null || echo "aabbccdd")
+    local node_tag="vless-reality-${port}"
     
     (
         flock -x 200
-        jq --arg p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" \
+        jq --arg p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" --arg tag "$node_tag" \
            '.inbounds += [{
                "type": "vless",
-               "tag": ("vless-reality-"+($p|tostring)),
+               "tag": $tag,
                "listen": "::",
                "listen_port": ($p|tonumber),
                "users": [{"uuid": $u, "flow": "xtls-rprx-vision"}],
@@ -910,7 +911,8 @@ sb_add_reality() {
                        "short_id": [$sid]
                    }
                }
-           }]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
+           }]
+           | .outbounds |= map(if .tag == "proxy" then .outbounds += [$tag] | .default = $tag else . end)' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
     ) 200>"$SB_CONF_LOCK"
     
     _save_node_meta "$port" "$nn" "vless-reality" "$pub_key" "short_id=${short_id};sni=${sni}"
@@ -965,13 +967,14 @@ sb_add_hysteria2() {
     openssl ecparam -genkey -name prime256v1 -out "${cert_dir}/key.pem" 2>/dev/null
     openssl req -new -x509 -days 3650 -key "${cert_dir}/key.pem" -out "${cert_dir}/cert.pem" -subj "/CN=${sni}" 2>/dev/null
     chmod 600 "${cert_dir}/key.pem"
+    local node_tag="hysteria2-${port}"
     
     (
         flock -x 200
-        jq --arg p "$port" --arg pass "$pass" --arg c "${cert_dir}/cert.pem" --arg k "${cert_dir}/key.pem" --arg s "$sni" \
+        jq --arg p "$port" --arg pass "$pass" --arg c "${cert_dir}/cert.pem" --arg k "${cert_dir}/key.pem" --arg s "$sni" --arg tag "$node_tag" \
            '.inbounds += [{
                "type": "hysteria2",
-               "tag": ("hysteria2-"+($p|tostring)),
+               "tag": $tag,
                "listen": "::",
                "listen_port": ($p|tonumber),
                "users": [{"password": $pass}],
@@ -983,7 +986,8 @@ sb_add_hysteria2() {
                    "key_path": $k
                },
                "ignore_client_bandwidth": false
-           }]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
+           }]
+           | .outbounds |= map(if .tag == "proxy" then .outbounds += [$tag] | .default = $tag else . end)' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
     ) 200>"$SB_CONF_LOCK"
     
     _save_node_meta "$port" "$nn" "hysteria2" "" "password=${pass};tls_method=selfsign;sni=${sni}"
@@ -1035,13 +1039,14 @@ sb_add_tuic() {
     openssl ecparam -genkey -name prime256v1 -out "${cert_dir}/key.pem" 2>/dev/null
     openssl req -new -x509 -days 3650 -key "${cert_dir}/key.pem" -out "${cert_dir}/cert.pem" -subj "/CN=${sni}" 2>/dev/null
     chmod 600 "${cert_dir}/key.pem"
+    local node_tag="tuic-${port}"
     
     (
         flock -x 200
-        jq --arg p "$port" --arg u "$uuid" --arg pass "$pass" --arg c "${cert_dir}/cert.pem" --arg k "${cert_dir}/key.pem" --arg s "$sni" \
+        jq --arg p "$port" --arg u "$uuid" --arg pass "$pass" --arg c "${cert_dir}/cert.pem" --arg k "${cert_dir}/key.pem" --arg s "$sni" --arg tag "$node_tag" \
            '.inbounds += [{
                "type": "tuic",
-               "tag": ("tuic-"+($p|tostring)),
+               "tag": $tag,
                "listen": "::",
                "listen_port": ($p|tonumber),
                "users": [{"uuid": $u, "password": $pass}],
@@ -1052,7 +1057,8 @@ sb_add_tuic() {
                    "certificate_path": $c,
                    "key_path": $k
                }
-           }]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
+           }]
+           | .outbounds |= map(if .tag == "proxy" then .outbounds += [$tag] | .default = $tag else . end)' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
     ) 200>"$SB_CONF_LOCK"
     
     _save_node_meta "$port" "$nn" "tuic" "" "uuid=${uuid};password=${pass};tls_method=selfsign;sni=${sni}"
@@ -1102,18 +1108,20 @@ sb_add_vless_ws() {
         [[ "$wp" != /* ]] && wp="/$wp"
         ws_path="$wp"
     fi
+    local node_tag="vless-ws-${port}"
 
     (
         flock -x 200
-        jq --arg p "$port" --arg u "$uuid" --arg wp "$ws_path" \
+        jq --arg p "$port" --arg u "$uuid" --arg wp "$ws_path" --arg tag "$node_tag" \
            '.inbounds += [{
                "type": "vless",
-               "tag": ("vless-ws-"+($p|tostring)),
+               "tag": $tag,
                "listen": "::",
                "listen_port": ($p|tonumber),
                "users": [{"uuid": $u}],
                "transport": {"type": "ws", "path": $wp}
-           }]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
+           }]
+           | .outbounds |= map(if .tag == "proxy" then .outbounds += [$tag] | .default = $tag else . end)' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
     ) 200>"$SB_CONF_LOCK"
     
     _save_node_meta "$port" "$nn" "vless-ws" "" "path=${ws_path}"
@@ -1247,7 +1255,8 @@ sb_del_node() {
     (
         flock -x 200
         cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
-        jq --arg t "$found_tag" 'del(.inbounds[] | select(.tag == $t))' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
+        # 删除 inbound，并从 proxy outbound 中移除该 tag
+        jq --arg t "$found_tag" 'del(.inbounds[] | select(.tag == $t)) | .outbounds |= map(if .tag == "proxy" then .outbounds |= map(select(. != $t)) | (if .default == $t then .default = "direct" else . end) else . end)' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
         
         local check_err
         if check_err=$($SB_BIN check -c "$SB_CONF" 2>&1); then
