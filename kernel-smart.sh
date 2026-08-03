@@ -241,7 +241,7 @@ xanmod_add_repo() {
 
 xanmod_detect_package() {
     local arch=$(uname -m)
-    if [ "$arch" = "aarch64" "; then
+    if [ "$arch" = "aarch64" ]; then
         apt update -y >/dev/null 2>&1
         if apt-cache policy "linux-xanmod-arm64" 2>/dev/null | grep -q 'Candidate: [0-9]'; then
             printf '%s\n' "linux-xanmod-arm64"; return 0
@@ -480,7 +480,6 @@ sb_check() {
 sb_init_conf() { 
     if [ ! -f "$SB_CONF" ] || [ ! -s "$SB_CONF" ]; then 
         mkdir -p /etc/sing-box
-        # 生成与甬哥脚本完全一致的标准配置结构
         cat > "$SB_CONF" <<'EOF'
 {
   "log": {
@@ -875,7 +874,6 @@ sb_add_reality() {
     local uuid=$(echo "$common_data" | cut -d'|' -f2)
     local nn=$(echo "$common_data" | cut -d'|' -f3)
     
-    # 甬哥极简模式：默认 www.apple.com
     local sni
     read -e -p "请输入SNI域名 (回车默认 www.apple.com): " sni
     sni=$(echo "$sni" | tr -d '[:space:]')
@@ -1255,7 +1253,6 @@ sb_del_node() {
     (
         flock -x 200
         cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
-        # 删除 inbound，并从 proxy outbound 中移除该 tag
         jq --arg t "$found_tag" 'del(.inbounds[] | select(.tag == $t)) | .outbounds |= map(if .tag == "proxy" then .outbounds |= map(select(. != $t)) | (if .default == $t then .default = "direct" else . end) else . end)' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
         
         local check_err
