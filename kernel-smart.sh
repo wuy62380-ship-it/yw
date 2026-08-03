@@ -396,7 +396,7 @@ Kernel_optimize() {
     done
 }
 
-# ================= Sing-Box 核心 (甬哥模式) =================
+# ================= Sing-Box 核心 (甬哥极简服务端模式) =================
 SB_BIN="/usr/local/bin/sing-box"
 SB_CONF="/etc/sing-box/config.json"
 META_FILE="/etc/sing-box/.nodes_meta"
@@ -480,72 +480,22 @@ sb_check() {
 sb_init_conf() { 
     if [ ! -f "$SB_CONF" ] || [ ! -s "$SB_CONF" ]; then 
         mkdir -p /etc/sing-box
+        # 纯净服务端配置，不带任何客户端路由和DNS，避免干扰
         cat > "$SB_CONF" <<'EOF'
 {
   "log": {
-    "level": "info",
+    "level": "warn",
     "timestamp": true
-  },
-  "dns": {
-    "servers": [
-      {
-        "tag": "google",
-        "address": "tls://8.8.8.8"
-      },
-      {
-        "tag": "local",
-        "address": "223.5.5.5",
-        "detour": "direct"
-      },
-      {
-        "tag": "block",
-        "address": "rcode://success"
-      }
-    ],
-    "rules": [
-      {
-        "outbound": "any",
-        "server": "local"
-      }
-    ],
-    "strategy": "ipv4_only"
   },
   "inbounds": [],
   "outbounds": [
     {
-      "type": "selector",
-      "tag": "proxy",
-      "outbounds": [
-        "direct"
-      ],
-      "default": "direct"
-    },
-    {
       "type": "direct",
       "tag": "direct"
-    },
-    {
-      "type": "block",
-      "tag": "block"
-    },
-    {
-      "type": "dns",
-      "tag": "dns-out",
-      "server": "google"
     }
   ],
   "route": {
-    "rules": [
-      {
-        "protocol": "dns",
-        "outbound": "dns-out"
-      },
-      {
-        "ip_is_private": true,
-        "outbound": "direct"
-      }
-    ],
-    "final": "proxy",
+    "final": "direct",
     "auto_detect_interface": true
   }
 }
@@ -891,6 +841,7 @@ sb_add_reality() {
     
     (
         flock -x 200
+        # 服务端只需添加 inbound，不需要修改 outbound
         jq --arg p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" --arg tag "$node_tag" \
            '.inbounds += [{
                "type": "vless",
@@ -909,8 +860,7 @@ sb_add_reality() {
                        "short_id": [$sid]
                    }
                }
-           }]
-           | .outbounds |= map(if .tag == "proxy" then .outbounds += [$tag] | .default = $tag else . end)' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
+           }]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
     ) 200>"$SB_CONF_LOCK"
     
     _save_node_meta "$port" "$nn" "vless-reality" "$pub_key" "short_id=${short_id};sni=${sni}"
@@ -984,8 +934,7 @@ sb_add_hysteria2() {
                    "key_path": $k
                },
                "ignore_client_bandwidth": false
-           }]
-           | .outbounds |= map(if .tag == "proxy" then .outbounds += [$tag] | .default = $tag else . end)' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
+           }]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
     ) 200>"$SB_CONF_LOCK"
     
     _save_node_meta "$port" "$nn" "hysteria2" "" "password=${pass};tls_method=selfsign;sni=${sni}"
@@ -1055,8 +1004,7 @@ sb_add_tuic() {
                    "certificate_path": $c,
                    "key_path": $k
                }
-           }]
-           | .outbounds |= map(if .tag == "proxy" then .outbounds += [$tag] | .default = $tag else . end)' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
+           }]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
     ) 200>"$SB_CONF_LOCK"
     
     _save_node_meta "$port" "$nn" "tuic" "" "uuid=${uuid};password=${pass};tls_method=selfsign;sni=${sni}"
@@ -1118,8 +1066,7 @@ sb_add_vless_ws() {
                "listen_port": ($p|tonumber),
                "users": [{"uuid": $u}],
                "transport": {"type": "ws", "path": $wp}
-           }]
-           | .outbounds |= map(if .tag == "proxy" then .outbounds += [$tag] | .default = $tag else . end)' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
+           }]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
     ) 200>"$SB_CONF_LOCK"
     
     _save_node_meta "$port" "$nn" "vless-ws" "" "path=${ws_path}"
@@ -1253,7 +1200,8 @@ sb_del_node() {
     (
         flock -x 200
         cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
-        jq --arg t "$found_tag" 'del(.inbounds[] | select(.tag == $t)) | .outbounds |= map(if .tag == "proxy" then .outbounds |= map(select(. != $t)) | (if .default == $t then .default = "direct" else . end) else . end)' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
+        # 服务端删除只需删除 inbound
+        jq --arg t "$found_tag" 'del(.inbounds[] | select(.tag == $t))' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
         
         local check_err
         if check_err=$($SB_BIN check -c "$SB_CONF" 2>&1); then
