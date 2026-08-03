@@ -480,7 +480,6 @@ sb_check() {
 sb_init_conf() { 
     if [ ! -f "$SB_CONF" ] || [ ! -s "$SB_CONF" ]; then 
         mkdir -p /etc/sing-box
-        # 纯净服务端配置，不带任何客户端路由和DNS，避免干扰
         cat > "$SB_CONF" <<'EOF'
 {
   "log": {
@@ -841,7 +840,6 @@ sb_add_reality() {
     
     (
         flock -x 200
-        # 服务端只需添加 inbound，不需要修改 outbound
         jq --arg p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" --arg tag "$node_tag" \
            '.inbounds += [{
                "type": "vless",
@@ -1099,6 +1097,151 @@ sb_add_vless_ws() {
     _clean_bak; read -rs -n 1 -p ""
 }
 
+# 新增功能：生成客户端配置文件 (解决 WiFi 断流)
+generate_client_config() {
+    sb_check || return
+    local server_ip=$(get_my_ip)
+    local server_ip_url="$server_ip"
+    if [[ "$server_ip" =~ : ]]; then server_ip_url="[$server_ip]"; fi
+
+    local outbounds='[]'
+    local first_node_tag=""
+    local has_node=0
+
+    while IFS= read -r b64_obj; do
+        local obj; obj=$(echo "$b64_obj" | base64 -d 2>/dev/null); [ -z "$obj" ] && continue
+        local port inb_type nn ex
+        port=$(echo "$obj" | jq -r '.listen_port // empty' 2>/dev/null); [ -z "$port" ] && continue
+        inb_type=$(echo "$obj" | jq -r '.type // empty' 2>/dev/null)
+        nn=$(_get_node_meta "$port" "name")
+        [ -z "$nn" ] && nn="${inb_type}-${port}"
+        ex=$(_get_node_meta "$port" "extra")
+        local node_tag="${inb_type}-${port}"
+        
+        if [ -z "$first_node_tag" ]; then
+            first_node_tag="$node_tag"
+            has_node=1
+        fi
+
+        case "$inb_type" in
+            vless)
+                local uuid flow sni pub_key short_id ws_path
+                uuid=$(echo "$obj" | jq -r '.users[0].uuid // empty' 2>/dev/null)
+                if echo "$obj" | jq -e '.tls.reality' >/dev/null 2>&1; then
+                    sni=$(echo "$obj" | jq -r '.tls.server_name // empty' 2>/dev/null)
+                    pub_key=$(_get_node_meta "$port" "pub_key")
+                    short_id=$(echo "$ex" | sed -n 's/.*short_id=\([^;]*\).*/\1/p')
+                    flow=$(echo "$obj" | jq -r '.users[0].flow // empty' 2>/dev/null)
+                    outbounds=$(echo "$outbounds" | jq --arg tag "$node_tag" --arg u "$uuid" --arg ip "$server_ip" --arg p "$port" --arg s "$sni" --arg pk "$pub_key" --arg sid "$short_id" --arg f "$flow" \
+                        '. += [{
+                            "type": "vless",
+                            "tag": $tag,
+                            "server": $ip,
+                            "server_port": ($p|tonumber),
+                            "uuid": $u,
+                            "flow": $f,
+                            "tls": {
+                                "enabled": true,
+                                "server_name": $s,
+                                "utls": { "enabled": true, "fingerprint": "chrome" },
+                                "reality": { "enabled": true, "public_key": $pk, "short_id": $sid }
+                            }
+                        }]')
+                else
+                    ws_path=$(echo "$ex" | sed -n 's/.*path=\([^;]*\).*/\1/p')
+                    outbounds=$(echo "$outbounds" | jq --arg tag "$node_tag" --arg u "$uuid" --arg ip "$server_ip" --arg p "$port" --arg wp "$ws_path" \
+                        '. += [{
+                            "type": "vless",
+                            "tag": $tag,
+                            "server": $ip,
+                            "server_port": ($p|tonumber),
+                            "uuid": $u,
+                            "tls": { "enabled": false },
+                            "transport": { "type": "ws", "path": $wp }
+                        }]')
+                fi ;;
+            hysteria2)
+                local pass sni
+                pass=$(echo "$ex" | sed -n 's/.*password=\([^;]*\).*/\1/p')
+                sni=$(echo "$ex" | sed -n 's/.*sni=\([^;]*\).*/\1/p')
+                outbounds=$(echo "$outbounds" | jq --arg tag "$node_tag" --arg pass "$pass" --arg ip "$server_ip" --arg p "$port" --arg s "$sni" \
+                    '. += [{
+                        "type": "hysteria2",
+                        "tag": $tag,
+                        "server": $ip,
+                        "server_port": ($p|tonumber),
+                        "password": $pass,
+                        "tls": { "enabled": true, "server_name": $s, "insecure": true }
+                    }]')
+                ;;
+            tuic)
+                local uuid pass sni
+                uuid=$(echo "$ex" | sed -n 's/.*uuid=\([^;]*\).*/\1/p')
+                pass=$(echo "$ex" | sed -n 's/.*password=\([^;]*\).*/\1/p')
+                sni=$(echo "$ex" | sed -n 's/.*sni=\([^;]*\).*/\1/p')
+                outbounds=$(echo "$outbounds" | jq --arg tag "$node_tag" --arg u "$uuid" --arg pass "$pass" --arg ip "$server_ip" --arg p "$port" --arg s "$sni" \
+                    '. += [{
+                        "type": "tuic",
+                        "tag": $tag,
+                        "server": $ip,
+                        "server_port": ($p|tonumber),
+                        "uuid": $u,
+                        "password": $pass,
+                        "tls": { "enabled": true, "server_name": $s, "insecure": true }
+                    }]')
+                ;;
+        esac
+    done < <(jq -r '.inbounds[] | @base64' "$SB_CONF" 2>/dev/null)
+
+    if [ "$has_node" -eq 0 ]; then
+        echo -e "${Y}无节点，无法生成配置${R}"
+        read -rs -n 1 -p ""
+        return
+    fi
+
+    # 生成完整客户端配置，强制 ipv4_only 和 strict_route=false
+    cat <<EOF
+{
+  "log": { "level": "info", "timestamp": true },
+  "dns": {
+    "servers": [
+      { "tag": "local", "address": "https://223.5.5.5/dns-query", "detour": "direct" },
+      { "tag": "remote", "address": "https://1.1.1.1/dns-query", "detour": "proxy" }
+    ],
+    "rules": [
+      { "outbound": "any", "server": "local" }
+    ],
+    "final": "remote",
+    "strategy": "ipv4_only"
+  },
+  "inbounds": [
+    {
+      "type": "tun",
+      "tag": "tun-in",
+      "address": ["172.19.0.1/30"],
+      "mtu": 1400,
+      "auto_route": true,
+      "strict_route": false,
+      "stack": "mixed"
+    }
+  ],
+  "outbounds": $(echo "$outbounds" | jq --arg default "$first_node_tag" '. + [{"type":"selector","tag":"proxy","outbounds":(map(.tag)|. + ["direct"]),"default":$default},{"type":"direct","tag":"direct"},{"type":"dns","tag":"dns-out"}]'),
+  "route": {
+    "rules": [
+      { "action": "sniff" },
+      { "type": "logical", "mode": "or", "rules": [{ "protocol": "dns" }, { "port": 53 }], "action": "hijack-dns" },
+      { "ip_is_private": true, "outbound": "direct" }
+    ],
+    "final": "proxy",
+    "auto_detect_interface": true
+  }
+}
+EOF
+    echo ""
+    echo -e "${G}请复制以上全部 JSON 内容，在客户端软件中选择'从剪贴板导入'或'新建配置文件'并粘贴。${R}"
+    read -rs -n 1 -p "按任意键继续..."
+}
+
 sb_show_nodes_and_links() {
     sb_check || return
     local server_ip=$(get_my_ip)
@@ -1200,7 +1343,6 @@ sb_del_node() {
     (
         flock -x 200
         cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
-        # 服务端删除只需删除 inbound
         jq --arg t "$found_tag" 'del(.inbounds[] | select(.tag == $t))' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
         
         local check_err
@@ -1293,6 +1435,8 @@ sb_menu() {
         echo -e "${H}[5] 查看节点与链接${R}"
         echo -e "${H}[6] 删除节点${R}"
         echo -e "${H}────────────────────────${R}"
+        echo -e "${G}[14] 生成客户端配置文件 (完美兼容WiFi)${R}" # 新增菜单项
+        echo -e "${H}────────────────────────${R}"
         echo -e "${H}[7] 安装 Sing-Box${R}"
         echo -e "${H}[8] 更新 Sing-Box${R}"
         echo -e "${H}[9] 卸载 Sing-Box${R}"
@@ -1310,6 +1454,7 @@ sb_menu() {
             1) clear; sb_add_reality ;; 2) clear; sb_add_hysteria2 ;;
             3) clear; sb_add_tuic ;; 4) clear; sb_add_vless_ws ;;
             5) clear; sb_show_nodes_and_links ;; 6) clear; sb_del_node ;;
+            14) clear; generate_client_config ;; # 绑定新功能
             7) clear; sb_install ;; 8) clear; sb_update ;; 9) clear; sb_uninstall ;;
             10) clear; systemctl restart sing-box && echo -e "${G}✅ 已重启${R}" || echo -e "${RED}重启失败${R}"; read -rs -n 1 -p "" ;;
             11) clear; sb_view_log ;; 12) clear; manual_open_port ;;
