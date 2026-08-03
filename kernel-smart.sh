@@ -152,102 +152,42 @@ get_current_opt_mode() {
     if [ -f /etc/sysctl.d/99-yw-optimize.conf ]; then
         grep "^# 模式:" /etc/sysctl.d/99-yw-optimize.conf 2>/dev/null | sed 's/^# 模式: //' | awk -F'|' '{print $1}' | tr -d ' \t'
     elif [ -f /etc/sysctl.d/99-tiktok-live.conf ]; then echo "TikTok直播优化"
-    elif [ -f /etc/sysctl.d/99-tiktok-udp.conf ]; then echo "TikTok UDP优化"
-    elif [ -f /etc/sysctl.d/99-bandwidth.conf ]; then echo "带宽优化"
-    elif [ -f /etc/sysctl.d/99-lowmemory-optimize.conf ]; then echo "低内存优化"
-    elif [ -f /etc/sysctl.d/99-lowprofile-optimize.conf ]; then echo "低配置服务器优化"
     elif [ -f /etc/sysctl.d/99-smart.conf ]; then echo "智能自动优化"
+    elif [ -f /etc/sysctl.d/99-lowprofile-optimize.conf ]; then echo "低配置服务器优化"
     else echo "系统默认(未优化)"
     fi
 }
 
-# ================= 内核与网络深度优化 =================
+# ================= 内核与网络深度优化 (安全稳定版) =================
 _kernel_optimize_core() {
-    local mode_name="$1" scene="${2:-stream_game}" CONF="/etc/sysctl.d/99-yw-optimize.conf"
+    local mode_name="$1" CONF="/etc/sysctl.d/99-yw-optimize.conf"
     
-    rm -f /etc/sysctl.d/99-tiktok-udp.conf /etc/sysctl.d/99-bandwidth.conf /etc/sysctl.d/99-smart.conf 2>/dev/null || true
-    local SWAPPINESS DIRTY_RATIO DIRTY_BG_RATIO OVERCOMMIT MIN_FREE_KB VFS_PRESSURE RMEM_MAX WMEM_MAX TCP_RMEM TCP_WMEM SOMAXCONN BACKLOG SYN_BACKLOG PORT_RANGE SCHED_AUTOGROUP THP NUMA FIN_TIMEOUT KEEPALIVE_TIME KEEPALIVE_INTVL KEEPALIVE_PROBES CC="bbr" QDISC="fq" UDP_RMEM_MIN=131072 TCP_NOTSENT_LOWAT=16384 TCP_FASTOPEN=3 TCP_TW_REUSE=1 TCP_MTU_PROBING=1 HIGH_EXTRA="" STREAM_EXTRA="" GAME_EXTRA="" WEB_EXTRA="" BALANCED_EXTRA="" GATEWAY_EXTRA="" STREAM_GAME_EXTRA="" TCP_SLOW_START_AFTER_IDLE=0 TCP_ECN=0 CONNTRACK_MULT=32
-    case "$scene" in
-        stream_game) SWAPPINESS=10; DIRTY_RATIO=20; DIRTY_BG_RATIO=8; OVERCOMMIT=1; VFS_PRESSURE=50; MIN_FREE_KB=131072; RMEM_MAX=33554432; WMEM_MAX=33554432; TCP_RMEM="4096 87380 33554432"; TCP_WMEM="4096 65536 33554432"; SOMAXCONN=65535; BACKLOG=500000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"; SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=10; KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5; UDP_RMEM_MIN=131072; STREAM_GAME_EXTRA=$'net.ipv4.udp_rmem_min = 131072\nnet.ipv4.udp_wmem_min = 131072\nnet.ipv4.udp_rmem_max = 16777216\nnet.ipv4.udp_wmem_max = 16777216\nnet.core.netdev_budget = 1200\nnet.core.netdev_budget_usecs = 8000\nnet.core.netdev_max_backlog = 500000\nnet.core.optmem_max = 40960\nnet.core.busy_poll = 50\nnet.core.busy_read = 50\nnet.ipv4.tcp_pacing_ss_ratio = 200\nnet.ipv4.tcp_pacing_ca_ratio = 120' ;;
-        high) SWAPPINESS=10; OVERCOMMIT=1; VFS_PRESSURE=50; DIRTY_RATIO=40; DIRTY_BG_RATIO=10; MIN_FREE_KB=131072; RMEM_MAX=134217728; WMEM_MAX=134217728; TCP_RMEM="4096 87380 67108864"; TCP_WMEM="4096 65536 67108864"; SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"; SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=10; KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5; HIGH_EXTRA=$'vm.dirty_ratio = 40\nvm.dirty_background_ratio = 10' ;;
-        web) SWAPPINESS=10; DIRTY_RATIO=20; DIRTY_BG_RATIO=10; OVERCOMMIT=1; VFS_PRESSURE=50; MIN_FREE_KB=131072; RMEM_MAX=67108864; WMEM_MAX=67108864; TCP_RMEM="4096 87380 67108864"; TCP_WMEM="4096 65536 67108864"; SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"; SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=15; KEEPALIVE_TIME=120; KEEPALIVE_INTVL=15; KEEPALIVE_PROBES=3; WEB_EXTRA=$'net.ipv4.tcp_max_tw_buckets = 524288\nnet.ipv4.tcp_max_syn_backlog = 16384' ;;
-        stream) SWAPPINESS=10; DIRTY_RATIO=15; DIRTY_BG_RATIO=5; OVERCOMMIT=1; VFS_PRESSURE=50; MIN_FREE_KB=131072; RMEM_MAX=33554432; WMEM_MAX=33554432; TCP_RMEM="4096 87380 33554432"; TCP_WMEM="4096 65536 33554432"; SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"; SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=10; KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5; UDP_RMEM_MIN=131072; STREAM_EXTRA=$'net.ipv4.udp_rmem_min = 131072\nnet.ipv4.udp_wmem_min = 131072\nnet.ipv4.udp_rmem_max = 16777216\nnet.ipv4.udp_wmem_max = 16777216\nnet.core.netdev_budget = 1200\nnet.core.netdev_max_backlog = 500000' ;;
-        game) SWAPPINESS=10; DIRTY_RATIO=10; DIRTY_BG_RATIO=5; OVERCOMMIT=1; VFS_PRESSURE=50; MIN_FREE_KB=131072; RMEM_MAX=8388608; WMEM_MAX=8388608; TCP_RMEM="4096 16384 8388608"; TCP_WMEM="4096 16384 8388608"; SOMAXCONN=65535; BACKLOG=250000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"; SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=15; KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5; UDP_RMEM_MIN=131072; GAME_EXTRA=$'net.ipv4.udp_rmem_min = 131072\nnet.ipv4.udp_wmem_min = 131072\nnet.core.optmem_max = 20480' ;;
-        gateway) SWAPPINESS=10; DIRTY_RATIO=20; DIRTY_BG_RATIO=10; OVERCOMMIT=1; VFS_PRESSURE=50; MIN_FREE_KB=32768; RMEM_MAX=8388608; WMEM_MAX=8388608; TCP_RMEM="4096 16384 8388608"; TCP_WMEM="4096 16384 8388608"; SOMAXCONN=65535; BACKLOG=100000; SYN_BACKLOG=8192; PORT_RANGE="1024 65535"; SCHED_AUTOGROUP=0; THP="never"; NUMA=0; FIN_TIMEOUT=30; KEEPALIVE_TIME=300; KEEPALIVE_INTVL=30; KEEPALIVE_PROBES=5; UDP_RMEM_MIN=16384; GATEWAY_EXTRA=$'net.core.optmem_max = 20480' ;;
-        balanced) SWAPPINESS=30; DIRTY_RATIO=20; DIRTY_BG_RATIO=10; OVERCOMMIT=0; VFS_PRESSURE=75; MIN_FREE_KB=32768; RMEM_MAX=16777216; WMEM_MAX=16777216; TCP_RMEM="4096 87380 16777216"; TCP_WMEM="4096 65536 16777216"; SOMAXCONN=4096; BACKLOG=5000; SYN_BACKLOG=4096; PORT_RANGE="32768 60999"; SCHED_AUTOGROUP=0; THP="always"; NUMA=1; FIN_TIMEOUT=30; KEEPALIVE_TIME=600; KEEPALIVE_INTVL=60; KEEPALIVE_PROBES=5; TCP_SLOW_START_AFTER_IDLE=1; BALANCED_EXTRA="vm.overcommit_memory = 0" ;;
-    esac
-    local MEM_MB_VAL=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
-    if [ "$MEM_MB_VAL" -ge 4096 ]; then MIN_FREE_KB=131072; [ "$scene" != "balanced" ] && SWAPPINESS=5
-    elif [ "$MEM_MB_VAL" -ge 2048 ]; then MIN_FREE_KB=65536; RMEM_MAX=33554432; WMEM_MAX=33554432; TCP_RMEM="4096 87380 33554432"; TCP_WMEM="4096 65536 33554432"; BACKLOG=50000; { [ "$scene" = "stream_game" ] || [ "$scene" = "stream" ]; } && STREAM_GAME_EXTRA=$'net.ipv4.udp_rmem_min = 65536\nnet.ipv4.udp_wmem_min = 65536\nnet.ipv4.udp_rmem_max = 8388608\nnet.ipv4.udp_wmem_max = 8388608\nnet.core.netdev_budget = 800\nnet.core.netdev_max_backlog = 50000\nnet.core.optmem_max = 20480'
-    elif [ "$MEM_MB_VAL" -ge 1024 ]; then MIN_FREE_KB=32768; RMEM_MAX=16777216; WMEM_MAX=16777216; TCP_RMEM="4096 87380 16777216"; TCP_WMEM="4096 65536 16777216"; BACKLOG=10000; { [ "$scene" = "stream_game" ] || [ "$scene" = "stream" ]; } && STREAM_GAME_EXTRA=$'net.ipv4.udp_rmem_min = 16384\nnet.ipv4.udp_wmem_min = 16384\nnet.ipv4.udp_rmem_max = 4194304\nnet.ipv4.udp_wmem_max = 4194304\nnet.core.netdev_budget = 600\nnet.core.netdev_max_backlog = 10000\nnet.core.optmem_max = 20480'
-    else MIN_FREE_KB=16384; OVERCOMMIT=0; SWAPPINESS=10; RMEM_MAX=4194304; WMEM_MAX=4194304; SOMAXCONN=1024; BACKLOG=1000; TCP_RMEM="4096 32768 4194304"; TCP_WMEM="4096 32768 4194304"; HIGH_EXTRA=""; WEB_EXTRA=""; STREAM_EXTRA=""; GAME_EXTRA=""; BALANCED_EXTRA=""; GATEWAY_EXTRA=""; STREAM_GAME_EXTRA=""; [ -f /sys/module/zswap/parameters/enabled ] && echo N > /sys/module/zswap/parameters/enabled 2>/dev/null; check_swap; auto_setup_zram; fi
+    rm -f /etc/sysctl.d/99-tiktok-live.conf /etc/sysctl.d/99-smart.conf /etc/sysctl.d/99-lowprofile-optimize.conf 2>/dev/null || true
     
-    local KVER=$(uname -r | cut -d '-' -f1)
-    local KVER_OK=$(echo -e "4.9\n$KVER" | sort -V | head -n 1)
-    CC="cubic"; QDISC="fq_codel"
-    if [ "$KVER_OK" = "4.9" ]; then modprobe tcp_bbr 2>/dev/null || true; sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q bbr && { CC="bbr"; QDISC="fq"; }; fi
-    
-    if [ "$scene" = "gateway" ]; then
-        modprobe nf_conntrack 2>/dev/null
-        CONNTRACK_MULT=128
-    fi
-
-    local TCP_MEM_MIN=$((MEM_MB_VAL * 64)) TCP_MEM_DEF=$((MEM_MB_VAL * 128)) TCP_MEM_MAX=$((MEM_MB_VAL * 256))
-    [ "$TCP_MEM_MIN" -lt 8192 ] && TCP_MEM_MIN=8192
-    [ "$TCP_MEM_DEF" -lt 16384 ] && TCP_MEM_DEF=16384
-    [ "$TCP_MEM_MAX" -lt 32768 ] && TCP_MEM_MAX=32768
-    if { [ "$scene" = "stream" ] || [ "$scene" = "stream_game" ]; } && [ "$MEM_MB_VAL" -ge 1024 ]; then
-        STREAM_GAME_EXTRA="${STREAM_GAME_EXTRA:-${STREAM_EXTRA}}"$'\nnet.ipv4.udp_mem = '"$((MEM_MB_VAL * 128)) $((MEM_MB_VAL * 256)) $((MEM_MB_VAL * 512))" 
-    fi
-    local TW_BUCKETS=$((SOMAXCONN * 4)) MAX_ORPHANS=$((SOMAXCONN * 2))
-    [ "$scene" = "web" ] && [ "$MEM_MB_VAL" -ge 2048 ] && TW_BUCKETS=524288; [ "$TW_BUCKETS" -gt 524288 ] && TW_BUCKETS=524288; [ "$MAX_ORPHANS" -gt 131072 ] && MAX_ORPHANS=131072
     [ -f "$CONF" ] && cp "$CONF" "${CONF}.bak.$(date +%s)"
     cat > "$CONF" << EOF
-# 模式: ${mode_name}|${scene}
+# 模式: ${mode_name}|安全稳定版
 net.ipv4.ip_forward = 1
 net.ipv6.conf.all.forwarding = 1
-net.core.default_qdisc = $QDISC
-net.ipv4.tcp_congestion_control = $CC
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
 net.ipv4.tcp_no_metrics_save = 1
-net.core.rmem_max = $RMEM_MAX
-net.core.wmem_max = $WMEM_MAX
-net.core.rmem_default = $(echo "$TCP_RMEM" | awk '{print $2}')
-net.core.wmem_default = $(echo "$TCP_WMEM" | awk '{print $2}')
-net.ipv4.tcp_rmem = $TCP_RMEM
-net.ipv4.tcp_wmem = $TCP_WMEM
-net.ipv4.udp_rmem_min = $UDP_RMEM_MIN
-net.ipv4.udp_wmem_min = $UDP_RMEM_MIN
-net.core.somaxconn = $SOMAXCONN
-net.core.netdev_max_backlog = $BACKLOG
-net.ipv4.tcp_max_syn_backlog = $SYN_BACKLOG
-net.ipv4.tcp_fastopen = $TCP_FASTOPEN
-net.ipv4.tcp_tw_reuse = $TCP_TW_REUSE
-net.ipv4.tcp_fin_timeout = $FIN_TIMEOUT
-net.ipv4.tcp_keepalive_time = $KEEPALIVE_TIME
-net.ipv4.tcp_keepalive_intvl = $KEEPALIVE_INTVL
-net.ipv4.tcp_keepalive_probes = $KEEPALIVE_PROBES
-net.ipv4.tcp_max_tw_buckets = $TW_BUCKETS
-net.ipv4.tcp_max_orphans = $MAX_ORPHANS
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_fin_timeout = 10
+net.ipv4.tcp_keepalive_time = 300
+net.ipv4.tcp_keepalive_intvl = 30
+net.ipv4.tcp_keepalive_probes = 5
 net.ipv4.tcp_syncookies = 1
 net.ipv4.tcp_synack_retries = 2
 net.ipv4.tcp_syn_retries = 3
-net.ipv4.tcp_mtu_probing = $TCP_MTU_PROBING
+net.ipv4.tcp_mtu_probing = 1
 net.ipv4.tcp_sack = 1
 net.ipv4.tcp_timestamps = 1
 net.ipv4.tcp_window_scaling = 1
-net.ipv4.tcp_notsent_lowat = $TCP_NOTSENT_LOWAT
-net.ipv4.tcp_slow_start_after_idle = $TCP_SLOW_START_AFTER_IDLE
-net.ipv4.tcp_ecn = $TCP_ECN
-net.ipv4.ip_local_port_range = $PORT_RANGE
-net.ipv4.tcp_mem = $TCP_MEM_MIN $TCP_MEM_DEF $TCP_MEM_MAX
-vm.swappiness = $SWAPPINESS
-vm.dirty_ratio = $DIRTY_RATIO
-vm.dirty_background_ratio = $DIRTY_BG_RATIO
-vm.overcommit_memory = $OVERCOMMIT
-vm.min_free_kbytes = $MIN_FREE_KB
-vm.vfs_cache_pressure = $VFS_PRESSURE
-kernel.sched_autogroup_enabled = $SCHED_AUTOGROUP
- $( [ -f /proc/sys/kernel/numa_balancing ] && echo "kernel.numa_balancing = $NUMA" || echo "# numa不支持" )
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_ecn = 0
+net.ipv4.ip_local_port_range = 1024 65535
 net.ipv4.conf.all.rp_filter = 2
 net.ipv4.conf.default.rp_filter = 2
 net.ipv4.icmp_echo_ignore_broadcasts = 1
@@ -260,194 +200,31 @@ net.ipv6.conf.all.accept_redirects = 0
 net.ipv6.conf.default.accept_redirects = 0
 fs.file-max = 1048576
 fs.nr_open = 1048576
- $( if [ -f /proc/sys/net/netfilter/nf_conntrack_max ]; then echo "net.netfilter.nf_conntrack_max = $((SOMAXCONN * CONNTRACK_MULT))"; echo "net.netfilter.nf_conntrack_tcp_timeout_established = 1800"; echo "net.netfilter.nf_conntrack_tcp_timeout_time_wait = 15"; echo "net.netfilter.nf_conntrack_tcp_timeout_close_wait = 10"; echo "net.netfilter.nf_conntrack_tcp_timeout_fin_wait = 10"; else echo "# conntrack未启用"; fi )
- $HIGH_EXTRA $WEB_EXTRA $STREAM_EXTRA $GAME_EXTRA $BALANCED_EXTRA $GATEWAY_EXTRA $STREAM_GAME_EXTRA
 EOF
     local err=$(sysctl -p "$CONF" 2>&1 | grep -cE "Invalid|No such|unknown key" 2>/dev/null) || err=0
     echo -e "${G}应用完成，跳过 ${err} 项不支持参数${R}"
     if ! grep -q "# YW-optimize" /etc/security/limits.conf 2>/dev/null; then echo -e "\n# YW-optimize\n* soft nofile 1048576\n* hard nofile 1048576" >> /etc/security/limits.conf; fi
-    ulimit -n 1048576 2>/dev/null; check_swap >/dev/null 2>&1; bbr_on
+    ulimit -n 1048576 2>/dev/null; check_swap >/dev/null 2>&1
     _optimize_nic_queues
-    echo -e "${G}${mode_name} 完成！内存: ${MEM_MB_VAL}MB | 算法: ${CC}${R}"; read -rs -n 1 -p ""
+    echo -e "${G}${mode_name} 完成！已启用 BBR+fq 安全算法。${R}"; read -rs -n 1 -p ""
 }
 
-# ================= 智能自动优化 (整合版) =================
+# ================= 智能自动优化 (安全稳定版) =================
 smart_auto_optimize() {
     clear
     echo -e "${G}╔═══════════════════════════════════════════╗${R}"
     echo -e "${G}║      🚀 智能自动优化 (推荐新手)            ║${R}"
     echo -e "${G}╚═══════════════════════════════════════════╝${R}"
     echo ""
-    echo -e "${Y}正在智能检测您的系统配置...${R}"
+    echo -e "${Y}即将应用安全稳定的网络优化参数 (BBR+fq)...${R}"
     sleep 1
     
-    local mem_mb=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
-    local cpu_cores=$(nproc 2>/dev/null || echo 1)
-    
-    local main_nic=$(ip route | grep default | awk '{print $5}' | head -1)
-    local nic_speed=1000
-    if [ -n "$main_nic" ] && command -v ethtool >/dev/null 2>&1; then
-        local detected_speed=$(ethtool "$main_nic" 2>/dev/null | grep -i speed | awk '{print $2}' | sed 's/Mb\/s//')
-        if [[ "$detected_speed" =~ ^[0-9]+$ ]]; then
-            nic_speed="$detected_speed"
-        fi
-    fi
-    
-    echo -e "  - 内存: ${Y}${mem_mb}MB${R}"
-    echo -e "  - 核心数: ${Y}${cpu_cores}${R}"
-    echo -e "  - 网络: ${Y}${nic_speed}Mbps${R}"
-    echo ""
-    echo -e "${Y}即将自动优化：${R}"
-    echo -e "  • 网络参数优化 (BBR+fq，包含TikTok直播优化)"
-    echo -e "  • 内存优化 (根据配置自动调整)"
-    echo -e "  • Swap配置"
-    echo -e "  • Sing-Box优化 (如果已安装)"
-    echo ""
-    
-    if prompt_yes_no "开始智能优化？(推荐直接回车) " "y"; then
+    if prompt_yes_no "开始优化？(推荐直接回车) " "y"; then
         echo ""
+        _kernel_optimize_core "智能自动优化"
         
-        local rmem_max wmem_max somaxconn backlog netdev_budget swappiness dirty_ratio dirty_bg_ratio
-        
-        if [ "$mem_mb" -lt 512 ]; then
-            rmem_max=8388608; wmem_max=8388608; somaxconn=2048; backlog=10000; netdev_budget=300
-            swappiness=30; dirty_ratio=5; dirty_bg_ratio=2
-        elif [ "$mem_mb" -lt 1024 ]; then
-            rmem_max=16777216; wmem_max=16777216; somaxconn=4096; backlog=25000; netdev_budget=600
-            swappiness=20; dirty_ratio=15; dirty_bg_ratio=5
-        elif [ "$mem_mb" -lt 2048 ]; then
-            rmem_max=33554432; wmem_max=33554432; somaxconn=8192; backlog=100000; netdev_budget=800
-            swappiness=30; dirty_ratio=20; dirty_bg_ratio=10
-        else
-            rmem_max=67108864; wmem_max=67108864; somaxconn=65535; backlog=500000; netdev_budget=1200
-            swappiness=10; dirty_ratio=40; dirty_bg_ratio=10
-        fi
-        
-        local qdisc="fq"
-        [ "$nic_speed" -lt 1000 ] && qdisc="fq_codel"
-        
-        echo -e "${Y}[1/5] 优化网络参数...${R}"
-        sleep 0.5
-        
-        {
-            echo $swappiness > /proc/sys/vm/swappiness 2>/dev/null || true
-            echo 1000 > /proc/sys/vm/dirty_writeback_centisecs 2>/dev/null || true
-            echo $dirty_ratio > /proc/sys/vm/dirty_ratio 2>/dev/null || true
-            echo $dirty_bg_ratio > /proc/sys/vm/dirty_background_ratio 2>/dev/null || true
-            echo $qdisc > /proc/sys/net/core/default_qdisc 2>/dev/null || true
-            echo bbr > /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null || true
-            echo 3 > /proc/sys/net/ipv4/tcp_fastopen 2>/dev/null || true
-            echo 0 > /proc/sys/net/ipv4/tcp_slow_start_after_idle 2>/dev/null || true
-            echo 0 > /proc/sys/net/ipv4/tcp_ecn 2>/dev/null || true
-            echo 300 > /proc/sys/net/ipv4/tcp_keepalive_time 2>/dev/null || true
-            echo 10 > /proc/sys/net/ipv4/tcp_keepalive_intvl 2>/dev/null || true
-            echo 3 > /proc/sys/net/ipv4/tcp_keepalive_probes 2>/dev/null || true
-            echo 3 > /proc/sys/net/ipv4/tcp_fin_timeout 2>/dev/null || true
-            echo 131072 > /proc/sys/net/core/rmem_default 2>/dev/null || true
-            echo 131072 > /proc/sys/net/core/wmem_default 2>/dev/null || true
-            echo $rmem_max > /proc/sys/net/core/rmem_max 2>/dev/null || true
-            echo $wmem_max > /proc/sys/net/core/wmem_max 2>/dev/null || true
-            echo $backlog > /proc/sys/net/core/netdev_max_backlog 2>/dev/null || true
-            echo $somaxconn > /proc/sys/net/core/somaxconn 2>/dev/null || true
-            
-            modprobe nf_conntrack 2>/dev/null || true
-            if [ -f /proc/sys/net/netfilter/nf_conntrack_max ]; then
-                echo 1048576 > /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || true
-                echo 120 > /proc/sys/net/netfilter/nf_conntrack_udp_timeout_stream 2>/dev/null || true
-                echo 30 > /proc/sys/net/netfilter/nf_conntrack_udp_timeout 2>/dev/null || true
-            fi
-            
-            [ -f /sys/kernel/mm/transparent_hugepage/enabled ] && echo never > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
-            
-            if [ -n "$main_nic" ]; then
-                tc qdisc replace dev "$main_nic" root "$qdisc" 2>/dev/null || true
-                echo 10000 > /sys/class/net/$main_nic/tx_queue_len 2>/dev/null || true
-                ethtool -K $main_nic gro on lro on tso on gso on 2>/dev/null || true
-            fi
-        } &>/dev/null
-        echo -e "${G}✅ 完成${R}"
-        
-        echo -e "${Y}[2/5] 优化Swap...${R}"
-        sleep 0.3
-        check_swap >/dev/null 2>&1
-        [ "$mem_mb" -lt 1024 ] && auto_setup_zram >/dev/null 2>&1
-        echo -e "${G}✅ 完成${R}"
-        
-        echo -e "${Y}[3/5] 优化Sing-Box (如果已安装)...${R}"
-        sleep 0.3
-        if command -v "$SB_BIN" >/dev/null 2>&1; then
-            if [ -f "$SB_CONF" ] && jq -e . "$SB_CONF" >/dev/null 2>&1; then
-                (
-                    flock -x 200
-                    jq '.log.level = "warn"' "$SB_CONF" > "$TMP_DIR/sb_auto.json" && mv "$TMP_DIR/sb_auto.json" "$SB_CONF"
-                ) 200>"$SB_CONF_LOCK"
-            fi
-            if [ -f /etc/systemd/system/sing-box.service ]; then
-                local temp_service=$(mktemp)
-                cp /etc/systemd/system/sing-box.service "$temp_service"
-                if ! grep -q "LimitNOFILE" "$temp_service"; then
-                    sed -i '/\[Service\]/a LimitNOFILE=131072\nLimitNPROC=infinity\nNice=-10\nCPUSchedulingPolicy=rr\nCPUSchedulingPriority=99' "$temp_service" 2>/dev/null || true
-                fi
-                cp "$temp_service" /etc/systemd/system/sing-box.service
-                rm -f "$temp_service"
-                systemctl daemon-reload
-            fi
-        fi
-        echo -e "${G}✅ 完成${R}"
-        
-        echo -e "${Y}[4/5] 优化网络流量优先级...${R}"
-        sleep 0.3
-        for proto in tcp udp; do
-            if command -v iptables >/dev/null 2>&1; then
-                if ! iptables -t mangle -C OUTPUT -p $proto -j TOS --set-tos Minimize-Delay 2>/dev/null; then
-                    iptables -t mangle -A OUTPUT -p $proto -j TOS --set-tos Minimize-Delay 2>/dev/null || true
-                fi
-            fi
-        done
-        echo -e "${G}✅ 完成${R}"
-        
-        echo -e "${Y}[5/5] 保存配置...${R}"
-        sleep 0.3
-        cat > /etc/sysctl.d/99-smart.conf <<EOF
-# 智能自动优化配置（整合TikTok直播和低配置优化）
-vm.swappiness=$swappiness
-vm.dirty_ratio=$dirty_ratio
-vm.dirty_background_ratio=$dirty_bg_ratio
-vm.dirty_writeback_centisecs=1000
-net.core.rmem_default=131072
-net.core.wmem_default=131072
-net.core.rmem_max=$rmem_max
-net.core.wmem_max=$wmem_max
-net.core.default_qdisc=$qdisc
-net.core.netdev_max_backlog=$backlog
-net.core.somaxconn=$somaxconn
-net.ipv4.tcp_congestion_control=bbr
-net.ipv4.tcp_fastopen=3
-net.ipv4.tcp_slow_start_after_idle=0
-net.ipv4.tcp_ecn=0
-net.ipv4.tcp_keepalive_time=300
-net.ipv4.tcp_keepalive_intvl=10
-net.ipv4.tcp_keepalive_probes=3
-net.ipv4.tcp_fin_timeout=3
-net.ipv4.ip_local_port_range=1024 65535
-net.netfilter.nf_conntrack_max=1048576
-net.netfilter.nf_conntrack_udp_timeout_stream=120
-net.netfilter.nf_conntrack_udp_timeout=30
-EOF
-        rm -f /etc/sysctl.d/99-tiktok-udp.conf /etc/sysctl.d/99-bandwidth.conf /etc/sysctl.d/99-yw-optimize.conf 2>/dev/null || true
-        sysctl -p /etc/sysctl.d/99-smart.conf >/dev/null 2>&1
-        echo -e "${G}✅ 完成${R}"
-        
-        echo ""
-        echo -e "${G}╔═══════════════════════════════════════════╗${R}"
-        echo -e "${G}║      🎉 智能优化全部完成！🎉              ║${R}"
-        echo -e "${G}╚═══════════════════════════════════════════╝${R}"
-        echo ""
-        echo -e "${Y}现在您可以：${R}"
-        echo -e "  1. 进入Sing-Box管理面板配置代理"
-        echo -e "  2. 建议重启服务器获得最佳效果"
-        echo ""
-        
+        echo -e "${G}✅ 优化完成！${R}"
+        echo -e "${Y}建议重启服务器获得最佳效果${R}"
         if prompt_yes_no "是否现在重启？" "n"; then
             reboot
         fi
@@ -603,84 +380,35 @@ show_sys_info() {
     done
     return 0
 }
-_detect_and_optimize_auto() {
-    local mem_mb=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
-    local cpu_cores=$(nproc 2>/dev/null || echo 1)
-    local main_nic=$(ip route | awk '/default/ {print $5; exit}')
-    local nic_speed=1000 scene="balanced" mode_name="智能检测"
 
-    if [ -n "$main_nic" ] && command -v ethtool >/dev/null 2>&1; then
-        local detected_speed
-        detected_speed=$(ethtool "$main_nic" 2>/dev/null | awk -F': ' '/Speed:/ {gsub(/Mb\/s/, "", $2); print $2; exit}')
-        [[ "$detected_speed" =~ ^[0-9]+$ ]] && nic_speed="$detected_speed"
-    fi
-
-    if [ "$nic_speed" -le 50 ]; then
-        scene="gateway"; mode_name="智能检测-中转网关"
-    elif [ "$mem_mb" -lt 1024 ]; then
-        scene="balanced"; mode_name="智能检测-低内存均衡"
-    elif [ "$mem_mb" -lt 2048 ]; then
-        if [ "$nic_speed" -ge 300 ] && [ "$cpu_cores" -ge 2 ]; then
-            scene="stream"; mode_name="智能检测-轻量直播"
-        else
-            scene="balanced"; mode_name="智能检测-通用均衡"
-        fi
-    elif [ "$mem_mb" -ge 4096 ] && [ "$cpu_cores" -ge 4 ] && [ "$nic_speed" -ge 800 ]; then
-        scene="stream_game"; mode_name="智能检测-直播游戏"
-    elif [ "$mem_mb" -ge 4096 ] && [ "$cpu_cores" -ge 4 ] && [ "$nic_speed" -ge 300 ]; then
-        scene="stream"; mode_name="智能检测-高配直播"
-    elif [ "$mem_mb" -ge 2048 ] && [ "$cpu_cores" -ge 2 ]; then
-        scene="stream"; mode_name="智能检测-标准直播"
-    fi
-
-    echo -e "${Y}检测结果: 内存 ${mem_mb}MB | CPU ${cpu_cores}核 | 网卡 ${nic_speed}Mbps${R}"
-    echo -e "${G}自动选择模式: ${mode_name} (${scene})${R}"
-    sleep 1
-    _kernel_optimize_core "$mode_name" "$scene"
-}
 Kernel_optimize() {
     root_use
-    local scenes=("stream_game" "high" "balanced" "web" "stream" "game" "gateway")
-    local names=("直播+游戏" "高性能" "均衡" "网站" "纯直播" "纯游戏" "中转网关")
     while true; do
         clear
-        local cur_scene=""
-        [ -f /etc/sysctl.d/99-yw-optimize.conf ] && cur_scene=$(grep "^# 模式:" /etc/sysctl.d/99-yw-optimize.conf 2>/dev/null | sed 's/^# 模式: //' | awk -F'|' '{print $2}' | tr -d ' \t')
         local current_mode=$(get_current_opt_mode)
         echo -e "${G}╔═══════════════════════════════════╗"
-        echo -e "║       Linux 内核网络优化            ║"
+        echo -e "║       Linux 内核网络优化 (安全版)   ║"
         echo -e "╚═══════════════════════════════════╝${R}"
         echo ""
         echo -e "    ${C}当前网络状态: ${Y}${current_mode}${R}"
         echo ""
-        echo -e "    ${Y}🤖 [1] 智能检测与自动优化 (推荐小白)${R}"
-        echo -e "    ${H}─────────────────────────────${R}"
-        local i=0
-        while [ $i -lt 7 ]; do
-            local num=$((i + 2)); local scene="${scenes[$i]}"; local name="${names[$i]}"
-            if [ "$cur_scene" = "$scene" ]; then echo -e "  ${Y}▶ ${G}[${num}] ${name}  ◀ 当前${R}"
-            else echo -e "    ${H}[${num}] ${name}${R}"; fi
-            i=$((i + 1))
-        done
-        echo -e "    ${H}─────────────────────────────${R}"
-        echo -e "    ${H}[9] ⚠️ 一键还原系统默认设置${R}"
-        echo -e "    ${H}[10] 远程脚本  [11] 释放缓存  [12] 验证状态  [0] 返回${R}"
+        echo -e "    ${Y}[1] 智能自动优化 (推荐，仅开 BBR)${R}"
+        echo -e "    ${H}[2] BBRv3 (XanMod内核)${R}"
+        echo -e "    ${H}[3] ⚠️ 一键还原系统默认设置${R}"
+        echo -e "    ${H}[4] 释放缓存  [5] 验证状态  [0] 返回${R}"
         echo ""
         read -e -p "  选择: " c
         case $c in
-            1) clear; _detect_and_optimize_auto ;;
-            2) clear; _kernel_optimize_core "直播+游戏" "stream_game" ;; 3) clear; _kernel_optimize_core "高性能" "high" ;;
-            4) clear; _kernel_optimize_core "均衡" "balanced" ;; 5) clear; _kernel_optimize_core "网站" "web" ;;
-            6) clear; _kernel_optimize_core "直播" "stream" ;; 7) clear; _kernel_optimize_core "游戏" "game" ;;
-            8) clear; _kernel_optimize_core "网关" "gateway" ;; 9) clear; restore_defaults ;;
-            10) curl -sS ${gh_proxy}raw.githubusercontent.com/YW/sh/refs/heads/main/network-optimize.sh | bash ;;
-            11) read -e -p "确定释放缓存？: " d; [[ "$d" =~ ^[Yy]$ ]] && sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null ;;
-            12) verify_network_status ;; 0|"") break ;;
+            1) clear; smart_auto_optimize ;;
+            2) clear; bbrv3 ;;
+            3) clear; restore_defaults ;;
+            4) read -e -p "确定释放缓存？: " d; [[ "$d" =~ ^[Yy]$ ]] && sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null ;;
+            5) verify_network_status ;; 0|"") break ;;
         esac
     done
 }
 
-# ================= 顶级大厂域名优选模块 (3x-ui 官方完整版 37域名) =================
+# ================= 顶级大厂域名优选模块 =================
 SNI_DOMAINS=(
     "google-analytics.com" "www.microsoft.com" "www.cloudflare.com" "www.amazon.com" "www.apple.com" "www.bing.com"
     "www.yahoo.com" "www.icloud.com" "www.office.com" "aws.amazon.com" "azure.microsoft.com" "dl.google.com"
@@ -779,7 +507,7 @@ select_best_domain() {
     done
 }
 
-# ================= Sing-Box 核心 (强制自愈与对齐 3x-ui 版) =================
+# ================= Sing-Box 核心 =================
 SB_BIN="/usr/local/bin/sing-box"
 SB_CONF="/etc/sing-box/config.json"
 META_FILE="/etc/sing-box/.nodes_meta"
@@ -858,31 +586,6 @@ sb_check() {
         mv "$SB_CONF" "${SB_CONF}.corrupted.$(date +%s)" 2>/dev/null
         sb_init_conf
         systemctl restart sing-box >/dev/null 2>&1
-    fi
-
-    if [ -f "$SB_CONF" ] && command -v jq >/dev/null 2>&1; then
-        (
-            flock -x 200
-            local tmp_clean="$TMP_DIR/sb_clean.json"
-            if jq 'del(.dns.cache_size) | (.inbounds[]? |= del(.packet_encoding)) | (.inbounds[]? | select(.tls.reality != null) |= del(.tls.min_version, .tls.alpn, .tls.cipher_suites))' "$SB_CONF" > "$tmp_clean" 2>/dev/null; then
-                if [ -s "$tmp_clean" ]; then
-                    if ! cmp -s "$SB_CONF" "$tmp_clean"; then
-                        if $SB_BIN check -c "$tmp_clean" >/dev/null 2>&1; then
-                            mv -f "$tmp_clean" "$SB_CONF"
-                            systemctl restart sing-box >/dev/null 2>&1
-                            echo -e "${Y}已自动深度清理不兼容字段并重启服务！${R}"
-                            sleep 1
-                        else
-                            rm -f "$tmp_clean"
-                        fi
-                    else
-                        rm -f "$tmp_clean"
-                    fi
-                else
-                    rm -f "$tmp_clean"
-                fi
-            fi
-        ) 200>"$SB_CONF_LOCK"
     fi
     return 0
 }
@@ -994,7 +697,6 @@ _get_latest_sb_version() {
     echo "$latest_ver"
 }
 
-# 修改点：增加版本选择菜单，支持已安装时切换版本
 sb_install() {
     if command -v $SB_BIN >/dev/null 2>&1; then
         local current_ver=$($SB_BIN version 2>/dev/null | head -1 | awk '{print $3}')
@@ -1045,10 +747,9 @@ sb_install() {
             rm -rf "$TMP_DIR/sb.tar.gz" "$TMP_DIR/sing-box-${latest_ver}-linux-${arch}"
             chmod +x "$tmp_bin"
             if "$tmp_bin" version >/dev/null 2>&1; then
-                # 覆盖安装前先停止服务，防止 "Text file busy"
                 systemctl stop sing-box >/dev/null 2>&1
                 mv -f "$tmp_bin" $SB_BIN
-                sb_init_conf # 如果是降级，可能需要恢复兼容的配置结构
+                sb_init_conf
                 sb_setup_service
                 systemctl start sing-box
                 echo -e "${G}✅ 安装成功 | 版本: $($SB_BIN version 2>/dev/null | head -1)${R}"
@@ -1559,50 +1260,6 @@ EOF
     read -rs -n 1 -p "按任意键继续..."
 }
 
-low_disk_optimize() {
-    clear
-    echo -e "${Y}========= 磁盘I/O优化 =========${R}"
-    echo ""
-    
-    echo -e "${Y}[1/4] 优化挂载选项...${R}"
-    if [ -f /etc/fstab ]; then
-        if ! awk '$1 !~ /^#/ && $2 == "/" && $4 ~ /(^|,)noatime(,|$)/ { found=1 } END { exit found ? 0 : 1 }' /etc/fstab 2>/dev/null; then
-            cp /etc/fstab /etc/fstab.bak.$(date +%s)
-            awk '{ if ($1 !~ /^#/ && $2 == "/" && $4 !~ /(^|,)noatime(,|$)/) $4=$4",noatime"; print }' /etc/fstab > "$TMP_DIR/fstab.root.tmp" && mv "$TMP_DIR/fstab.root.tmp" /etc/fstab
-        fi
-    fi
-    echo -e "${G}✅ 完成${R}"
-    
-    echo -e "${Y}[2/4] 设置 I/O 调度器...${R}"
-    local main_disk=$(lsblk -d -o NAME,ROTA | awk '$2==1{print $1}' | head -1)
-    if [ -n "$main_disk" ]; then
-        echo deadline > /sys/block/${main_disk}/queue/scheduler 2>/dev/null || true
-        echo 128 > /sys/block/${main_disk}/queue/nr_requests 2>/dev/null || true
-    fi
-    echo -e "${G}✅ 完成${R}"
-    
-    echo -e "${Y}[3/4] 减少磁盘日志...${R}"
-    if [ -f /etc/syslog.conf ]; then
-        sed -i 's/^\(.*\)\*\.\*/#\1\*.\*/' /etc/syslog.conf 2>/dev/null || true
-    fi
-    if [ -f /etc/systemd/journald.conf ]; then
-        sed -i 's/^#RateLimitBurst=.*/RateLimitBurst=50/' /etc/systemd/journald.conf 2>/dev/null || true
-        sed -i 's/^#RateLimitIntervalSec=.*/RateLimitIntervalSec=1m/' /etc/systemd/journald.conf 2>/dev/null || true
-    fi
-    echo -e "${G}✅ 完成${R}"
-    
-    echo -e "${Y}[4/4] 优化 tmpfs 挂载...${R}"
-    if [ -f /etc/fstab ] && grep -Eq '^[^#]+\s+/tmp\s+' /etc/fstab; then
-        cp /etc/fstab /etc/fstab.bak.$(date +%s)
-        awk '{ if ($1 !~ /^#/ && $2 == "/tmp" && $4 !~ /(^|,)size=128M(,|$)/) $4=$4",size=128M"; print }' /etc/fstab > "$TMP_DIR/fstab.tmp.tmp" && mv "$TMP_DIR/fstab.tmp.tmp" /etc/fstab
-    fi
-    echo -e "${G}✅ 完成${R}"
-    
-    echo ""
-    echo -e "${G}✅ 磁盘I/O优化完成！${R}"
-    read -rs -n 1 -p "按任意键继续..."
-}
-
 low_sb_optimize() {
     clear
     echo -e "${Y}========= Sing-Box 资源限制优化 =========${R}"
@@ -1659,10 +1316,9 @@ low_profile_optimize() {
     echo ""
     echo -e "${Y}此优化包含：${R}"
     echo -e "  ✅ 内存优化 (降低swappiness, 禁用THP)"
-    echo -e "  ✅ 磁盘I/O优化 (noatime, 优化调度器)"
     echo -e "  ✅ 系统服务优化 (禁用非必要服务)"
     echo -e "  ✅ Sing-Box 资源限制 (如果已安装)"
-    echo -e "  ✅ 内核网络参数 (适合低配置的网络优化)"
+    echo -e "  ✅ 安全网络参数 (BBR+fq)"
     echo ""
     
     if prompt_yes_no "确认执行一键优化？" "y"; then
@@ -1671,7 +1327,7 @@ low_profile_optimize() {
             echo -e "${Y}⚠ 检测到小于512MB内存，将应用最激进的优化${R}"
         fi
         
-        echo -e "${Y}[1/6] 内存优化中...${R}"
+        echo -e "${Y}[1/5] 内存优化中...${R}"
         echo 1 > /proc/sys/vm/dirty_ratio
         echo 1 > /proc/sys/vm/dirty_background_ratio
         echo 30 > /proc/sys/vm/swappiness
@@ -1679,7 +1335,7 @@ low_profile_optimize() {
             echo never > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
         fi
         
-        echo -e "${Y}[2/6] 内核参数优化中...${R}"
+        echo -e "${Y}[2/5] 内核网络参数优化中 (安全版)...${R}"
         local opt_file="/etc/sysctl.d/99-lowprofile-optimize.conf"
         cat > "$opt_file" <<EOF
 # 低配置服务器核心优化
@@ -1688,31 +1344,26 @@ vm.vfs_cache_pressure=100
 vm.dirty_ratio=1
 vm.dirty_background_ratio=1
 vm.dirty_writeback_centisecs=200
-net.core.rmem_max=1048576
-net.core.wmem_max=1048576
-net.core.rmem_default=262144
-net.core.wmem_default=262144
-net.core.somaxconn=1024
-net.core.netdev_max_backlog=1000
-net.ipv4.tcp_syncookies=1
-net.ipv4.tcp_max_syn_backlog=512
-net.ipv4.tcp_max_tw_buckets=1024
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+net.ipv4.tcp_fastopen=3
+net.ipv4.tcp_slow_start_after_idle=0
+net.ipv4.tcp_ecn=0
+net.ipv4.tcp_mtu_probing=1
+net.ipv4.ip_local_port_range=1024 65535
 EOF
         sysctl -p "$opt_file" >/dev/null 2>&1
         
-        echo -e "${Y}[3/6] 检查并配置Swap中...${R}"
+        echo -e "${Y}[3/5] 检查并配置Swap中...${R}"
         check_swap
         
-        echo -e "${Y}[4/6] 优化挂载选项中...${R}"
-        mount -o remount,noatime / 2>/dev/null || true
-        
-        echo -e "${Y}[5/6] 优化系统服务中...${R}"
+        echo -e "${Y}[4/5] 优化系统服务中...${R}"
         for service in snapd ModemManager packagekit; do
             systemctl stop $service 2>/dev/null || true
             systemctl disable $service 2>/dev/null || true
         done
         
-        echo -e "${Y}[6/6] 检查Sing-Box中...${R}"
+        echo -e "${Y}[5/5] 检查Sing-Box中...${R}"
         if command -v $SB_BIN >/dev/null 2>&1; then
             if [ -f /etc/systemd/system/sing-box.service ]; then
                 local temp_service=$(mktemp)
@@ -1734,90 +1385,45 @@ EOF
     read -rs -n 1 -p "按任意键继续..."
 }
 
-# ================= TikTok 直播专门优化 =================
+# ================= TikTok 直播专门优化 (安全稳定版) =================
 tiktok_live_optimize() {
     clear
     echo -e "${G}╔═══════════════════════════════════════════╗"
-    echo -e "║       TikTok 直播专门优化                  ║"
+    echo -e "║       TikTok 直播专门优化 (安全稳定版)     ║"
     echo -e "╚═══════════════════════════════════════════╝${R}"
     echo ""
     echo -e "${Y}针对TikTok直播的优化内容：${R}"
-    echo -e "  ✅ 低延迟网络配置 (适合实时直播)"
-    echo -e "  ✅ UDP 流媒体优化 (减少直播卡顿)"
-    echo -e "  ✅ 连接稳定性优化 (防止断流)"
-    echo -e "  ✅ 带宽优化 (提高视频质量)"
-    echo -e "  ✅ 网络队列优化 (减少延迟波动)"
+    echo -e "  ✅ 安全网络配置 (BBR+fq，兼容家用路由器)"
+    echo -e "  ✅ 快速握手 (TCP Fast Open)"
+    echo -e "  ✅ MTU 探测 (防止大包丢包)"
+    echo -e "  ✅ 关闭 ECN (防止老旧路由器丢包)"
     echo ""
     
-    if prompt_yes_no "确认执行TikTok直播一键优化？" "y"; then
-        echo -e "${Y}[1/7] 优化低延迟网络参数...${R}"
+    if prompt_yes_no "确认执行安全版优化？" "y"; then
+        echo -e "${Y}[*] 正在应用安全网络参数...${R}"
+        rm -f /etc/sysctl.d/99-yw-optimize.conf /etc/sysctl.d/99-smart.conf 2>/dev/null || true
         local opt_file="/etc/sysctl.d/99-tiktok-live.conf"
         cat > "$opt_file" <<EOF
-# TikTok 直播网络优化 - 低延迟优先
-net.core.rmem_max=67108864
-net.core.wmem_max=67108864
-net.core.rmem_default=131072
-net.core.wmem_default=131072
-net.ipv4.tcp_rmem=4096 87380 33554432
-net.ipv4.tcp_wmem=4096 65536 33554432
-net.ipv4.udp_rmem_min=131072
-net.ipv4.udp_wmem_min=131072
-net.core.netdev_max_backlog=50000
-net.core.somaxconn=65535
-net.core.default_qdisc=fq
-net.ipv4.tcp_congestion_control=bbr
-net.ipv4.tcp_fastopen=3
-net.ipv4.tcp_slow_start_after_idle=0
-net.ipv4.tcp_tw_reuse=1
-net.ipv4.tcp_timestamps=1
-net.ipv4.tcp_fin_timeout=3
-net.ipv4.tcp_keepalive_intvl=10
-net.ipv4.tcp_keepalive_probes=3
-net.ipv4.tcp_keepalive_time=300
-net.ipv4.tcp_sack=1
-net.ipv4.tcp_dsack=1
-net.ipv4.tcp_fack=1
-net.ipv4.tcp_window_scaling=1
-net.ipv4.tcp_ecn=0
-net.ipv4.tcp_mtu_probing=1
-net.ipv4.ip_local_port_range=1024 65535
-net.netfilter.nf_conntrack_max=131072
-net.netfilter.nf_conntrack_tcp_timeout_established=3600
-net.netfilter.nf_conntrack_udp_timeout=30
-net.netfilter.nf_conntrack_udp_timeout_stream=120
+# TikTok 直播网络优化 - 安全稳定版
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_ecn = 0
+net.ipv4.tcp_mtu_probing = 1
+net.ipv4.ip_local_port_range = 1024 65535
 EOF
         sysctl -p "$opt_file" >/dev/null 2>&1
-        echo -e "${G}✅ 完成${R}"
         
-        echo -e "${Y}[2/7] 优化网络队列...${R}"
+        echo -e "${Y}[*] 优化网卡队列...${R}"
         local main_nic=$(ip route | grep default | awk '{print $5}' | head -1)
         if [ -n "$main_nic" ]; then
             tc qdisc replace dev "$main_nic" root fq 2>/dev/null || true
-            echo 10000 > /sys/class/net/${main_nic}/tx_queue_len 2>/dev/null || true
             ethtool -K $main_nic gro on lro on tso on gso on 2>/dev/null || true
         fi
-        echo -e "${G}✅ 完成${R}"
         
-        echo -e "${Y}[3/7] 优化UDP流媒体...${R}"
-        if modprobe nf_conntrack 2>/dev/null; then
-            echo 1048576 > /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || true
-        fi
-        echo -e "${G}✅ 完成${R}"
-        
-        echo -e "${Y}[4/7] 调整内核实时性参数...${R}"
-        echo 10 > /proc/sys/vm/swappiness 2>/dev/null || true
-        echo 500 > /proc/sys/vm/dirty_writeback_centisecs 2>/dev/null || true
-        echo 15 > /proc/sys/vm/dirty_ratio 2>/dev/null || true
-        echo 5 > /proc/sys/vm/dirty_background_ratio 2>/dev/null || true
-        echo -e "${G}✅ 完成${R}"
-        
-        echo -e "${Y}[5/7] 优化网络服务...${R}"
-        for service in systemd-journald rsyslog; do
-            systemctl restart $service >/dev/null 2>&1 || true
-        done
-        echo -e "${G}✅ 完成${R}"
-        
-        echo -e "${Y}[6/7] 优化Sing-Box配置...${R}"
+        echo -e "${Y}[*] 优化 Sing-Box 配置...${R}"
         if command -v $SB_BIN >/dev/null 2>&1; then
             if [ -f "$SB_CONF" ] && jq -e . "$SB_CONF" >/dev/null 2>&1; then
                 jq '.log.level = "warn"' "$SB_CONF" > "$TMP_DIR/sb_tiktok.json" && mv "$TMP_DIR/sb_tiktok.json" "$SB_CONF"
@@ -1834,222 +1440,13 @@ EOF
                 systemctl restart sing-box >/dev/null 2>&1
             fi
         fi
-        echo -e "${G}✅ 完成${R}"
-        
-        echo -e "${Y}[7/7] 优化防火墙和连接...${R}"
-        for proto in tcp udp; do
-            if command -v iptables >/dev/null 2>&1; then
-                if ! iptables -t mangle -C OUTPUT -p $proto -j TOS --set-tos Minimize-Delay 2>/dev/null; then
-                    iptables -t mangle -A OUTPUT -p $proto -j TOS --set-tos Minimize-Delay 2>/dev/null || true
-                fi
-            fi
-        done
-        echo -e "${G}✅ 完成${R}"
         
         check_swap >/dev/null 2>&1
         
         echo ""
         echo -e "${G}✅ TikTok 直播优化完成！${R}"
-        echo -e "${Y}建议重启服务器以完全应用所有优化${R}"
+        echo -e "${Y}已切换至最稳定的 BBR 模式，完美兼容家用 WiFi。${R}"
     fi
-    read -rs -n 1 -p "按任意键继续..."
-}
-
-tiktok_udp_optimize() {
-    clear
-    echo -e "${Y}====== UDP 流媒体优化 ======${R}"
-    echo ""
-    echo -e "此优化针对TikTok直播的UDP传输，减少视频卡顿"
-    echo ""
-    
-    echo -e "${Y}清理旧配置文件...${R}"
-    rm -f /etc/sysctl.d/99-yw-optimize.conf /etc/sysctl.d/99-bandwidth.conf 2>/dev/null || true
-    
-    echo -e "${Y}[1/4] 增大UDP缓冲区...${R}"
-    echo 131072 > /proc/sys/net/core/rmem_default 2>/dev/null || true
-    echo 131072 > /proc/sys/net/core/wmem_default 2>/dev/null || true
-    echo 33554432 > /proc/sys/net/core/rmem_max 2>/dev/null || true
-    echo 33554432 > /proc/sys/net/core/wmem_max 2>/dev/null || true
-    echo -e "${G}✅ 完成${R}"
-    
-    echo -e "${Y}[2/4] 优化UDP连接跟踪...${R}"
-    if modprobe nf_conntrack 2>/dev/null; then
-        echo 120 > /proc/sys/net/netfilter/nf_conntrack_udp_timeout_stream 2>/dev/null || true
-        echo 30 > /proc/sys/net/netfilter/nf_conntrack_udp_timeout 2>/dev/null || true
-        echo 131072 > /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || true
-    fi
-    echo -e "${G}✅ 完成${R}"
-    
-    echo -e "${Y}[3/4] 优化网络队列...${R}"
-    local main_nic=$(ip route | grep default | awk '{print $5}' | head -1)
-    if [ -n "$main_nic" ]; then
-        tc qdisc replace dev "$main_nic" root fq 2>/dev/null || true
-        echo 10000 > /sys/class/net/${main_nic}/tx_queue_len 2>/dev/null || true
-        ethtool -K $main_nic gro on lro on tso on gso on 2>/dev/null || true
-    fi
-    echo -e "${G}✅ 完成${R}"
-    
-    echo -e "${Y}[4/4] 设置BBR+fq...${R}"
-    echo bbr > /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null || true
-    echo fq > /proc/sys/net/core/default_qdisc 2>/dev/null || true
-    
-    cat > /etc/sysctl.d/99-tiktok-udp.conf <<EOF
-# TikTok 直播 UDP 优化
-net.core.rmem_default=131072
-net.core.wmem_default=131072
-net.core.rmem_max=33554432
-net.core.wmem_max=33554432
-net.netfilter.nf_conntrack_udp_timeout_stream=120
-net.netfilter.nf_conntrack_udp_timeout=30
-net.netfilter.nf_conntrack_max=131072
-EOF
-    echo -e "${G}✅ 完成${R}"
-    
-    echo ""
-    echo -e "${G}✅ UDP 流媒体优化完成！${R}"
-    read -rs -n 1 -p "按任意键继续..."
-}
-
-tiktok_bandwidth_optimize() {
-    clear
-    echo -e "${Y}╔═══════════════════════════════════╗${R}"
-    echo -e "${Y}║      上下行带宽智能优化            ║${R}"
-    echo -e "${Y}╚═══════════════════════════════════╝${R}"
-    echo ""
-    
-    echo -e "${Y}清理旧配置文件...${R}"
-    rm -f /etc/sysctl.d/99-yw-optimize.conf /etc/sysctl.d/99-tiktok-udp.conf 2>/dev/null || true
-    
-    echo -e "${Y}请选择您的带宽场景：${R}"
-    echo ""
-    echo -e "    ${H}[1] 家用宽带 (100-500Mbps)${R}"
-    echo -e "    ${H}[2] 小带宽专线 (5-20Mbps)${R}"
-    echo -e "    ${H}[3] 千兆网络 (1Gbps+)${R}"
-    echo -e "    ${H}[4] 低延迟优先 (适合游戏/直播)${R}"
-    echo -e "    ${H}[5] 自动检测并优化${R}"
-    echo ""
-    echo -e "    ${H}[0] 返回${R}"
-    echo ""
-    read -e -p "  请选择: " bw_choice
-    
-    local rmem_max wmem_max tcp_rmem tcp_wmem netdev_budget qdisc
-    
-    case "$bw_choice" in
-        1)
-            echo -e "${Y}正在优化家用宽带场景...${R}"
-            rmem_max=33554432
-            wmem_max=33554432
-            tcp_rmem="4096 87380 33554432"
-            tcp_wmem="4096 65536 33554432"
-            netdev_budget=600
-            qdisc="fq_codel"
-            ;;
-        2)
-            echo -e "${Y}正在优化小带宽场景...${R}"
-            rmem_max=8388608
-            wmem_max=8388608
-            tcp_rmem="4096 16384 8388608"
-            tcp_wmem="4096 16384 8388608"
-            netdev_budget=200
-            qdisc="fq_codel"
-            ;;
-        3)
-            echo -e "${Y}正在优化千兆网络...${R}"
-            rmem_max=134217728
-            wmem_max=134217728
-            tcp_rmem="4096 87380 134217728"
-            tcp_wmem="4096 65536 134217728"
-            netdev_budget=1200
-            qdisc="fq"
-            ;;
-        4)
-            echo -e "${Y}正在优化低延迟场景...${R}"
-            rmem_max=16777216
-            wmem_max=16777216
-            tcp_rmem="4096 16384 16777216"
-            tcp_wmem="4096 16384 16777216"
-            netdev_budget=300
-            qdisc="fq"
-            ;;
-        5)
-            echo -e "${Y}正在自动检测网络...${R}"
-            local main_nic=$(ip route | grep default | awk '{print $5}' | head -1)
-            local nic_speed=100
-            if [ -n "$main_nic" ] && command -v ethtool >/dev/null 2>&1; then
-                local detected_speed=$(ethtool "$main_nic" 2>/dev/null | grep -i speed | awk '{print $2}' | sed 's/Mb\/s//')
-                if [[ "$detected_speed" =~ ^[0-9]+$ ]]; then
-                    nic_speed="$detected_speed"
-                fi
-            fi
-            
-            if [ "$nic_speed" -lt 100 ]; then
-                rmem_max=8388608
-                wmem_max=8388608
-                tcp_rmem="4096 16384 8388608"
-                tcp_wmem="4096 16384 8388608"
-                netdev_budget=200
-                qdisc="fq_codel"
-            elif [ "$nic_speed" -lt 1000 ]; then
-                rmem_max=33554432
-                wmem_max=33554432
-                tcp_rmem="4096 87380 33554432"
-                tcp_wmem="4096 65536 33554432"
-                netdev_budget=600
-                qdisc="fq_codel"
-            else
-                rmem_max=134217728
-                wmem_max=134217728
-                tcp_rmem="4096 87380 134217728"
-                tcp_wmem="4096 65536 134217728"
-                netdev_budget=1200
-                qdisc="fq"
-            fi
-            echo -e "  检测到网络速度: ${nic_speed}Mbps"
-            ;;
-        0)
-            return
-            ;;
-        *)
-            echo -e "${RED}无效选择${R}"
-            sleep 1
-            return
-            ;;
-    esac
-    
-    echo -e "${Y}正在应用优化...${R}"
-    
-    echo "$qdisc" > /proc/sys/net/core/default_qdisc 2>/dev/null || true
-    echo "$rmem_max" > /proc/sys/net/core/rmem_max 2>/dev/null || true
-    echo "$wmem_max" > /proc/sys/net/core/wmem_max 2>/dev/null || true
-    echo "$((rmem_max/4))" > /proc/sys/net/core/rmem_default 2>/dev/null || true
-    echo "$((wmem_max/4))" > /proc/sys/net/core/wmem_default 2>/dev/null || true
-    echo "$netdev_budget" > /proc/sys/net/core/netdev_budget 2>/dev/null || true
-    
-    cat > /etc/sysctl.d/99-bandwidth.conf << EOF
-# 带宽优化配置
-net.core.default_qdisc = $qdisc
-net.core.rmem_max = $rmem_max
-net.core.wmem_max = $wmem_max
-net.core.rmem_default = $((rmem_max/4))
-net.core.wmem_default = $((wmem_max/4))
-net.ipv4.tcp_rmem = $tcp_rmem
-net.ipv4.tcp_wmem = $tcp_wmem
-net.core.netdev_budget = $netdev_budget
-EOF
-    sysctl -p /etc/sysctl.d/99-bandwidth.conf >/dev/null 2>&1
-    
-    local main_nic=$(ip route | grep default | awk '{print $5}' | head -1)
-    if [ -n "$main_nic" ]; then
-        ethtool -K $main_nic gro on lro on tso on gso on 2>/dev/null || true
-    fi
-    
-    echo ""
-    echo -e "${G}✅ 带宽优化完成！${R}"
-    echo -e "${Y}已应用配置：${R}"
-    echo -e "  - 队列调度: $qdisc"
-    echo -e "  - 缓冲区大小: $((rmem_max/1024/1024))MB"
-    echo -e "  - 网络预算: $netdev_budget"
-    echo ""
     read -rs -n 1 -p "按任意键继续..."
 }
 
@@ -2058,46 +1455,20 @@ tiktok_live_menu() {
         clear
         local current_mode=$(get_current_opt_mode)
         echo -e "${G}╔═══════════════════════════════════════════╗"
-        echo -e "║       TikTok 直播优化菜单                  ║"
+        echo -e "║       TikTok 直播优化菜单 (安全版)         ║"
         echo -e "╚═══════════════════════════════════════════╝${R}"
         echo ""
         echo -e "    ${C}当前网络状态: ${Y}${current_mode}${R}"
         echo ""
-        echo -e "    ${Y}[1] TikTok 直播一键优化${R}"
-        echo -e "    ${H}[2] 仅UDP流媒体优化${R}"
-        echo -e "    ${H}[3] 网络低延迟配置${R}"
-        echo -e "    ${H}[4] 连接稳定性优化${R}"
-        echo -e "    ${H}[5] 上下行带宽智能优化${R}"
-        echo -e "    ${H}[6] ⚠️ 一键还原系统默认设置${R}"
+        echo -e "    ${Y}[1] TikTok 直播一键优化 (推荐)${R}"
+        echo -e "    ${H}[2] ⚠️ 一键还原系统默认设置${R}"
         echo ""
         echo -e "    ${H}[0] 返回优化中心${R}"
         echo ""
         read -e -p "  请选择: " c
         case "$c" in
             1) clear; tiktok_live_optimize ;;
-            2) clear; tiktok_udp_optimize ;;
-            3) 
-                clear
-                echo -e "${Y}正在优化网络低延迟...${R}"
-                echo fq > /proc/sys/net/core/default_qdisc 2>/dev/null
-                echo bbr > /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null
-                echo 3 > /proc/sys/net/ipv4/tcp_fastopen 2>/dev/null
-                echo 0 > /proc/sys/net/ipv4/tcp_slow_start_after_idle 2>/dev/null
-                echo -e "${G}✅ 低延迟网络优化完成！${R}"
-                read -rs -n 1 -p "按任意键继续..."
-                ;;
-            4)
-                clear
-                echo -e "${Y}正在优化连接稳定性...${R}"
-                echo 300 > /proc/sys/net/ipv4/tcp_keepalive_time 2>/dev/null
-                echo 10 > /proc/sys/net/ipv4/tcp_keepalive_intvl 2>/dev/null
-                echo 3 > /proc/sys/net/ipv4/tcp_keepalive_probes 2>/dev/null
-                echo 3 > /proc/sys/net/ipv4/tcp_fin_timeout 2>/dev/null
-                echo -e "${G}✅ 连接稳定性优化完成！${R}"
-                read -rs -n 1 -p "按任意键继续..."
-                ;;
-            5) clear; tiktok_bandwidth_optimize ;;
-            6) clear; restore_defaults ;;
+            2) clear; restore_defaults ;;
             0|"") break ;;
             *) echo -e "${RED}无效选择${R}"; sleep 1 ;;
         esac
@@ -2123,9 +1494,8 @@ low_profile_menu() {
         echo ""
         echo -e "    ${Y}[1] 一键低配置服务器优化${R}"
         echo -e "    ${H}[2] 仅内存优化${R}"
-        echo -e "    ${H}[3] 仅磁盘I/O优化${R}"
-        echo -e "    ${H}[4] Sing-Box 资源限制${R}"
-        echo -e "    ${H}[5] ⚠️ 一键还原系统默认设置${R}"
+        echo -e "    ${H}[3] Sing-Box 资源限制${R}"
+        echo -e "    ${H}[4] ⚠️ 一键还原系统默认设置${R}"
         echo ""
         echo -e "    ${H}[0] 返回优化中心${R}"
         echo ""
@@ -2133,9 +1503,8 @@ low_profile_menu() {
         case "$c" in
             1) clear; low_profile_optimize ;;
             2) clear; low_memory_optimize ;;
-            3) clear; low_disk_optimize ;;
-            4) clear; low_sb_optimize ;;
-            5) clear; restore_defaults ;;
+            3) clear; low_sb_optimize ;;
+            4) clear; restore_defaults ;;
             0|"") break ;;
             *) echo -e "${RED}无效选择${R}"; sleep 1 ;;
         esac
@@ -2154,18 +1523,17 @@ prompt_yes_no() {
 realm_network_optimize() {
     clear
     echo -e "${G}╔═══════════════════════════════════════════╗"
-    echo -e "║       🔄 Realm 中转机网络优化               ║"
+    echo -e "║       🔄 Realm 中转机网络优化 (安全版)      ║"
     echo -e "╚═══════════════════════════════════════════╝${R}"
     echo ""
     echo -e "${Y}此优化专为 Realm 中转机设计：${R}"
     echo -e "  ✅ 开启 IPv4/IPv6 转发"
-    echo -e "  ✅ 优化 Conntrack 表 (防止高并发丢包)"
-    echo -e "  ✅ 优化网络队列与 BBR 算法"
-    echo -e "  ✅ 调整缓冲区适配大流量转发"
+    echo -e "  ✅ 安全网络参数 (BBR+fq)"
+    echo -e "  ✅ 合理 Conntrack 表 (防高并发丢包)"
     echo ""
     
     if prompt_yes_no "开始优化中转机网络？" "y"; then
-        _kernel_optimize_core "Realm中转网关" "gateway"
+        _kernel_optimize_core "Realm中转网关"
         
         echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null
         echo 1 > /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null
@@ -2184,14 +1552,14 @@ optimization_center_menu() {
     while true; do
         clear
         echo -e "${G}╔═══════════════════════════════════════════╗"
-        echo -e "║           🚀 优化中心                        ║"
+        echo -e "║           🚀 优化中心 (安全稳定版)          ║"
         echo -e "╚═══════════════════════════════════════════╝${R}"
         echo ""
         echo -e "    ${Y}⚠️  提示: 选下面其中一个即可，重复优化会互相覆盖${R}"
         echo ""
         echo -e "    ${C}【 落地机优化 】${R}"
         echo -e "    ${G}[1] 智能自动优化 (推荐，适合99%用户)${R}"
-        echo -e "        自动检测系统 + 网络优化 + 内存优化 + TikTok优化"
+        echo -e "        自动检测系统 + 安全网络优化 (BBR+fq)"
         echo -e "    ${H}[2] Linux内核网络优化${R}"
         echo -e "    ${H}[3] BBRv3 (XanMod内核)${R}"
         echo -e "    ${H}[4] TikTok直播优化${R}"
