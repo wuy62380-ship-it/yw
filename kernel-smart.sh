@@ -338,6 +338,7 @@ smart_auto_optimize() {
             echo bbr > /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null || true
             echo 3 > /proc/sys/net/ipv4/tcp_fastopen 2>/dev/null || true
             echo 0 > /proc/sys/net/ipv4/tcp_slow_start_after_idle 2>/dev/null || true
+            echo 0 > /proc/sys/net/ipv4/tcp_ecn 2>/dev/null || true
             echo 300 > /proc/sys/net/ipv4/tcp_keepalive_time 2>/dev/null || true
             echo 10 > /proc/sys/net/ipv4/tcp_keepalive_intvl 2>/dev/null || true
             echo 3 > /proc/sys/net/ipv4/tcp_keepalive_probes 2>/dev/null || true
@@ -423,6 +424,7 @@ net.core.somaxconn=$somaxconn
 net.ipv4.tcp_congestion_control=bbr
 net.ipv4.tcp_fastopen=3
 net.ipv4.tcp_slow_start_after_idle=0
+net.ipv4.tcp_ecn=0
 net.ipv4.tcp_keepalive_time=300
 net.ipv4.tcp_keepalive_intvl=10
 net.ipv4.tcp_keepalive_probes=3
@@ -1776,7 +1778,7 @@ net.ipv4.tcp_sack=1
 net.ipv4.tcp_dsack=1
 net.ipv4.tcp_fack=1
 net.ipv4.tcp_window_scaling=1
-net.ipv4.tcp_ecn=2
+net.ipv4.tcp_ecn=0
 net.ipv4.tcp_mtu_probing=1
 net.ipv4.ip_local_port_range=1024 65535
 net.netfilter.nf_conntrack_max=131072
