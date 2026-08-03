@@ -18,11 +18,9 @@ trap 'rm -rf "$TMP_DIR" 2>/dev/null; exit 143' TERM
 : "${gl_bai:=\033[0m}" "${gl_lv:=\033[32m}" "${gl_huang:=\033[33m}" "${gl_hui:=\033[90m}" "${gl_red:=\033[31m}" "${gl_kjlan:=\033[36m}" "${gh_proxy:=https://}"
 R="${gl_bai}"; G="${gl_lv}"; Y="${gl_huang}"; H="${gl_hui}"; RED="${gl_red}"; C="${gl_kjlan}"
 
-# 配置文件锁
 SB_CONF_LOCK="/var/lock/sing-box-config.lock"
 mkdir -p /var/lock 2>/dev/null
 
-# 调试模式
 DEBUG=${DEBUG:-0}
 log_debug() { [ "$DEBUG" = "1" ] && echo -e "${H}[DEBUG] $1${R}" >&2; }
 
@@ -798,7 +796,8 @@ get_my_ip() {
         local response=$(curl -s -w "\n%{http_code}" --max-time 3 "${ip_address}" 2>/dev/null)
         local http_code=$(echo "$response" | tail -n1)
         local ip_result=$(echo "$response" | head -n-1 | tr -d '[:space:]"')
-        if [[ "${http_code}" == "200" && "${ip_result" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        # 修复点：确保变量和引号正确闭合
+        if [[ "${http_code}" == "200" && "${ip_result}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             server_ip="${ip_result}"
             break
         fi
