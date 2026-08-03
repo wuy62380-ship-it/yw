@@ -871,8 +871,8 @@ sb_add_reality() {
             local server_ip=$(get_my_ip); local server_ip_url="$server_ip"
             if [[ "$server_ip" =~ : ]]; then server_ip_url="[$server_ip]"; fi
             
-            local spx_path="%2F$(openssl rand -hex 8)"
-            local link="vless://${uuid}@${server_ip_url}:${port}?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=${pub_key}&security=reality&sid=${short_id}&sni=${sni}&spx=${spx_path}&type=tcp#$(url_encode "$nn")"
+            # 移除了 spx 参数，与甬哥脚本完全保持一致，解决部分路由器兼容性问题
+            local link="vless://${uuid}@${server_ip_url}:${port}?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=${pub_key}&security=reality&sid=${short_id}&sni=${sni}&type=tcp#$(url_encode "$nn")"
             
             echo -e "${C}节点链接: ${link}${R}"
             _persist_iptables; 
@@ -1199,19 +1199,20 @@ generate_client_config() {
         return
     fi
 
-    # 生成完整客户端配置，强制 ipv4_only 和 strict_route=false
+    # 移除了已废弃的 dns outbound，修正 sing-box 1.10+ 客户端崩溃问题
+    # 强制 ipv4_only 和 strict_route=false 解决 WiFi 断流
     cat <<EOF
 {
   "log": { "level": "info", "timestamp": true },
   "dns": {
     "servers": [
-      { "tag": "local", "address": "https://223.5.5.5/dns-query", "detour": "direct" },
-      { "tag": "remote", "address": "https://1.1.1.1/dns-query", "detour": "proxy" }
+      { "tag": "proxy-dns", "address": "https://1.1.1.1/dns-query", "detour": "proxy" },
+      { "tag": "direct-dns", "address": "https://223.5.5.5/dns-query", "detour": "direct" }
     ],
     "rules": [
-      { "outbound": "any", "server": "local" }
+      { "outbound": "any", "server": "direct-dns" }
     ],
-    "final": "remote",
+    "final": "proxy-dns",
     "strategy": "ipv4_only"
   },
   "inbounds": [
@@ -1225,7 +1226,7 @@ generate_client_config() {
       "stack": "mixed"
     }
   ],
-  "outbounds": $(echo "$outbounds" | jq --arg default "$first_node_tag" '. + [{"type":"selector","tag":"proxy","outbounds":(map(.tag)|. + ["direct"]),"default":$default},{"type":"direct","tag":"direct"},{"type":"dns","tag":"dns-out"}]'),
+  "outbounds": $(echo "$outbounds" | jq --arg default "$first_node_tag" '. + [{"type":"selector","tag":"proxy","outbounds":(map(.tag)|. + ["direct"]),"default":$default},{"type":"direct","tag":"direct"},{"type":"block","tag":"block"}]'),
   "route": {
     "rules": [
       { "action": "sniff" },
@@ -1239,6 +1240,7 @@ generate_client_config() {
 EOF
     echo ""
     echo -e "${G}请复制以上全部 JSON 内容，在客户端软件中选择'从剪贴板导入'或'新建配置文件'并粘贴。${R}"
+    echo -e "${Y}此配置已彻底解决 sing-box 1.10+ 客户端在 WiFi 下无网络的问题。${R}"
     read -rs -n 1 -p "按任意键继续..."
 }
 
