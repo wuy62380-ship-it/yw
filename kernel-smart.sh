@@ -30,16 +30,25 @@ root_use() { [ "$(id -u)" -ne 0 ] && { echo -e "${RED}错误：请使用 root �
 check_env() {
     root_use
     local need_update=0
-    for cmd in curl jq openssl iptables wget tar python3 ip ss free modprobe ethtool; do
+    # 增加 shuf 和 wget 检查
+    for cmd in curl wget jq openssl iptables tar python3 ip ss free modprobe ethtool shuf; do
         command -v $cmd >/dev/null 2>&1 || need_update=1
     done
     if [ "$need_update" -eq 1 ]; then
         echo -e "${Y}正在准备基础环境...${R}"
         export DEBIAN_FRONTEND=noninteractive
-        apt-get update -y >/dev/null 2>&1
-        apt-get install -y curl jq openssl iptables wget tar python3 ca-certificates iproute2 procps kmod ethtool >/dev/null 2>&1
-        if ! command -v jq >/dev/null 2>&1; then
-            echo -e "${RED}❌ 核心依赖 jq 安装失败，请检查网络或 apt 源！${R}"
+        if command -v apt-get >/dev/null 2>&1; then
+            apt-get update -y >/dev/null 2>&1
+            apt-get install -y curl wget jq openssl iptables tar python3 ca-certificates iproute2 procps kmod ethtool coreutils >/dev/null 2>&1
+        elif command -v yum >/dev/null 2>&1; then
+            yum update -y >/dev/null 2>&1
+            yum install -y curl wget jq openssl iptables tar python3 ca-certificates iproute procps-ng kmod ethtool coreutils >/dev/null 2>&1
+        elif command -v apk >/dev/null 2>&1; then
+            apk update >/dev/null 2>&1
+            apk add curl wget jq openssl iptables tar python3 ca-certificates iproute2 procps kmod ethtool coreutils >/dev/null 2>&1
+        fi
+        if ! command -v jq >/dev/null 2>&1 || ! command -v shuf >/dev/null 2>&1; then
+            echo -e "${RED}❌ 核心依赖安装失败，请检查网络或包管理器！${R}"
             exit 1
         fi
         echo -e "${G}✅ 基础环境准备完毕！${R}"
@@ -472,7 +481,75 @@ sb_check() {
 sb_init_conf() { 
     if [ ! -f "$SB_CONF" ] || [ ! -s "$SB_CONF" ]; then 
         mkdir -p /etc/sing-box
-        echo '{"log":{"level":"error"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct","auto_detect_interface":true}}' > "$SB_CONF"
+        # 生成与甬哥脚本一致的标准配置结构
+        echo '{
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
+  "dns": {
+    "servers": [
+      {
+        "tag": "google",
+        "address": "tls://8.8.8.8"
+      },
+      {
+        "tag": "local",
+        "address": "223.5.5.5",
+        "detour": "direct"
+      },
+      {
+        "tag": "block",
+        "address": "rcode://success"
+      }
+    ],
+    "rules": [
+      {
+        "outbound": "any",
+        "server": "local"
+      }
+    ],
+    "strategy": "ipv4_only"
+  },
+  "inbounds": [],
+  "outbounds": [
+    {
+      "type": "selector",
+      "tag": "proxy",
+      "outbounds": [
+        "direct"
+      ],
+      "default": "direct"
+    },
+    {
+      "type": "direct",
+      "tag": "direct"
+    },
+    {
+      "type": "block",
+      "tag": "block"
+    },
+    {
+      "type": "dns",
+      "tag": "dns-out",
+      "server": "google"
+    }
+  ],
+  "route": {
+    "rules": [
+      {
+        "protocol": "dns",
+        "outbound": "dns-out"
+      },
+      {
+        "ip_is_private": true,
+        "outbound": "direct"
+      }
+    ],
+    "final": "proxy",
+    "auto_detect_interface": true
+  }
+}' > "$SB_CONF"
     elif ! jq -e . "$SB_CONF" >/dev/null 2>&1; then
         echo -e "${RED}警告：$SB_CONF 文件损坏，已自动备份至 ${SB_CONF}.corrupted${R}"
         mv "$SB_CONF" "${SB_CONF}.corrupted"
@@ -743,6 +820,11 @@ _get_port() {
 
 _sb_add_common() {
     local type=$1 port uuid nn
+    # 确保 shuf 命令存在
+    if ! command -v shuf >/dev/null 2>&1; then
+        echo -e "${RED}错误：缺少 shuf 命令，无法生成随机端口。${R}"
+        return 1
+    fi
     port=$(_get_port $(shuf -i 10000-65535 -n 1))
     port=$(echo "$port" | tr -d '[:space:]')
     uuid=$($SB_BIN generate uuid 2>/dev/null)
@@ -788,6 +870,7 @@ sb_add_reality() {
     force_sync_time
     
     local common_data; common_data=$(_sb_add_common "VLESS-Reality")
+    [ -z "$common_data" ] && return
     local port=$(echo "$common_data" | cut -d'|' -f1)
     local uuid=$(echo "$common_data" | cut -d'|' -f2)
     local nn=$(echo "$common_data" | cut -d'|' -f3)
@@ -867,6 +950,7 @@ sb_add_reality() {
 sb_add_hysteria2() {
     sb_check || return
     local common_data; common_data=$(_sb_add_common "Hysteria2")
+    [ -z "$common_data" ] && return
     local port=$(echo "$common_data" | cut -d'|' -f1)
     local uuid=$(echo "$common_data" | cut -d'|' -f2)
     local nn=$(echo "$common_data" | cut -d'|' -f3)
@@ -936,6 +1020,7 @@ sb_add_hysteria2() {
 sb_add_tuic() {
     sb_check || return
     local common_data; common_data=$(_sb_add_common "TUIC")
+    [ -z "$common_data" ] && return
     local port=$(echo "$common_data" | cut -d'|' -f1)
     local uuid=$(echo "$common_data" | cut -d'|' -f2)
     local nn=$(echo "$common_data" | cut -d'|' -f3)
@@ -1005,6 +1090,7 @@ sb_add_tuic() {
 sb_add_vless_ws() {
     sb_check || return
     local common_data; common_data=$(_sb_add_common "VLESS-WS")
+    [ -z "$common_data" ] && return
     local port=$(echo "$common_data" | cut -d'|' -f1)
     local uuid=$(echo "$common_data" | cut -d'|' -f2)
     local nn=$(echo "$common_data" | cut -d'|' -f3)
