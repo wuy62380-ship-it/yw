@@ -118,7 +118,7 @@ change_swap_size() {
     read -e -p "选择: " c; local s=""
     case $c in 1) s=1024;; 2) s=2048;; 3) s=4096;; 4) s=6144;; 5) read -e -p "大小(MB): " s; [[ ! "$s" =~ ^[0-9]+$ ]] && return;; 6) swapoff "$swap_file" 2>/dev/null; rm -f "$swap_file"; sed -i '\#^/swapfile[[:space:]]\+#d' /etc/fstab; return;; 0|"") return;; esac
     [ -z "$s" ] && return
-    swapoff "$swap_file" 2>/dev/null; dd if=/dev/zero of="$swapfile" bs=1M count=$s 2>/dev/null; chmod 600 "$swap_file"
+    swapoff "$swap_file" 2>/dev/null; dd if=/dev/zero of="$swap_file" bs=1M count=$s 2>/dev/null; chmod 600 "$swap_file"
     mkswap "$swap_file" >/dev/null 2>&1; swapon "$swap_file" >/dev/null 2>&1
     grep -q "/swapfile" /etc/fstab 2>/dev/null || echo "/swapfile none swap sw 0 0" >> /etc/fstab
     echo -e "${G}✅ 完成${R}"; read -rs -n 1 -p ""
@@ -992,9 +992,17 @@ _get_latest_sb_version() {
     echo "$latest_ver"
 }
 
-# 修改点：增加版本选择菜单
+# 修改点：增加版本选择菜单，支持已安装时切换版本
 sb_install() {
-    if command -v $SB_BIN >/dev/null 2>&1; then echo -e "${Y}Sing-Box 已安装！${R}"; read -rs -n 1 -p ""; return; fi
+    if command -v $SB_BIN >/dev/null 2>&1; then
+        local current_ver=$($SB_BIN version 2>/dev/null | head -1 | awk '{print $3}')
+        echo -e "${Y}Sing-Box 已安装 (当前版本: ${current_ver})！${R}"
+        read -e -p "是否要切换/覆盖到其他版本？: " switch_yn
+        if [[ ! "$switch_yn" =~ ^[Yy]$ ]]; then
+            return
+        fi
+    fi
+
     local arch=$(uname -m); case "$arch" in x86_64) arch="amd64";; aarch64) arch="arm64";; *) echo -e "${RED}❌ 不支持 ${arch}${R}"; return 1;; esac
     
     clear
@@ -1035,8 +1043,10 @@ sb_install() {
             rm -rf "$TMP_DIR/sb.tar.gz" "$TMP_DIR/sing-box-${latest_ver}-linux-${arch}"
             chmod +x "$tmp_bin"
             if "$tmp_bin" version >/dev/null 2>&1; then
+                # 覆盖安装前先停止服务，防止 "Text file busy"
+                systemctl stop sing-box >/dev/null 2>&1
                 mv -f "$tmp_bin" $SB_BIN
-                sb_init_conf
+                sb_init_conf # 如果是降级，可能需要恢复兼容的配置结构
                 sb_setup_service
                 systemctl start sing-box
                 echo -e "${G}✅ 安装成功 | 版本: $($SB_BIN version 2>/dev/null | head -1)${R}"
@@ -1793,7 +1803,7 @@ EOF
         echo -e "${G}✅ 完成${R}"
         
         echo -e "${Y}[4/7] 调整内核实时性参数...${R}"
-        echo 10 > /proc/sys/vm.swappiness 2>/dev/null || true
+        echo 10 > /proc/sys/vm/swappiness 2>/dev/null || true
         echo 500 > /proc/sys/vm/dirty_writeback_centisecs 2>/dev/null || true
         echo 15 > /proc/sys/vm/dirty_ratio 2>/dev/null || true
         echo 5 > /proc/sys/vm/dirty_background_ratio 2>/dev/null || true
