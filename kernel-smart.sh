@@ -118,7 +118,7 @@ change_swap_size() {
     read -e -p "选择: " c; local s=""
     case $c in 1) s=1024;; 2) s=2048;; 3) s=4096;; 4) s=6144;; 5) read -e -p "大小(MB): " s; [[ ! "$s" =~ ^[0-9]+$ ]] && return;; 6) swapoff "$swap_file" 2>/dev/null; rm -f "$swap_file"; sed -i '\#^/swapfile[[:space:]]\+#d' /etc/fstab; return;; 0|"") return;; esac
     [ -z "$s" ] && return
-    swapoff "$swap_file" 2>/dev/null; dd if=/dev/zero of="$swap_file" bs=1M count=$s 2>/dev/null; chmod 600 "$swap_file"
+    swapoff "$swap_file" 2>/dev/null; dd if=/dev/zero of="$swapfile" bs=1M count=$s 2>/dev/null; chmod 600 "$swap_file"
     mkswap "$swap_file" >/dev/null 2>&1; swapon "$swap_file" >/dev/null 2>&1
     grep -q "/swapfile" /etc/fstab 2>/dev/null || echo "/swapfile none swap sw 0 0" >> /etc/fstab
     echo -e "${G}✅ 完成${R}"; read -rs -n 1 -p ""
@@ -796,7 +796,6 @@ get_my_ip() {
         local response=$(curl -s -w "\n%{http_code}" --max-time 3 "${ip_address}" 2>/dev/null)
         local http_code=$(echo "$response" | tail -n1)
         local ip_result=$(echo "$response" | head -n-1 | tr -d '[:space:]"')
-        # 修复点：确保变量和引号正确闭合
         if [[ "${http_code}" == "200" && "${ip_result}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             server_ip="${ip_result}"
             break
@@ -993,12 +992,39 @@ _get_latest_sb_version() {
     echo "$latest_ver"
 }
 
+# 修改点：增加版本选择菜单
 sb_install() {
     if command -v $SB_BIN >/dev/null 2>&1; then echo -e "${Y}Sing-Box 已安装！${R}"; read -rs -n 1 -p ""; return; fi
     local arch=$(uname -m); case "$arch" in x86_64) arch="amd64";; aarch64) arch="arm64";; *) echo -e "${RED}❌ 不支持 ${arch}${R}"; return 1;; esac
-    echo -e "${Y}即将安装 Sing-Box (${arch})${R}"; read -e -p "继续？: " c; [[ ! "$c" =~ ^[Yy]$ ]] && return
     
-    local latest_ver=$(_get_latest_sb_version)
+    clear
+    echo -e "${G}╔═══════════════════════════════════╗${R}"
+    echo -e "${G}║       Sing-Box 版本选择            ║${R}"
+    echo -e "${G}╚═══════════════════════════════════╝${R}"
+    echo -e "  ${Y}[1]${R} 最新稳定版 (自动获取最新版)"
+    echo -e "  ${Y}[2]${R} 经典稳定版 1.10.7 (支持 geosite 分流，无 AnyTLS)"
+    echo -e "  ${Y}[3]${R} 推荐稳定版 1.13.7 (较新且被广泛验证)"
+    echo -e "  ${Y}[4]${R} 自定义版本 (手动输入，如 1.12.5)"
+    echo -e "  ${H}[0]${R} 取消安装"
+    echo ""
+    read -e -p "请选择 [1-4]: " ver_choice
+    
+    local latest_ver=""
+    case "$ver_choice" in
+        1) latest_ver=$(_get_latest_sb_version) ;;
+        2) latest_ver="1.10.7" ;;
+        3) latest_ver="1.13.7" ;;
+        4) read -e -p "请输入版本号 (如 1.12.5): " latest_ver ;;
+        0|"") return ;;
+        *) echo -e "${RED}无效选择${R}"; sleep 1; return ;;
+    esac
+    
+    if [[ ! "$latest_ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo -e "${RED}❌ 版本号格式错误！${R}"; return
+    fi
+    
+    echo -e "${Y}即将安装 Sing-Box v${latest_ver} (${arch})${R}"; read -e -p "继续？: " c; [[ ! "$c" =~ ^[Yy]$ ]] && return
+    
     log_debug "使用版本: $latest_ver"
     
     mkdir -p /etc/sing-box
@@ -1767,7 +1793,7 @@ EOF
         echo -e "${G}✅ 完成${R}"
         
         echo -e "${Y}[4/7] 调整内核实时性参数...${R}"
-        echo 10 > /proc/sys/vm/swappiness 2>/dev/null || true
+        echo 10 > /proc/sys/vm.swappiness 2>/dev/null || true
         echo 500 > /proc/sys/vm/dirty_writeback_centisecs 2>/dev/null || true
         echo 15 > /proc/sys/vm/dirty_ratio 2>/dev/null || true
         echo 5 > /proc/sys/vm/dirty_background_ratio 2>/dev/null || true
