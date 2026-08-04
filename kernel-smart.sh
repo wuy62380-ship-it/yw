@@ -26,14 +26,20 @@ check_env() {
         echo -e "${Y}正在准备基础环境...${R}"
         export DEBIAN_FRONTEND=noninteractive
         if command -v apt-get >/dev/null 2>&1; then
-            apt-get update -y >/dev/null 2>&1
-            apt-get install -y curl wget jq openssl iptables ip6tables tar iproute2 procps coreutils iptables-persistent gnupg ca-certificates >/dev/null 2>&1
+            apt-get update -y
+            apt-get install -y curl wget jq openssl iptables ip6tables tar iproute2 procps coreutils iptables-persistent gnupg ca-certificates
         elif command -v yum >/dev/null 2>&1; then
-            yum update -y >/dev/null 2>&1
-            yum install -y curl wget jq openssl iptables ip6tables tar iproute procps-ng coreutils iptables-services >/dev/null 2>&1
+            yum update -y
+            yum install -y curl wget jq openssl iptables ip6tables tar iproute procps-ng coreutils iptables-services
         elif command -v dnf >/dev/null 2>&1; then
-            dnf update -y >/dev/null 2>&1
-            dnf install -y curl wget jq openssl iptables ip6tables tar iproute procps-ng coreutils iptables-services >/dev/null 2>&1
+            dnf update -y
+            dnf install -y curl wget jq openssl iptables ip6tables tar iproute procps-ng coreutils iptables-services
+        fi
+        
+        # 核心修复：复查关键依赖 jq 是否真的安装成功
+        if ! command -v jq >/dev/null 2>&1; then
+            echo -e "${RED}错误：关键依赖 jq 安装失败！请手动执行 apt update && apt install -y jq 后重试。${R}"
+            exit 1
         fi
         echo -e "${G}✅ 基础环境准备完毕！${R}"
     fi
@@ -171,8 +177,6 @@ smart_auto_optimize() {
         echo -e "╚═══════════════════════════════════════════╝${R}"
         
         local current_kernel=$(uname -r)
-        
-        # 核心修复：直接读取系统当前拥塞算法来判定模式
         local current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
         local current_mode="默认设置"
         if [ -f "$MODE_FILE" ]; then
