@@ -8,6 +8,8 @@ SB_CONF_LOCK="/var/lock/sing-box-config.lock"
 SB_BIN="/usr/local/bin/sing-box"
 SB_CONF="/etc/sing-box/config.json"
 META_DIR="/etc/sing-box/meta"
+SYSCTL_CONF="/etc/sysctl.d/99-yw-optimize.conf"
+MODE_FILE="/etc/yw_sysctl_mode"
 
 mkdir -p /var/lock 2>/dev/null
 mkdir -p "$META_DIR" 2>/dev/null
@@ -51,11 +53,14 @@ get_my_ip() {
 }
 
 # ================= 网络与内核优化 =================
-apply_sysctl() {
+apply_optimize() {
     local mode=$1
+    local mode_name=$2
+    echo -e "${Y}切换到${mode_name}...${R}"
+    echo -e "${Y}写入优化配置...${R}"
+    
     if [ "$mode" == "balance" ]; then
-        echo -e "${Y}正在应用均衡网络优化参数...${R}"
-        cat > /etc/sysctl.d/99-yw-optimize.conf << EOF
+        cat > "$SYSCTL_CONF" << EOF
 net.ipv4.ip_forward = 1
 net.ipv6.conf.all.forwarding = 1
 net.core.default_qdisc = fq
@@ -74,8 +79,7 @@ net.ipv4.tcp_tw_reuse = 1
 net.ipv4.tcp_fin_timeout = 30
 EOF
     elif [ "$mode" == "live" ]; then
-        echo -e "${Y}正在应用直播网络优化参数...${R}"
-        cat > /etc/sysctl.d/99-yw-optimize.conf << EOF
+        cat > "$SYSCTL_CONF" << EOF
 net.ipv4.ip_forward = 1
 net.ipv6.conf.all.forwarding = 1
 net.core.default_qdisc = fq
@@ -99,11 +103,75 @@ net.ipv4.tcp_fin_timeout = 30
 EOF
     fi
 
-    if ! sysctl -p /etc/sysctl.d/99-yw-optimize.conf >/dev/null 2>&1; then
-        echo -e "${RED}⚠ sysctl 部分应用失败，请检查内核支持情况${R}"
-    else
-        echo -e "${G}✅ 网络参数优化完成！${R}"
-    fi
+    echo "$mode_name" > "$MODE_FILE"
+    
+    echo -e "${Y}应用优化参数...${R}"
+    local result=$(sysctl -p "$SYSCTL_CONF" 2>&1)
+    local applied=$(echo "$result" | grep -c "=")
+    local skipped=$(echo "$result" | grep -c "cannot stat")
+    
+    echo -e "${G}已应用 ${applied} 项参数，跳过 ${skipped} 项不支持的参数${R}"
+    
+    local mem=$(free -m | awk '/Mem:/{print $2}')
+    local cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+    local qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
+    
+    echo -e "${G}${mode_name} 优化完成！配置已持久化到 ${SYSCTL_CONF}${R}"
+    echo -e "内存: ${mem}MB | 拥塞算法: ${cc} | 队列: ${qdisc}"
+}
+
+restore_default() {
+    echo -e "${Y}还原默认设置...${R}"
+    rm -f "$SYSCTL_CONF"
+    rm -f "$MODE_FILE"
+    
+    # 尝试恢复部分核心默认设置
+    sysctl -w net.core.default_qdisc=fq_codel >/dev/null 2>&1
+    sysctl -w net.ipv4.tcp_congestion_control=cubic >/dev/null 2>&1
+    sysctl -w net.ipv4.tcp_fastopen=0 >/dev/null 2>&1
+    
+    local mem=$(free -m | awk '/Mem:/{print $2}')
+    local cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+    local qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
+    
+    echo -e "${G}已还原系统默认网络配置${R}"
+    echo -e "内存: ${mem}MB | 拥塞算法: ${cc} | 队列: ${qdisc}"
+}
+
+smart_auto_optimize() {
+    while true; do
+        clear
+        echo -e "${G}╔═══════════════════════════════════════════╗${R}"
+        echo -e "║          🚀 网络与内核优化中心             ║${R}"
+        echo -e "╚═══════════════════════════════════════════╝${R}"
+        
+        local current_kernel=$(uname -r)
+        local current_mode="默认设置"
+        if [ -f "$MODE_FILE" ]; then
+            current_mode=$(cat "$MODE_FILE")
+        fi
+        
+        echo -e "当前内核: ${C}$current_kernel${R}"
+        echo -e "当前模式: ${Y}$current_mode${R}\n"
+        echo -e "Linux系统内核参数优化"
+        echo -e "--------------------"
+        echo -e "${Y}1 均衡优化模式：       ${R}在性能与资源消耗之间取得平衡，适合日常使用。"
+        echo -e "${Y}2 直播优化模式：       ${R}针对直播推流优化，UDP 缓冲区加大，减少延迟。"
+        echo -e "${Y}3 还原默认设置：       ${R}将系统设置还原为默认配置。"
+        echo -e "${C}4 XanMod BBRv3 内核管理${R}"
+        echo -e "--------------------"
+        echo -e "${H}0. 返回上一级选单${R}"
+        echo -e "--------------------"
+        read -e -p "请输入你的选择: " c
+        
+        case "$c" in
+            1) clear; apply_optimize balance "均衡优化模式"; echo "操作完成"; read -rs -n 1 -p "按任意键继续..." ;;
+            2) clear; apply_optimize live "直播优化模式"; echo "操作完成"; read -rs -n 1 -p "按任意键继续..." ;;
+            3) clear; restore_default; echo "操作完成"; read -rs -n 1 -p "按任意键继续..." ;;
+            4) clear; xanmod_manage ;;
+            0|"") break ;;
+        esac
+    done
 }
 
 xanmod_manage() {
@@ -166,28 +234,6 @@ xanmod_manage() {
             read -rs -n 1 -p ""
         fi
     fi
-}
-
-smart_auto_optimize() {
-    while true; do
-        clear
-        echo -e "${G}╔═══════════════════════════════════════════╗${R}"
-        echo -e "║          🚀 网络与内核优化中心             ║${R}"
-        echo -e "╚═══════════════════════════════════════════╝${R}"
-        local current_kernel=$(uname -r)
-        echo -e "当前内核: ${C}$current_kernel${R}\n"
-        echo -e "    ${Y}[1] 均衡网络优化 (常规通用)${R}"
-        echo -e "    ${Y}[2] 直播网络优化 (针对UDP/流媒体)${R}"
-        echo -e "    ${C}[3] XanMod BBRv3 内核管理${R}"
-        echo -e "    ${H}[0] 返回主菜单${R}"
-        read -e -p "  请选择: " c
-        case "$c" in
-            1) clear; apply_sysctl balance; read -rs -n 1 -p "按任意键继续..." ;;
-            2) clear; apply_sysctl live; read -rs -n 1 -p "按任意键继续..." ;;
-            3) clear; xanmod_manage ;;
-            0|"") break ;;
-        esac
-    done
 }
 
 # ================= Sing-Box 核心 =================
