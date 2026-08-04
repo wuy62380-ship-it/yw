@@ -30,24 +30,23 @@ root_use() { [ "$(id -u)" -ne 0 ] && { echo -e "${RED}错误：请使用 root �
 check_env() {
     root_use
     local need_update=0
-    # 强化了依赖检测，包含 shuf 和 qrencode
-    for cmd in curl wget jq openssl iptables tar ip ss free modprobe ethtool shuf qrencode; do
+    for cmd in curl wget jq openssl iptables tar python3 ip ss free modprobe ethtool shuf; do
         command -v $cmd >/dev/null 2>&1 || need_update=1
     done
     if [ "$need_update" -eq 1 ]; then
-        echo -e "${Y}正在准备基础环境 (包含二维码工具)...${R}"
+        echo -e "${Y}正在准备基础环境...${R}"
         export DEBIAN_FRONTEND=noninteractive
         if command -v apt-get >/dev/null 2>&1; then
             apt-get update -y >/dev/null 2>&1
-            apt-get install -y curl wget jq openssl iptables tar ca-certificates iproute2 procps kmod ethtool coreutils qrencode >/dev/null 2>&1
+            apt-get install -y curl wget jq openssl iptables tar python3 ca-certificates iproute2 procps kmod ethtool coreutils >/dev/null 2>&1
         elif command -v yum >/dev/null 2>&1; then
             yum update -y >/dev/null 2>&1
-            yum install -y curl wget jq openssl iptables tar ca-certificates iproute procps-ng kmod ethtool coreutils qrencode >/dev/null 2>&1
+            yum install -y curl wget jq openssl iptables tar python3 ca-certificates iproute procps-ng kmod ethtool coreutils >/dev/null 2>&1
         elif command -v apk >/dev/null 2>&1; then
             apk update >/dev/null 2>&1
-            apk add curl wget jq openssl iptables tar ca-certificates iproute2 procps kmod ethtool coreutils qrencode >/dev/null 2>&1
+            apk add curl wget jq openssl iptables tar python3 ca-certificates iproute2 procps kmod ethtool coreutils >/dev/null 2>&1
         fi
-        if ! command -v jq >/dev/null 2>&1 || ! command -v shuf >/dev/null 2>&1 || ! command -v qrencode >/dev/null 2>&1; then
+        if ! command -v jq >/dev/null 2>&1 || ! command -v shuf >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
             echo -e "${RED}❌ 核心依赖安装失败，请检查网络或包管理器！${R}"
             exit 1
         fi
@@ -871,7 +870,6 @@ sb_add_reality() {
             local server_ip=$(get_my_ip); local server_ip_url="$server_ip"
             if [[ "$server_ip" =~ : ]]; then server_ip_url="[$server_ip]"; fi
             
-            # 移除了 spx 参数，与甬哥脚本完全一致，解决部分路由器兼容性问题
             local link="vless://${uuid}@${server_ip_url}:${port}?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=${pub_key}&security=reality&sid=${short_id}&sni=${sni}&type=tcp#$(url_encode "$nn")"
             
             echo -e "${C}节点链接: ${link}${R}"
@@ -1097,7 +1095,7 @@ sb_add_vless_ws() {
     _clean_bak; read -rs -n 1 -p ""
 }
 
-# 核心功能：生成包含二维码的客户端配置文件
+# 替换为临时下载服务，解决二维码变形问题
 generate_client_config() {
     sb_check || return
     local server_ip=$(get_my_ip)
@@ -1199,8 +1197,10 @@ generate_client_config() {
         return
     fi
 
-    # 生成 JSON 并保存到临时文件
-    cat <<EOF > "$TMP_DIR/client_config.json"
+    # 将 JSON 保存到临时下载目录
+    local client_dir="/tmp/sb_client"
+    mkdir -p "$client_dir"
+    cat <<EOF > "$client_dir/client_config.json"
 {
   "log": { "level": "info", "timestamp": true },
   "dns": {
@@ -1238,21 +1238,37 @@ generate_client_config() {
 }
 EOF
 
+    # 放行临时端口
+    local dl_port=18080
+    _open_single_port $dl_port "tcp"
+
+    clear
     echo -e "${G}╔═══════════════════════════════════════════╗${R}"
     echo -e "${G}║       📱 客户端配置文件生成完毕            ║${R}"
     echo -e "${G}╚═══════════════════════════════════════════╝${R}"
-    echo -e "${Y}请使用 sing-box 客户端 (SFA/SFM/NekoBox) 扫描下方二维码直接导入配置。${R}"
+    echo -e "${Y}由于 JSON 配置较长，终端二维码会严重变形无法扫描。${R}"
+    echo -e "${Y}已为您启动临时下载服务，请在手机/电脑浏览器中打开以下链接下载配置：${R}"
+    echo ""
+    echo -e "${C}http://${server_ip}:${dl_port}/client_config.json${R}"
+    echo ""
+    echo -e "${H}下载后，在 sing-box 客户端中选择 '从文件导入' (Import from file) 即可。${R}"
     echo -e "${H}此配置已内置防 WiFi 断流参数 (ipv4_only + strict_route=false)。${R}"
     echo -e "${C}-------------------------------------------${R}"
+    echo -e "${Y}按回车键停止下载服务并返回菜单...${R}"
     
-    # 生成二维码显示在终端
-    qrencode -t ansiutf8 < "$TMP_DIR/client_config.json"
+    # 启动后台下载服务
+    (cd "$client_dir" && exec python3 -m http.server $dl_port --bind 0.0.0.0) &
+    local server_pid=$!
     
-    echo -e "${C}-------------------------------------------${R}"
-    echo -e "${H}如果二维码无法扫描，请手动复制以下内容导入：${R}"
-    cat "$TMP_DIR/client_config.json"
-    echo ""
-    read -rs -n 1 -p "按任意键继续..."
+    read -rs
+    
+    # 停止服务并清理
+    kill $server_pid 2>/dev/null
+    rm -rf "$client_dir"
+    _del_single_port $dl_port "tcp"
+    
+    echo -e "${G}✅ 临时下载服务已关闭。${R}"
+    sleep 1
 }
 
 sb_show_nodes_and_links() {
@@ -1448,7 +1464,7 @@ sb_menu() {
         echo -e "${H}[5] 查看节点与链接${R}"
         echo -e "${H}[6] 删除节点${R}"
         echo -e "${H}────────────────────────${R}"
-        echo -e "${G}[14] 生成客户端配置二维码 (完美兼容WiFi)${R}"
+        echo -e "${G}[14] 生成客户端配置文件下载 (完美兼容WiFi)${R}"
         echo -e "${H}────────────────────────${R}"
         echo -e "${H}[7] 安装 Sing-Box${R}"
         echo -e "${H}[8] 更新 Sing-Box${R}"
