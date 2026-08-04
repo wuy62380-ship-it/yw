@@ -211,12 +211,10 @@ xanmod_add_repo() {
         os_codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
     fi
 
-    # 兼容官方已移除的老系统代号
     if ! echo "bookworm trixie forky sid noble plucky questing resolute faye gigi wilma xia zara zena" | grep -qw "$os_codename"; then
         os_codename="releases"
     fi
 
-    # 官方已彻底移除对 jammy, focal, bullseye 等老系统的支持
     if echo "jammy focal bullseye buster" | grep -qw "$os_codename" || [ "$os_codename" = "releases" ]; then
         echo -e "${RED}XanMod 官方已停止对当前系统($os_codename)的 APT 源支持，请升级至 Debian12 / Ubuntu24 或更高版本。${R}"
         return 1
@@ -319,7 +317,6 @@ xanmod_install_or_update() {
         }
     fi
 
-    # 写入 BBR 优化参数 (替代科技佬的 bbr_on)
     apply_optimize balance "均衡优化模式" > /dev/null
     
     echo -e "${G}XanMod BBRv3内核处理完成。重启后生效${R}"
@@ -486,18 +483,19 @@ close_port() {
     save_iptables
 }
 
+# 核心修复：重定向 echo 到 >&2，防止污染返回值
 input_custom_port() {
     local port
     while true; do
         read -e -p "请输入端口 (10000-65535，回车随机生成): " port
         if [ -z "$port" ]; then
             port=$(shuf -i 10000-65535 -n 1)
-            echo -e "${Y}已随机生成端口: $port${R}"
+            echo -e "${Y}已随机生成端口: $port${R}" >&2
             break
         elif ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 10000 ] || [ "$port" -gt 65535 ]; then
-            echo -e "${RED}端口必须在 10000-65535 之间，请重新输入${R}"
+            echo -e "${RED}端口必须在 10000-65535 之间，请重新输入${R}" >&2
         elif ss -tuln | grep -q ":$port "; then
-            echo -e "${RED}端口 $port 已被占用，请重新输入${R}"
+            echo -e "${RED}端口 $port 已被占用，请重新输入${R}" >&2
         else
             break
         fi
