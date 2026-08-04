@@ -340,7 +340,6 @@ close_port() {
     save_iptables
 }
 
-# 新增：自定义端口输入与校验
 input_custom_port() {
     local port
     while true; do
@@ -376,26 +375,32 @@ sb_add_reality() {
         flock -x 200
         cp "$SB_CONF" "${SB_CONF}.bak"
         
-        local node_json=$(cat <<EOF
-{
-  "tag": "$node_tag",
-  "type": "vless",
-  "listen": "::",
-  "listen_port": $port,
-  "users": [{"uuid": "$uuid", "flow": "xtls-rprx-vision"}],
-  "tls": {
-    "enabled": true,
-    "server_name": "$sni",
-    "reality": {
-      "enabled": true,
-      "handshake": {"server": "$sni", "server_port": 443},
-      "private_key": "$priv_key",
-      "short_id": ["$short_id"]
-    }
-  }
-}
-EOF
-)
+        # 核心修复：使用 jq -n 直接构造 JSON，杜绝 heredoc 带来的换行/空格解析错误
+        local node_json=$(jq -n \
+          --arg tag "$node_tag" \
+          --argjson port $port \
+          --arg uuid "$uuid" \
+          --arg sni "$sni" \
+          --arg priv_key "$priv_key" \
+          --arg short_id "$short_id" \
+          '{
+            tag: $tag,
+            type: "vless",
+            listen: "::",
+            listen_port: $port,
+            users: [{uuid: $uuid, flow: "xtls-rprx-vision"}],
+            tls: {
+              enabled: true,
+              server_name: $sni,
+              reality: {
+                enabled: true,
+                handshake: {server: $sni, server_port: 443},
+                private_key: $priv_key,
+                short_id: [$short_id]
+              }
+            }
+          }')
+        
         jq --argjson node "$node_json" '.inbounds += [$node]' "$SB_CONF" > "$SB_CONF.tmp"
         
         if $SB_BIN check -c "$SB_CONF.tmp" > /tmp/check.log 2>&1; then
@@ -446,23 +451,28 @@ sb_add_hysteria2() {
         flock -x 200
         cp "$SB_CONF" "${SB_CONF}.bak"
         
-        local node_json=$(cat <<EOF
-{
-  "tag": "$node_tag",
-  "type": "hysteria2",
-  "listen": "::",
-  "listen_port": $port,
-  "users": [{"password": "$pass"}],
-  "tls": {
-    "enabled": true,
-    "alpn": ["h3"],
-    "certificate_path": "${cert_dir}/cert.pem",
-    "key_path": "${cert_dir}/key.pem"
-  },
-  "ignore_client_bandwidth": false
-}
-EOF
-)
+        # 核心修复：使用 jq -n 直接构造 JSON
+        local node_json=$(jq -n \
+          --arg tag "$node_tag" \
+          --argjson port $port \
+          --arg pass "$pass" \
+          --arg cert "${cert_dir}/cert.pem" \
+          --arg key "${cert_dir}/key.pem" \
+          '{
+            tag: $tag,
+            type: "hysteria2",
+            listen: "::",
+            listen_port: $port,
+            users: [{password: $pass}],
+            tls: {
+              enabled: true,
+              alpn: ["h3"],
+              certificate_path: $cert,
+              key_path: $key
+            },
+            ignore_client_bandwidth: false
+          }')
+        
         jq --argjson node "$node_json" '.inbounds += [$node]' "$SB_CONF" > "$SB_CONF.tmp"
         
         if $SB_BIN check -c "$SB_CONF.tmp" > /tmp/check.log 2>&1; then
@@ -513,11 +523,9 @@ sb_del_node() {
     if [ "$c" == "0" ] || [ -z "$c" ]; then return; fi
     
     local tag=""
-    # 如果输入的是数字且在序号范围内，按序号取 tag
     if [[ "$c" =~ ^[0-9]+$ ]] && [ "$c" -ge 1 ] && [ "$c" -le ${#tags[@]} ]; then
         tag="${tags[$((c-1))]}"
     else
-        # 尝试按端口号匹配 tag
         tag=$(jq -r --arg p "$c" '.inbounds[] | select(.listen_port==($p|tonumber)) | .tag' "$SB_CONF" 2>/dev/null)
     fi
     
@@ -564,7 +572,6 @@ sb_del_node() {
     read -rs -n 1 -p ""
 }
 
-# 新增：手动端口管理
 sb_manage_ports() {
     while true; do
         clear
