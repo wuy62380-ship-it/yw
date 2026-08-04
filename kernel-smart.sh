@@ -395,7 +395,7 @@ Kernel_optimize() {
     done
 }
 
-# ================= Sing-Box 核心 =================
+# ================= Sing-Box 核心 (恢复完整服务端模板) =================
 SB_BIN="/usr/local/bin/sing-box"
 SB_CONF="/etc/sing-box/config.json"
 META_FILE="/etc/sing-box/.nodes_meta"
@@ -479,21 +479,73 @@ sb_check() {
 sb_init_conf() { 
     if [ ! -f "$SB_CONF" ] || [ ! -s "$SB_CONF" ]; then 
         mkdir -p /etc/sing-box
+        # 恢复为包含完整 DNS 和 Route 规则的标准服务端模板，与甬哥脚本对齐
         cat > "$SB_CONF" <<'EOF'
 {
   "log": {
-    "level": "warn",
+    "level": "info",
     "timestamp": true
+  },
+  "dns": {
+    "servers": [
+      {
+        "tag": "google",
+        "address": "tls://8.8.8.8"
+      },
+      {
+        "tag": "local",
+        "address": "223.5.5.5",
+        "detour": "direct"
+      },
+      {
+        "tag": "block",
+        "address": "rcode://success"
+      }
+    ],
+    "rules": [
+      {
+        "outbound": "any",
+        "server": "local"
+      }
+    ],
+    "strategy": "ipv4_only"
   },
   "inbounds": [],
   "outbounds": [
     {
+      "type": "selector",
+      "tag": "proxy",
+      "outbounds": [
+        "direct"
+      ],
+      "default": "direct"
+    },
+    {
       "type": "direct",
       "tag": "direct"
+    },
+    {
+      "type": "block",
+      "tag": "block"
+    },
+    {
+      "type": "dns",
+      "tag": "dns-out",
+      "server": "google"
     }
   ],
   "route": {
-    "final": "direct",
+    "rules": [
+      {
+        "protocol": "dns",
+        "outbound": "dns-out"
+      },
+      {
+        "ip_is_private": true,
+        "outbound": "direct"
+      }
+    ],
+    "final": "proxy",
     "auto_detect_interface": true
   }
 }
@@ -839,6 +891,7 @@ sb_add_reality() {
     
     (
         flock -x 200
+        # 添加 inbound，并自动将其注册到 proxy selector 的 default 中
         jq --arg p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" --arg tag "$node_tag" \
            '.inbounds += [{
                "type": "vless",
@@ -857,7 +910,8 @@ sb_add_reality() {
                        "short_id": [$sid]
                    }
                }
-           }]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
+           }]
+           | .outbounds |= map(if .tag == "proxy" then .outbounds += [$tag] | .default = $tag else . end)' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
     ) 200>"$SB_CONF_LOCK"
     
     _save_node_meta "$port" "$nn" "vless-reality" "$pub_key" "short_id=${short_id};sni=${sni}"
@@ -870,7 +924,6 @@ sb_add_reality() {
             local server_ip=$(get_my_ip); local server_ip_url="$server_ip"
             if [[ "$server_ip" =~ : ]]; then server_ip_url="[$server_ip]"; fi
             
-            # 恢复 spx=%2F 参数，与甬哥脚本完全一致，解决客户端路由处理问题导致的 WiFi 断流
             local link="vless://${uuid}@${server_ip_url}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&spx=%2F#$(url_encode "$nn")"
             
             echo -e "${C}节点链接: ${link}${R}"
@@ -931,7 +984,8 @@ sb_add_hysteria2() {
                    "key_path": $k
                },
                "ignore_client_bandwidth": false
-           }]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
+           }]
+           | .outbounds |= map(if .tag == "proxy" then .outbounds += [$tag] | .default = $tag else . end)' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
     ) 200>"$SB_CONF_LOCK"
     
     _save_node_meta "$port" "$nn" "hysteria2" "" "password=${pass};tls_method=selfsign;sni=${sni}"
@@ -1001,7 +1055,8 @@ sb_add_tuic() {
                    "certificate_path": $c,
                    "key_path": $k
                }
-           }]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
+           }]
+           | .outbounds |= map(if .tag == "proxy" then .outbounds += [$tag] | .default = $tag else . end)' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
     ) 200>"$SB_CONF_LOCK"
     
     _save_node_meta "$port" "$nn" "tuic" "" "uuid=${uuid};password=${pass};tls_method=selfsign;sni=${sni}"
@@ -1063,7 +1118,8 @@ sb_add_vless_ws() {
                "listen_port": ($p|tonumber),
                "users": [{"uuid": $u}],
                "transport": {"type": "ws", "path": $wp}
-           }]' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
+           }]
+           | .outbounds |= map(if .tag == "proxy" then .outbounds += [$tag] | .default = $tag else . end)' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
     ) 200>"$SB_CONF_LOCK"
     
     _save_node_meta "$port" "$nn" "vless-ws" "" "path=${ws_path}"
@@ -1096,7 +1152,7 @@ sb_add_vless_ws() {
     _clean_bak; read -rs -n 1 -p ""
 }
 
-# 替换为临时下载服务，解决二维码变形问题
+# 客户端配置下载服务保留备用
 generate_client_config() {
     sb_check || return
     local server_ip=$(get_my_ip)
@@ -1198,7 +1254,6 @@ generate_client_config() {
         return
     fi
 
-    # 将 JSON 保存到临时下载目录
     local client_dir="/tmp/sb_client"
     mkdir -p "$client_dir"
     cat <<EOF > "$client_dir/client_config.json"
@@ -1239,7 +1294,6 @@ generate_client_config() {
 }
 EOF
 
-    # 放行临时端口
     local dl_port=18080
     _open_single_port $dl_port "tcp"
 
@@ -1257,13 +1311,11 @@ EOF
     echo -e "${C}-------------------------------------------${R}"
     echo -e "${Y}按回车键停止下载服务并返回菜单...${R}"
     
-    # 启动后台下载服务
     (cd "$client_dir" && exec python3 -m http.server $dl_port --bind 0.0.0.0) &
     local server_pid=$!
     
     read -rs
     
-    # 停止服务并清理
     kill $server_pid 2>/dev/null
     rm -rf "$client_dir"
     _del_single_port $dl_port "tcp"
@@ -1302,7 +1354,6 @@ sb_show_nodes_and_links() {
                     flow=$(echo "$obj" | jq -r '.users[0].flow // empty' 2>/dev/null)
                     local flow_param=""; [ -n "$flow" ] && flow_param="&flow=${flow}"
                     if [ -n "$pub_key" ]; then
-                        # 保持 spx=%2F 参数
                         link="vless://${uuid}@${server_ip_url}:${port}?encryption=none${flow_param}&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&spx=%2F#$(url_encode "$nn")"
                     else
                         link="${RED}无法生成链接：缺少 PublicKey${R}"
@@ -1374,7 +1425,7 @@ sb_del_node() {
     (
         flock -x 200
         cp "$SB_CONF" "${SB_CONF}.bak.$(date +%s)"
-        jq --arg t "$found_tag" 'del(.inbounds[] | select(.tag == $t))' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
+        jq --arg t "$found_tag" 'del(.inbounds[] | select(.tag == $t)) | .outbounds |= map(if .tag == "proxy" then .outbounds |= map(select(. != $t)) | (if .default == $t then .default = "direct" else . end) else . end)' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
         
         local check_err
         if check_err=$($SB_BIN check -c "$SB_CONF" 2>&1); then
@@ -1404,7 +1455,7 @@ manual_open_port() {
             1) 
                read -e -p "请输入端口号 (1-65535): " port
                port=$(echo "$port" | tr -d '[:space:]')
-               if [[ "$port" =~ ^[0-9]{1,5}$ ]] && [ "port" -ge 1 ] && [ "$port" -le 65535 ]; then
+               if [[ "$port" =~ ^[0-9]{1,5}$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
                    open_port_both "$port"; _persist_iptables
                else
                    echo -e "${RED}❌ 端口输入错误！${R}"
