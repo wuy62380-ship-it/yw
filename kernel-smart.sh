@@ -50,13 +50,12 @@ get_my_ip() {
     echo "$server_ip"
 }
 
-smart_auto_optimize() {
-    clear
-    echo -e "${G}╔═══════════════════════════════════════════╗${R}"
-    echo -e "${G}║      🚀 智能自动优化 (仅开 BBR+fq)        ║${R}"
-    echo -e "${G}╚═══════════════════════════════════════════╝${R}"
-    sleep 1
-    cat > /etc/sysctl.d/99-yw-optimize.conf << EOF
+# ================= 网络与内核优化 =================
+apply_sysctl() {
+    local mode=$1
+    if [ "$mode" == "balance" ]; then
+        echo -e "${Y}正在应用均衡网络优化参数...${R}"
+        cat > /etc/sysctl.d/99-yw-optimize.conf << EOF
 net.ipv4.ip_forward = 1
 net.ipv6.conf.all.forwarding = 1
 net.core.default_qdisc = fq
@@ -64,14 +63,134 @@ net.ipv4.tcp_congestion_control = bbr
 net.ipv4.tcp_fastopen = 3
 net.ipv4.tcp_mtu_probing = 1
 net.ipv4.tcp_ecn = 0
+fs.file-max = 1000000
+net.core.somaxconn = 32768
+net.core.rmem_max = 67108864
+net.core.wmem_max = 67108864
+net.ipv4.tcp_rmem = 4096 87380 67108864
+net.ipv4.tcp_wmem = 4096 65536 67108864
+net.ipv4.tcp_syncookies = 1
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_fin_timeout = 30
 EOF
+    elif [ "$mode" == "live" ]; then
+        echo -e "${Y}正在应用直播网络优化参数...${R}"
+        cat > /etc/sysctl.d/99-yw-optimize.conf << EOF
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 1
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_mtu_probing = 1
+net.ipv4.tcp_ecn = 0
+fs.file-max = 1000000
+net.core.somaxconn = 32768
+net.core.rmem_max = 67108864
+net.core.wmem_max = 67108864
+net.ipv4.tcp_rmem = 4096 87380 67108864
+net.ipv4.tcp_wmem = 4096 65536 67108864
+net.ipv4.udp_rmem_min = 8192
+net.ipv4.udp_wmem_min = 8192
+net.ipv4.udp_mem = 379008 504512 759360
+net.core.netdev_max_backlog = 32768
+net.ipv4.tcp_syncookies = 1
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_fin_timeout = 30
+EOF
+    fi
+
     if ! sysctl -p /etc/sysctl.d/99-yw-optimize.conf >/dev/null 2>&1; then
         echo -e "${RED}⚠ sysctl 部分应用失败，请检查内核支持情况${R}"
+    else
+        echo -e "${G}✅ 网络参数优化完成！${R}"
     fi
-    echo -e "${G}✅ 优化完成！已启用最安全的 BBR 模式。${R}"
-    read -rs -n 1 -p "按任意键继续..."
 }
 
+xanmod_manage() {
+    if ! command -v apt-get >/dev/null 2>&1; then
+        echo -e "${RED}仅支持 Debian/Ubuntu 系统安装 XanMod 内核${R}"
+        read -rs -n 1 -p ""; return
+    fi
+
+    local current_kernel=$(uname -r)
+    if echo "$current_kernel" | grep -q "xanmod"; then
+        echo -e "${G}您已安装xanmod的BBRv3内核${R}"
+        echo -e "当前内核版本: ${C}$current_kernel${R}\n"
+        echo -e "${Y}内核管理${R}"
+        echo -e "------------------------"
+        echo -e "${Y}1. 更新BBRv3内核              2. 卸载BBRv3内核${R}"
+        echo -e "------------------------"
+        echo -e "${H}0. 返回上一级选单${R}"
+        read -e -p "请选择: " c
+        case "$c" in
+            1)
+                echo -e "${Y}正在更新 BBRv3 内核...${R}"
+                apt update -y >/dev/null 2>&1
+                apt install -y linux-xanmod-x64v3 >/dev/null 2>&1
+                echo -e "${G}✅ 内核更新/安装完成！建议重启系统以应用最新内核。${R}"
+                read -rs -n 1 -p ""
+                ;;
+            2)
+                echo -e "${Y}正在卸载 BBRv3 内核...${R}"
+                apt purge -y linux-xanmod-x64v3 linux-image-xanmod-x64v3 >/dev/null 2>&1
+                rm -f /etc/apt/sources.list.d/xanmod-release.list
+                rm -f /usr/share/keyrings/xanmod-archive-keyring.gpg
+                apt autoremove -y >/dev/null 2>&1
+                if command -v update-grub >/dev/null 2>&1; then
+                    update-grub >/dev/null 2>&1
+                else
+                    grub2-mkconfig -o /boot/grub2/grub.cfg >/dev/null 2>&1
+                fi
+                echo -e "${G}✅ BBRv3 内核已卸载，请重启服务器切换回默认内核。${R}"
+                read -rs -n 1 -p ""
+                ;;
+            0|"") return ;;
+        esac
+    else
+        echo -e "${Y}当前未安装 XanMod BBRv3 内核 (当前内核: $current_kernel)${R}"
+        echo -e "1. 安装 BBRv3 内核"
+        echo -e "0. 返回上一级选单"
+        read -e -p "请选择: " c
+        if [ "$c" == "1" ]; then
+            echo -e "${Y}正在添加 XanMod 源并安装 BBRv3 内核...${R}"
+            echo "deb http://deb.xanmod.org releases main" | tee /etc/apt/sources.list.d/xanmod-release.list >/dev/null 2>&1
+            wget -qO - https://dl.xanmod.org/archive.key | gpg --dearmor --yes -o /usr/share/keyrings/xanmod-archive-keyring.gpg 2>/dev/null
+            apt update -y >/dev/null 2>&1
+            apt install -y linux-xanmod-x64v3 >/dev/null 2>&1
+            if command -v update-grub >/dev/null 2>&1; then
+                update-grub >/dev/null 2>&1
+            else
+                grub2-mkconfig -o /boot/grub2/grub.cfg >/dev/null 2>&1
+            fi
+            echo -e "${G}✅ BBRv3 内核安装完成！请重启服务器后再次运行脚本以应用更改。${R}"
+            read -rs -n 1 -p ""
+        fi
+    fi
+}
+
+smart_auto_optimize() {
+    while true; do
+        clear
+        echo -e "${G}╔═══════════════════════════════════════════╗${R}"
+        echo -e "║          🚀 网络与内核优化中心             ║${R}"
+        echo -e "╚═══════════════════════════════════════════╝${R}"
+        local current_kernel=$(uname -r)
+        echo -e "当前内核: ${C}$current_kernel${R}\n"
+        echo -e "    ${Y}[1] 均衡网络优化 (常规通用)${R}"
+        echo -e "    ${Y}[2] 直播网络优化 (针对UDP/流媒体)${R}"
+        echo -e "    ${C}[3] XanMod BBRv3 内核管理${R}"
+        echo -e "    ${H}[0] 返回主菜单${R}"
+        read -e -p "  请选择: " c
+        case "$c" in
+            1) clear; apply_sysctl balance; read -rs -n 1 -p "按任意键继续..." ;;
+            2) clear; apply_sysctl live; read -rs -n 1 -p "按任意键继续..." ;;
+            3) clear; xanmod_manage ;;
+            0|"") break ;;
+        esac
+    done
+}
+
+# ================= Sing-Box 核心 =================
 sb_init_conf() { 
     mkdir -p /etc/sing-box
     cat > "$SB_CONF" <<'EOF'
@@ -333,7 +452,6 @@ sb_del_node() {
         return
     fi
     
-    # 获取端口与类型
     local port=$(jq -r --arg t "$tag" '.inbounds[] | select(.tag==$t) | .listen_port' "$SB_CONF")
     local type=$(jq -r --arg t "$tag" '.inbounds[] | select(.tag==$t) | .type' "$SB_CONF")
     
@@ -341,16 +459,11 @@ sb_del_node() {
         flock -x 200
         cp "$SB_CONF" "${SB_CONF}.bak"
         
-        # 从 config.json 中删除节点
         jq --arg t "$tag" 'del(.inbounds[] | select(.tag==$t))' "$SB_CONF" > "$SB_CONF.tmp"
         
         if $SB_BIN check -c "$SB_CONF.tmp" > /tmp/check.log 2>&1; then
             mv "$SB_CONF.tmp" "$SB_CONF"
-            
-            # 删除防火墙规则
             close_port $port
-            
-            # 清理元数据和证书
             rm -f "${META_DIR}/${tag}.json"
             if [ "$type" == "hysteria2" ]; then
                 rm -rf "/etc/sing-box/certs/hy2-${port}"
@@ -434,7 +547,7 @@ main_menu() {
         echo -e "${G}╔═══════════════════════════════════════════╗${R}"
         echo -e "║          🎉 YW 服务器优化工具箱             ║${R}"
         echo -e "╚═══════════════════════════════════════════╝${R}"
-        echo -e "    ${Y}[1] 🚀 开启 BBR 网络优化${R}"
+        echo -e "    ${Y}[1] 🚀 网络与内核优化 (BBR/XanMod)${R}"
         echo -e "    ${Y}[2] 📦 Sing-Box 管理面板${R}"
         echo -e "    ${H}[0] 退出${R}"
         read -e -p "  请选择: " c
