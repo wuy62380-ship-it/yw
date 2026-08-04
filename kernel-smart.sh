@@ -8,7 +8,7 @@ trap 'rm -rf "$TMP_DIR" 2>/dev/null' EXIT
 trap 'rm -rf "$TMP_DIR" 2>/dev/null; exit 130' INT
 trap 'rm -rf "$TMP_DIR" 2>/dev/null; exit 143' TERM
 
-: "${gl_bai:=\033[0m}" "${gl_lv:=\033[32m}" "${gl_huang:=\033[33m}" "${gl_hui:=\033[90m}" "${gl_red:=\033[31d}" "${gl_kjlan:=\033[36m}"
+: "${gl_bai:=\033[0m}" "${gl_lv:=\033[32m}" "${gl_huang:=\033[33m}" "${gl_hui:=\033[90m}" "${gl_red:=\033[31m}" "${gl_kjlan:=\033[36m}"
 R="${gl_bai}"; G="${gl_lv}"; Y="${gl_huang}"; H="${gl_hui}"; RED="${gl_red}"; C="${gl_kjlan}"
 SB_CONF_LOCK="/var/lock/sing-box-config.lock"
 mkdir -p /var/lock 2>/dev/null
@@ -64,30 +64,20 @@ SB_CONF="/etc/sing-box/config.json"
 
 sb_init_conf() { 
     mkdir -p /etc/sing-box
+    # 核心修复：彻底极简化 DNS 配置，移除所有 1.12+ 废弃的字段
     cat > "$SB_CONF" <<'EOF'
 {
-  "log": {"level": "info", "timestamp": true},
+  "log": {"level": "warn", "timestamp": true},
   "dns": {
     "servers": [
       {
-        "type": "tls",
-        "tag": "google",
-        "server": "8.8.8.8"
-      },
-      {
         "type": "udp",
-        "tag": "local",
+        "tag": "local-dns",
         "server": "223.5.5.5",
         "detour": "direct"
       }
     ],
-    "rules": [
-      {
-        "outbound": "any",
-        "server": "local"
-      }
-    ],
-    "final": "google",
+    "final": "local-dns",
     "strategy": "ipv4_only"
   },
   "inbounds": [],
@@ -129,12 +119,14 @@ sb_check() {
     if [ ! -s "$SB_CONF" ] || ! jq -e . "$SB_CONF" >/dev/null 2>&1; then
         need_reset=1
     else
-        # 检查是否缺少 proxy 出站
+        # 如果缺少 proxy 或 local-dns，或者包含废弃的 address 字段，直接重置
         if ! jq -e '.outbounds[] | select(.tag == "proxy")' "$SB_CONF" >/dev/null 2>&1; then
             need_reset=1
-        fi
-        # 检查是否是旧版 DNS 格式 (包含 address 字段)
-        if jq -e '.dns.servers[] | select(.address)' "$SB_CONF" >/dev/null 2>&1; then
+        elif ! jq -e '.dns.servers[] | select(.tag == "local-dns")' "$SB_CONF" >/dev/null 2>&1; then
+            need_reset=1
+        elif jq -e '.dns.servers[] | select(.address)' "$SB_CONF" >/dev/null 2>&1; then
+            need_reset=1
+        elif jq -e '.dns.rules[] | select(.outbound)' "$SB_CONF" >/dev/null 2>&1; then
             need_reset=1
         fi
     fi
@@ -152,8 +144,8 @@ sb_install() {
     if command -v $SB_BIN >/dev/null 2>&1; then echo -e "${Y}Sing-Box 已安装！${R}"; read -rs -n 1 -p ""; return; fi
     local arch=$(uname -m); case "$arch" in x86_64) arch="amd64";; aarch64) arch="arm64";; *) echo -e "${RED}❌ 不支持 ${arch}${R}"; return 1;; esac
     
-    # 固定安装 1.11.4 版本，避免 1.12+ 的严格废弃警告导致旧客户端无法连接
-    local latest_ver="1.11.4"
+    local latest_ver=$(curl -sL https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r '.tag_name' | sed 's/v//')
+    [ -z "$latest_ver" ] && latest_ver="1.11.4"
     echo -e "${Y}正在安装 Sing-Box v${latest_ver}...${R}"
     mkdir -p /etc/sing-box
     curl -L -o /tmp/sb.tar.gz "https://github.com/SagerNet/sing-box/releases/download/v${latest_ver}/sing-box-${latest_ver}-linux-${arch}.tar.gz" 2>/dev/null
