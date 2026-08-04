@@ -95,7 +95,6 @@ sb_check() {
         echo -e "${RED}请先安装 Sing-Box${R}"; read -rs -n 1 -p ""; return 1; 
     fi
     
-    # 核心修复：自动检测并修复导致启动失败的坏配置
     if ! systemctl is-active --quiet sing-box 2>/dev/null; then
         systemctl restart sing-box >/dev/null 2>&1
         sleep 2
@@ -172,7 +171,8 @@ sb_add_reality() {
     sb_check || return
     local port=$(shuf -i 10000-65535 -n 1)
     local uuid=$($SB_BIN generate uuid)
-    local sni="www.microsoft.com"
+    # 修复：换回参考脚本里的 SNI
+    local sni="apple.com"
     local keys_output=$($SB_BIN generate reality-keypair)
     local priv_key=$(echo "$keys_output" | awk '/PrivateKey/{print $2}')
     local pub_key=$(echo "$keys_output" | awk '/PublicKey/{print $2}')
@@ -203,7 +203,6 @@ sb_add_reality() {
 }
 EOF
 )
-        # 核心修复：仅仅把节点加入 inbounds，不再错误地污染 outbounds
         jq --argjson node "$node_json" '.inbounds += [$node]' "$SB_CONF" > "$SB_CONF.tmp"
         
         if $SB_BIN check -c "$SB_CONF.tmp" > /tmp/check.log 2>&1; then
@@ -270,7 +269,6 @@ sb_add_hysteria2() {
 }
 EOF
 )
-        # 核心修复：仅仅把节点加入 inbounds
         jq --argjson node "$node_json" '.inbounds += [$node]' "$SB_CONF" > "$SB_CONF.tmp"
         
         if $SB_BIN check -c "$SB_CONF.tmp" > /tmp/check.log 2>&1; then
