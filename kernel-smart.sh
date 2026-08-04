@@ -171,9 +171,16 @@ smart_auto_optimize() {
         echo -e "╚═══════════════════════════════════════════╝${R}"
         
         local current_kernel=$(uname -r)
+        
+        # 核心修复：直接读取系统当前拥塞算法来判定模式
+        local current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
         local current_mode="默认设置"
         if [ -f "$MODE_FILE" ]; then
             current_mode=$(cat "$MODE_FILE")
+        elif [ "$current_cc" = "bbr" ]; then
+            current_mode="原版 BBR"
+        elif [ "$current_cc" = "cubic" ]; then
+            current_mode="默认设置"
         fi
         
         echo -e "当前内核: ${C}$current_kernel${R}"
