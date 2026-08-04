@@ -152,7 +152,7 @@ _optimize_nic_queues() {
     done
     for q in /sys/class/net/$main_nic/queues/tx-*; do
         [ -f "$q/xps_cpus" ] && [ -w "$q/xps_cpus" ] && echo $mask > "$q/xps_cpus" 2>/dev/null
-    done
+    fi
 }
 
 get_current_opt_mode() {
@@ -395,7 +395,7 @@ Kernel_optimize() {
     done
 }
 
-# ================= Sing-Box 核心 (恢复完整服务端模板) =================
+# ================= Sing-Box 核心 =================
 SB_BIN="/usr/local/bin/sing-box"
 SB_CONF="/etc/sing-box/config.json"
 META_FILE="/etc/sing-box/.nodes_meta"
@@ -463,12 +463,13 @@ sb_check() {
     if [ ! -s "$SB_CONF" ] || ! jq -e . "$SB_CONF" >/dev/null 2>&1; then
         need_reset=1
     else
-        if ! $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
+        # 核心修复：如果配置文件缺少 proxy 出站，说明是旧版残留，必须重置！
+        if ! jq -e '.outbounds[] | select(.tag == "proxy")' "$SB_CONF" >/dev/null 2>&1; then
             need_reset=1
         fi
     fi
     if [ "$need_reset" -eq 1 ]; then
-        echo -e "${Y}检测到配置文件损坏或校验失败，正在强制重置为初始状态...${R}"
+        echo -e "${Y}检测到配置文件损坏或为旧版格式，正在强制升级为标准模板...${R}"
         mv "$SB_CONF" "${SB_CONF}.corrupted.$(date +%s)" 2>/dev/null
         sb_init_conf
         systemctl restart sing-box >/dev/null 2>&1
@@ -479,7 +480,6 @@ sb_check() {
 sb_init_conf() { 
     if [ ! -f "$SB_CONF" ] || [ ! -s "$SB_CONF" ]; then 
         mkdir -p /etc/sing-box
-        # 恢复为包含完整 DNS 和 Route 规则的标准服务端模板，与甬哥脚本对齐
         cat > "$SB_CONF" <<'EOF'
 {
   "log": {
@@ -891,7 +891,6 @@ sb_add_reality() {
     
     (
         flock -x 200
-        # 添加 inbound，并自动将其注册到 proxy selector 的 default 中
         jq --arg p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" --arg tag "$node_tag" \
            '.inbounds += [{
                "type": "vless",
@@ -1152,7 +1151,6 @@ sb_add_vless_ws() {
     _clean_bak; read -rs -n 1 -p ""
 }
 
-# 客户端配置下载服务保留备用
 generate_client_config() {
     sb_check || return
     local server_ip=$(get_my_ip)
