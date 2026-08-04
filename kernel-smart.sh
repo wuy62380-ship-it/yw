@@ -131,6 +131,38 @@ EOF
     echo -e "内存: ${mem}MB | 拥塞算法: ${cc} | 队列: ${qdisc}"
 }
 
+restore_default() {
+    echo -e "${Y}还原默认设置...${R}"
+    rm -f "$SYSCTL_CONF"
+    rm -f "$MODE_FILE"
+    
+    sed -i '/tcp_congestion_control/d' /etc/sysctl.conf
+    sed -i '/default_qdisc/d' /etc/sysctl.conf
+    
+    echo "net.ipv4.tcp_congestion_control = cubic" >> /etc/sysctl.conf
+    echo "net.core.default_qdisc = fq_codel" >> /etc/sysctl.conf
+    sysctl -p >/dev/null 2>&1
+    
+    local mem=$(free -m | awk '/Mem:/{print $2}')
+    local cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+    local qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
+    
+    echo -e "${G}已还原系统默认网络配置${R}"
+    echo -e "内存: ${mem}MB | 拥塞算法: ${cc} | 队列: ${qdisc}"
+}
+
+bbr_kernel_manage() {
+    local vi=$(systemd-detect-virt 2>/dev/null)
+    if [[ "$vi" =~ lxc|openvz ]]; then
+        echo -e "${RED}当前VPS的架构为 $vi，不支持开启原版BBR加速${R}"
+        read -rs -n 1 -p ""; return
+    fi
+
+    echo -e "${Y}点击任意键，即可开启原版BBR加速，ctrl+c退出${R}"
+    read -rs -n 1
+    bash <(curl -Ls https://raw.githubusercontent.com/teddysun/across/master/bbr.sh)
+}
+
 smart_auto_optimize() {
     while true; do
         clear
@@ -150,7 +182,9 @@ smart_auto_optimize() {
         echo -e "--------------------"
         echo -e "${Y}1 均衡优化模式：       ${R}在性能与资源消耗之间取得平衡，适合日常使用。"
         echo -e "${Y}2 直播优化模式：       ${R}针对直播推流优化，UDP 缓冲区加大，减少延迟。"
+        echo -e "${Y}3 还原默认设置：       ${R}将系统设置还原为默认配置。"
         echo -e "${C}4 XanMod BBRv3 内核管理${R}"
+        echo -e "${C}5 开启原版 BBR 加速 (teddysun)${R}"
         echo -e "--------------------"
         echo -e "${H}0. 返回上一级选单${R}"
         echo -e "--------------------"
@@ -159,7 +193,9 @@ smart_auto_optimize() {
         case "$c" in
             1) clear; apply_optimize balance "均衡优化模式"; echo "操作完成"; read -rs -n 1 -p "按任意键继续..." ;;
             2) clear; apply_optimize live "直播优化模式"; echo "操作完成"; read -rs -n 1 -p "按任意键继续..." ;;
+            3) clear; restore_default; echo "操作完成"; read -rs -n 1 -p "按任意键继续..." ;;
             4) clear; xanmod_manage ;;
+            5) clear; bbr_kernel_manage ;;
             0|"") break ;;
         esac
     done
