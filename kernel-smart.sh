@@ -64,29 +64,56 @@ SB_CONF="/etc/sing-box/config.json"
 
 sb_init_conf() { 
     mkdir -p /etc/sing-box
+    # 核心修复：更新为 sing-box 1.12.0+ 的新版 DNS 格式，移除已废弃的 dns outbound
     cat > "$SB_CONF" <<'EOF'
 {
   "log": {"level": "info", "timestamp": true},
   "dns": {
     "servers": [
-      {"tag": "google", "address": "tls://8.8.8.8"},
-      {"tag": "local", "address": "223.5.5.5", "detour": "direct"},
-      {"tag": "block", "address": "rcode://success"}
+      {
+        "type": "tls",
+        "tag": "google",
+        "server": "8.8.8.8"
+      },
+      {
+        "type": "udp",
+        "tag": "local",
+        "server": "223.5.5.5",
+        "detour": "direct"
+      }
     ],
-    "rules": [{"outbound": "any", "server": "local"}],
+    "rules": [
+      {
+        "outbound": "any",
+        "server": "local"
+      }
+    ],
+    "final": "google",
     "strategy": "ipv4_only"
   },
   "inbounds": [],
   "outbounds": [
-    {"type": "selector", "tag": "proxy", "outbounds": ["direct"], "default": "direct"},
-    {"type": "direct", "tag": "direct"},
-    {"type": "block", "tag": "block"},
-    {"type": "dns", "tag": "dns-out", "server": "google"}
+    {
+      "type": "selector",
+      "tag": "proxy",
+      "outbounds": ["direct"],
+      "default": "direct"
+    },
+    {
+      "type": "direct",
+      "tag": "direct"
+    },
+    {
+      "type": "block",
+      "tag": "block"
+    }
   ],
   "route": {
     "rules": [
-      {"protocol": "dns", "outbound": "dns-out"},
-      {"ip_is_private": true, "outbound": "direct"}
+      {
+        "ip_is_private": true,
+        "outbound": "direct"
+      }
     ],
     "final": "proxy",
     "auto_detect_interface": true
@@ -162,7 +189,6 @@ sb_add_reality() {
         flock -x 200
         cp "$SB_CONF" "${SB_CONF}.bak"
         
-        # 使用 jq 直接生成并合并配置，确保绝对不出现语法错误
         jq --arg p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" --arg tag "$node_tag" \
            '.inbounds += [{
                "type": "vless",
