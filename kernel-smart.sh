@@ -198,87 +198,187 @@ smart_auto_optimize() {
     done
 }
 
-# XanMod 内核管理
-xanmod_manage() {
-    if ! command -v apt-get >/dev/null 2>&1; then
-        echo -e "${RED}仅支持 Debian/Ubuntu 系统安装 XanMod 内核${R}"
-        read -rs -n 1 -p ""; return
+# ================= 融合科技佬的 XanMod 核心逻辑 =================
+xanmod_add_repo() {
+    local keyring="/usr/share/keyrings/xanmod-archive-keyring.gpg"
+    local list_file="/etc/apt/sources.list.d/xanmod-release.list"
+    local key_url="https://dl.xanmod.org/archive.key"
+    local os_codename=""
+
+    if command -v lsb_release >/dev/null 2>&1; then
+        os_codename=$(lsb_release -sc)
+    elif [ -r /etc/os-release ]; then
+        os_codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
     fi
 
-    local current_kernel=$(uname -r)
-    if echo "$current_kernel" | grep -q "xanmod"; then
-        echo -e "${G}您已安装xanmod的BBRv3内核${R}"
-        echo -e "当前内核版本: ${C}$current_kernel${R}\n"
-        echo -e "${Y}内核管理${R}"
-        echo -e "------------------------"
-        echo -e "${Y}1. 更新BBRv3内核              2. 卸载BBRv3内核${R}"
-        echo -e "------------------------"
-        echo -e "${H}0. 返回上一级选单${R}"
-        read -e -p "请选择: " c
-        case "$c" in
-            1) xanmod_install ;;
-            2) xanmod_uninstall ;;
-            0|"") return ;;
-        esac
-    else
-        echo -e "${Y}当前未安装 XanMod BBRv3 内核 (当前内核: $current_kernel)${R}"
-        echo -e "1. 安装 BBRv3 内核"
-        echo -e "0. 返回上一级选单"
-        read -e -p "请选择: " c
-        if [ "$c" == "1" ]; then
-            xanmod_install
-        fi
+    # 兼容官方已移除的老系统代号
+    if ! echo "bookworm trixie forky sid noble plucky questing resolute faye gigi wilma xia zara zena" | grep -qw "$os_codename"; then
+        os_codename="releases"
     fi
+
+    # 官方已彻底移除对 jammy, focal, bullseye 等老系统的支持
+    if echo "jammy focal bullseye buster" | grep -qw "$os_codename" || [ "$os_codename" = "releases" ]; then
+        echo -e "${RED}XanMod 官方已停止对当前系统($os_codename)的 APT 源支持，请升级至 Debian12 / Ubuntu24 或更高版本。${R}"
+        return 1
+    fi
+
+    if [ -z "$os_codename" ]; then
+        echo -e "${RED}无法获取系统代号，无法配置XanMod源${R}"
+        return 1
+    fi
+
+    echo -e "${Y}正在安装依赖并下载密钥...${R}"
+    apt-get install -y wget gnupg ca-certificates >/dev/null 2>&1
+    mkdir -p /usr/share/keyrings /etc/apt/sources.list.d
+    if ! wget -qO - "$key_url" | gpg --dearmor -o "$keyring" --yes; then
+        echo -e "${RED}官方密钥下载失败${R}"
+        return 1
+    fi
+    chmod 644 "$keyring"
+    echo "deb [signed-by=$keyring] http://deb.xanmod.org $os_codename main" > "$list_file"
+    echo -e "${G}XanMod 源配置完成 (系统代号: $os_codename)${R}"
 }
 
-# 核心修复：动态获取系统代号配置 APT 源，彻底解决 404 问题
-xanmod_install() {
-    echo -e "${Y}正在添加 XanMod 源并安装 BBRv3 内核...${R}"
-    
-    # 获取系统代号，如 trixie, bookworm, jammy 等
-    local codename=$(grep VERSION_CODENAME /etc/os-release | cut -d'=' -f2)
-    if [ -z "$codename" ]; then
-        codename="releases" # 如果获取不到，回退到 releases
-    fi
-    
-    rm -f /etc/apt/sources.list.d/xanmod-release.list
-    echo "deb http://deb.xanmod.org $codename main" | tee /etc/apt/sources.list.d/xanmod-release.list
-    
-    apt install -y gnupg ca-certificates
-    wget -qO - https://dl.xanmod.org/archive.key | gpg --dearmor --yes -o /usr/share/keyrings/xanmod-archive-keyring.gpg
-    
-    apt update -y
-    apt install -y linux-xanmod-x64v3
-    
-    if [ $? -eq 0 ]; then
-        if command -v update-grub >/dev/null 2>&1; then
-            sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT=0/g' /etc/default/grub
-            update-grub
-        else
-            grub2-mkconfig -o /boot/grub2/grub.cfg
-        fi
-        echo -e "${G}✅ XanMod 内核安装完成！${R}"
-        ask_reboot
+xanmod_detect_psabi_level() {
+    local psabi_output=""
+    psabi_output=$(awk 'BEGIN {
+        while (!/flags/) if (getline < "/proc/cpuinfo" != 1) exit 1
+        if (/lm/&&/cmov/&&/cx8/&&/fpu/&&/fxsr/&&/mmx/&&/syscall/&&/sse2/) level = 1
+        if (level == 1 && /cx16/&&/lahf/&&/popcnt/&&/sse4_1/&&/sse4_2/&&/ssse3/) level = 2
+        if (level == 2 && /avx/&&/avx2/&&/bmi1/&&/bmi2/&&/f16c/&&/fma/&&/abm/&&/movbe/&&/xsave/) level = 3
+        if (level == 3 && /avx512f/&&/avx512bw/&&/avx512cd/&&/avx512dq/&&/avx512vl/) level = 4
+        if (level > 0) { print level; exit }
+        exit 1
+    }' /proc/cpuinfo 2>/dev/null) || return 1
+    printf '%s' "$psabi_output" | tr -dc '0-9' | head -c 1
+}
+
+xanmod_package_available() {
+    local package="$1"
+    apt-cache policy "$package" 2>/dev/null | grep -q 'Candidate: [^ ]'
+}
+
+xanmod_detect_package() {
+    local psabi_level=""
+    local level=""
+    local package=""
+    local prefix_list="linux-xanmod linux-xanmod-lts"
+
+    psabi_level=$(xanmod_detect_psabi_level) || return 1
+    [ -n "$psabi_level" ] || return 1
+    [ "$psabi_level" -gt 3 ] && psabi_level=3
+
+    apt-get update -y >/dev/null 2>&1
+
+    for prefix in $prefix_list; do
+        level="$psabi_level"
+        while [ "$level" -ge 1 ]; do
+            package="${prefix}-x64v${level}"
+            if xanmod_package_available "$package"; then
+                echo -e "${G}已自动匹配合适安装包: $package${R}" >&2
+                printf '%s\n' "$package"
+                return 0
+            fi
+            level=$((level - 1))
+        done
+    done
+
+    echo -e "${RED}软件源中未找到适配此CPU的XanMod内核包${R}" >&2
+    return 1
+}
+
+xanmod_installed() {
+    dpkg-query -W -f='${Package}\n' 'linux-*xanmod*' 2>/dev/null | grep -q '^linux-.*xanmod'
+}
+
+xanmod_install_or_update() {
+    local action="$1"
+    local package=""
+
+    xanmod_add_repo || {
+        echo -e "${RED}XanMod官方仓库配置失败，请稍后重试${R}"
+        return 1
+    }
+
+    package=$(xanmod_detect_package) || {
+        echo -e "${RED}无法识别当前CPU或找不到匹配内核包，已取消安装${R}"
+        return 1
+    }
+
+    echo -e "${Y}正在更新软件源并安装内核 (包大小约100MB，请耐心等待)...${R}"
+    apt-get update -y
+    if [ "$action" = "update" ]; then
+        apt-get install -y --only-upgrade "$package" || apt-get install -y "$package" || {
+            echo -e "${RED}XanMod内核更新失败，请检查软件源或稍后重试${R}"
+            return 1
+        }
     else
-        echo -e "${RED}❌ XanMod 内核安装失败，请检查网络或源配置。${R}"
+        apt-get install -y "$package" || {
+            echo -e "${RED}XanMod内核安装失败，请检查软件源或稍后重试${R}"
+            return 1
+        }
     fi
+
+    # 写入 BBR 优化参数 (替代科技佬的 bbr_on)
+    apply_optimize balance "均衡优化模式" > /dev/null
+    
+    echo -e "${G}XanMod BBRv3内核处理完成。重启后生效${R}"
+    ask_reboot
 }
 
 xanmod_uninstall() {
     echo -e "${Y}正在卸载 XanMod 内核...${R}"
-    apt purge -y $(dpkg -l | grep -i xanmod | awk '{print $2}')
-    rm -f /etc/apt/sources.list.d/xanmod-release.list
-    rm -f /usr/share/keyrings/xanmod-archive-keyring.gpg
-    apt autoremove -y --purge
-    
+    apt-get purge -y 'linux-*xanmod*'
+    apt-get autoremove -y
     if command -v update-grub >/dev/null 2>&1; then
         sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT=0/g' /etc/default/grub
         update-grub
     else
         grub2-mkconfig -o /boot/grub2/grub.cfg
     fi
-    echo -e "${G}✅ XanMod 内核已卸载。${R}"
+    rm -f /etc/apt/sources.list.d/xanmod-release.list
+    rm -f /usr/share/keyrings/xanmod-archive-keyring.gpg
+    echo -e "${G}XanMod内核已卸载。重启后生效${R}"
     ask_reboot
+}
+
+xanmod_manage() {
+    if ! command -v apt-get >/dev/null 2>&1; then
+        echo -e "${RED}仅支持 Debian/Ubuntu 系统安装 XanMod 内核${R}"
+        read -rs -n 1 -p ""; return
+    fi
+
+    if xanmod_installed; then
+        while true; do
+            clear
+            local kernel_version=$(uname -r)
+            echo -e "${G}您已安装xanmod的BBRv3内核${R}"
+            echo -e "当前内核版本: ${C}$kernel_version${R}\n"
+            echo -e "${Y}内核管理${R}"
+            echo -e "------------------------"
+            echo -e "${Y}1. 更新BBRv3内核              2. 卸载BBRv3内核${R}"
+            echo -e "------------------------"
+            echo -e "${H}0. 返回上一级选单${R}"
+            read -e -p "请输入你的选择: " sub_choice
+            case $sub_choice in
+                1) xanmod_install_or_update update ;;
+                2) xanmod_uninstall ;;
+                *) break ;;
+            esac
+        done
+    else
+        clear
+        echo -e "${Y}设置BBR3加速${R}"
+        echo -e "------------------------------------------------"
+        echo -e "仅支持Debian/Ubuntu"
+        echo -e "请备份数据，将为你升级Linux内核开启BBR3"
+        echo -e "------------------------------------------------"
+        read -e -p "确定继续吗？[Y/n]: " choice
+        case "$choice" in
+            [Yy]|"") xanmod_install_or_update install ;;
+            *) echo -e "${Y}已取消${R}" ;;
+        esac
+    fi
 }
 
 # ================= Sing-Box 核心 =================
