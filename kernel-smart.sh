@@ -30,23 +30,24 @@ root_use() { [ "$(id -u)" -ne 0 ] && { echo -e "${RED}错误：请使用 root �
 check_env() {
     root_use
     local need_update=0
-    for cmd in curl wget jq openssl iptables tar python3 ip ss free modprobe ethtool shuf; do
+    # 强化了依赖检测，包含 shuf 和 qrencode
+    for cmd in curl wget jq openssl iptables tar ip ss free modprobe ethtool shuf qrencode; do
         command -v $cmd >/dev/null 2>&1 || need_update=1
     done
     if [ "$need_update" -eq 1 ]; then
-        echo -e "${Y}正在准备基础环境...${R}"
+        echo -e "${Y}正在准备基础环境 (包含二维码工具)...${R}"
         export DEBIAN_FRONTEND=noninteractive
         if command -v apt-get >/dev/null 2>&1; then
             apt-get update -y >/dev/null 2>&1
-            apt-get install -y curl wget jq openssl iptables tar python3 ca-certificates iproute2 procps kmod ethtool coreutils >/dev/null 2>&1
+            apt-get install -y curl wget jq openssl iptables tar ca-certificates iproute2 procps kmod ethtool coreutils qrencode >/dev/null 2>&1
         elif command -v yum >/dev/null 2>&1; then
             yum update -y >/dev/null 2>&1
-            yum install -y curl wget jq openssl iptables tar python3 ca-certificates iproute procps-ng kmod ethtool coreutils >/dev/null 2>&1
+            yum install -y curl wget jq openssl iptables tar ca-certificates iproute procps-ng kmod ethtool coreutils qrencode >/dev/null 2>&1
         elif command -v apk >/dev/null 2>&1; then
             apk update >/dev/null 2>&1
-            apk add curl wget jq openssl iptables tar python3 ca-certificates iproute2 procps kmod ethtool coreutils >/dev/null 2>&1
+            apk add curl wget jq openssl iptables tar ca-certificates iproute2 procps kmod ethtool coreutils qrencode >/dev/null 2>&1
         fi
-        if ! command -v jq >/dev/null 2>&1 || ! command -v shuf >/dev/null 2>&1; then
+        if ! command -v jq >/dev/null 2>&1 || ! command -v shuf >/dev/null 2>&1 || ! command -v qrencode >/dev/null 2>&1; then
             echo -e "${RED}❌ 核心依赖安装失败，请检查网络或包管理器！${R}"
             exit 1
         fi
@@ -153,7 +154,6 @@ _optimize_nic_queues() {
     for q in /sys/class/net/$main_nic/queues/tx-*; do
         [ -f "$q/xps_cpus" ] && [ -w "$q/xps_cpus" ] && echo $mask > "$q/xps_cpus" 2>/dev/null
     done
-    [ -f /proc/sys/net/core/rps_sock_flow_entries ] && [ -w /proc/sys/net/core/rps_sock_flow_entries ] && echo 32768 > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null
 }
 
 get_current_opt_mode() {
@@ -396,7 +396,7 @@ Kernel_optimize() {
     done
 }
 
-# ================= Sing-Box 核心 (移植甬哥逻辑) =================
+# ================= Sing-Box 核心 =================
 SB_BIN="/usr/local/bin/sing-box"
 SB_CONF="/etc/sing-box/config.json"
 META_FILE="/etc/sing-box/.nodes_meta"
@@ -1097,7 +1097,7 @@ sb_add_vless_ws() {
     _clean_bak; read -rs -n 1 -p ""
 }
 
-# 移植甬哥逻辑：生成客户端配置文件 (解决 WiFi 断流)
+# 核心功能：生成包含二维码的客户端配置文件
 generate_client_config() {
     sb_check || return
     local server_ip=$(get_my_ip)
@@ -1199,14 +1199,14 @@ generate_client_config() {
         return
     fi
 
-    # 移植甬哥逻辑：移除废弃的 dns outbound，强制 ipv4_only，修复 sing-box 1.10+ 客户端在 WiFi 下断流的问题
-    cat <<EOF
+    # 生成 JSON 并保存到临时文件
+    cat <<EOF > "$TMP_DIR/client_config.json"
 {
   "log": { "level": "info", "timestamp": true },
   "dns": {
     "servers": [
-      { "tag": "proxy-dns", "address": "https://1.1.1.1/dns-query", "detour": "proxy" },
-      { "tag": "direct-dns", "address": "https://223.5.5.5/dns-query", "detour": "direct" }
+      { "tag": "proxy-dns", "address": "tls://8.8.8.8", "detour": "proxy" },
+      { "tag": "direct-dns", "address": "tls://223.5.5.5", "detour": "direct" }
     ],
     "rules": [
       { "outbound": "any", "server": "direct-dns" }
@@ -1229,7 +1229,7 @@ generate_client_config() {
   "route": {
     "rules": [
       { "action": "sniff" },
-      { "type": "logical", "mode": "or", "rules": [{ "protocol": "dns" }, { "port": 53 }], "action": "hijack-dns" },
+      { "protocol": "dns", "action": "hijack-dns" },
       { "ip_is_private": true, "outbound": "direct" }
     ],
     "final": "proxy",
@@ -1237,9 +1237,21 @@ generate_client_config() {
   }
 }
 EOF
+
+    echo -e "${G}╔═══════════════════════════════════════════╗${R}"
+    echo -e "${G}║       📱 客户端配置文件生成完毕            ║${R}"
+    echo -e "${G}╚═══════════════════════════════════════════╝${R}"
+    echo -e "${Y}请使用 sing-box 客户端 (SFA/SFM/NekoBox) 扫描下方二维码直接导入配置。${R}"
+    echo -e "${H}此配置已内置防 WiFi 断流参数 (ipv4_only + strict_route=false)。${R}"
+    echo -e "${C}-------------------------------------------${R}"
+    
+    # 生成二维码显示在终端
+    qrencode -t ansiutf8 < "$TMP_DIR/client_config.json"
+    
+    echo -e "${C}-------------------------------------------${R}"
+    echo -e "${H}如果二维码无法扫描，请手动复制以下内容导入：${R}"
+    cat "$TMP_DIR/client_config.json"
     echo ""
-    echo -e "${G}请复制以上全部 JSON 内容，在客户端软件中选择'从剪贴板导入'或'新建配置文件'并粘贴。${R}"
-    echo -e "${Y}此配置已彻底解决 sing-box 1.10+ 客户端在 WiFi 下无网络的问题。${R}"
     read -rs -n 1 -p "按任意键继续..."
 }
 
@@ -1436,7 +1448,7 @@ sb_menu() {
         echo -e "${H}[5] 查看节点与链接${R}"
         echo -e "${H}[6] 删除节点${R}"
         echo -e "${H}────────────────────────${R}"
-        echo -e "${G}[14] 生成客户端配置文件 (完美兼容WiFi)${R}" # 新增菜单项
+        echo -e "${G}[14] 生成客户端配置二维码 (完美兼容WiFi)${R}"
         echo -e "${H}────────────────────────${R}"
         echo -e "${H}[7] 安装 Sing-Box${R}"
         echo -e "${H}[8] 更新 Sing-Box${R}"
@@ -1455,7 +1467,7 @@ sb_menu() {
             1) clear; sb_add_reality ;; 2) clear; sb_add_hysteria2 ;;
             3) clear; sb_add_tuic ;; 4) clear; sb_add_vless_ws ;;
             5) clear; sb_show_nodes_and_links ;; 6) clear; sb_del_node ;;
-            14) clear; generate_client_config ;; # 绑定新功能
+            14) clear; generate_client_config ;;
             7) clear; sb_install ;; 8) clear; sb_update ;; 9) clear; sb_uninstall ;;
             10) clear; systemctl restart sing-box && echo -e "${G}✅ 已重启${R}" || echo -e "${RED}重启失败${R}"; read -rs -n 1 -p "" ;;
             11) clear; sb_view_log ;; 12) clear; manual_open_port ;;
