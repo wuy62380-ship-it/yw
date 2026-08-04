@@ -35,7 +35,6 @@ check_env() {
         fi
         echo -e "${G}✅ 基础环境准备完毕！${R}"
     fi
-    # 修复：强制同步系统时间，防止 Reality 因时间差握手失败
     echo -e "${Y}正在同步系统时间...${R}"
     if command -v systemctl >/dev/null 2>&1; then
         systemctl enable systemd-timesyncd >/dev/null 2>&1
@@ -95,8 +94,22 @@ sb_check() {
     if ! command -v $SB_BIN >/dev/null 2>&1; then 
         echo -e "${RED}请先安装 Sing-Box${R}"; read -rs -n 1 -p ""; return 1; 
     fi
+    
+    # 核心修复：自动检测并修复导致启动失败的坏配置
+    if ! systemctl is-active --quiet sing-box 2>/dev/null; then
+        systemctl restart sing-box >/dev/null 2>&1
+        sleep 2
+        if ! systemctl is-active --quiet sing-box 2>/dev/null; then
+            echo -e "${Y}检测到 Sing-Box 服务未运行，可能是旧配置损坏，正在自动重置基础配置...${R}"
+            mv "$SB_CONF" "${SB_CONF}.bak.$(date +%s)" 2>/dev/null
+            sb_init_conf
+            systemctl restart sing-box >/dev/null 2>&1
+            sleep 2
+        fi
+    fi
+    
     if ! $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
-        echo -e "${Y}检测到配置文件非标准模板或已损坏，正在强制重置...${R}"
+        echo -e "${Y}检测到配置文件语法错误，正在强制重置...${R}"
         mv "$SB_CONF" "${SB_CONF}.bak.$(date +%s)" 2>/dev/null
         sb_init_conf
         systemctl restart sing-box >/dev/null 2>&1
@@ -159,7 +172,6 @@ sb_add_reality() {
     sb_check || return
     local port=$(shuf -i 10000-65535 -n 1)
     local uuid=$($SB_BIN generate uuid)
-    # 修复：更换为更稳定不易被干扰的 SNI
     local sni="www.microsoft.com"
     local keys_output=$($SB_BIN generate reality-keypair)
     local priv_key=$(echo "$keys_output" | awk '/PrivateKey/{print $2}')
@@ -191,7 +203,8 @@ sb_add_reality() {
 }
 EOF
 )
-        jq --argjson node "$node_json" '.inbounds += [$node] | .outbounds[0].outbounds += [$node.tag] | .outbounds[0].default = $node.tag' "$SB_CONF" > "$SB_CONF.tmp"
+        # 核心修复：仅仅把节点加入 inbounds，不再错误地污染 outbounds
+        jq --argjson node "$node_json" '.inbounds += [$node]' "$SB_CONF" > "$SB_CONF.tmp"
         
         if $SB_BIN check -c "$SB_CONF.tmp" > /tmp/check.log 2>&1; then
             mv "$SB_CONF.tmp" "$SB_CONF"
@@ -201,12 +214,10 @@ EOF
 {"public_key":"$pub_key","short_id":"$short_id","sni":"$sni","uuid":"$uuid","port":$port}
 EOF
             
-            # 核心修复：检查 sing-box 是否真正运行起来
             systemctl restart sing-box
             sleep 2
             if ! systemctl is-active --quiet sing-box; then
-                echo -e "${RED}❌ Sing-Box 启动失败！可能是端口冲突或架构不支持。${R}"
-                echo -e "${Y}错误日志：${R}"
+                echo -e "${RED}❌ Sing-Box 启动失败！可能是端口冲突。${R}"
                 journalctl -u sing-box -n 10 --no-pager
                 cp "${SB_CONF}.bak" "$SB_CONF"
                 rm -f "${META_DIR}/${node_tag}.json"
@@ -259,7 +270,8 @@ sb_add_hysteria2() {
 }
 EOF
 )
-        jq --argjson node "$node_json" '.inbounds += [$node] | .outbounds[0].outbounds += [$node.tag] | .outbounds[0].default = $node.tag' "$SB_CONF" > "$SB_CONF.tmp"
+        # 核心修复：仅仅把节点加入 inbounds
+        jq --argjson node "$node_json" '.inbounds += [$node]' "$SB_CONF" > "$SB_CONF.tmp"
         
         if $SB_BIN check -c "$SB_CONF.tmp" > /tmp/check.log 2>&1; then
             mv "$SB_CONF.tmp" "$SB_CONF"
