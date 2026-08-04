@@ -67,68 +67,27 @@ sb_init_conf() {
     mkdir -p /etc/sing-box
     cat > "$SB_CONF" <<'EOF'
 {
-  "log": {
-    "level": "info",
-    "timestamp": true
-  },
+  "log": {"level": "info", "timestamp": true},
   "dns": {
     "servers": [
-      {
-        "tag": "google",
-        "address": "tls://8.8.8.8"
-      },
-      {
-        "tag": "local",
-        "address": "223.5.5.5",
-        "detour": "direct"
-      },
-      {
-        "tag": "block",
-        "address": "rcode://success"
-      }
+      {"tag": "google", "address": "tls://8.8.8.8"},
+      {"tag": "local", "address": "223.5.5.5", "detour": "direct"},
+      {"tag": "block", "address": "rcode://success"}
     ],
-    "rules": [
-      {
-        "outbound": "any",
-        "server": "local"
-      }
-    ],
+    "rules": [{"outbound": "any", "server": "local"}],
     "strategy": "ipv4_only"
   },
   "inbounds": [],
   "outbounds": [
-    {
-      "type": "selector",
-      "tag": "proxy",
-      "outbounds": [
-        "direct"
-      ],
-      "default": "direct"
-    },
-    {
-      "type": "direct",
-      "tag": "direct"
-    },
-    {
-      "type": "block",
-      "tag": "block"
-    },
-    {
-      "type": "dns",
-      "tag": "dns-out",
-      "server": "google"
-    }
+    {"type": "selector", "tag": "proxy", "outbounds": ["direct"], "default": "direct"},
+    {"type": "direct", "tag": "direct"},
+    {"type": "block", "tag": "block"},
+    {"type": "dns", "tag": "dns-out", "server": "google"}
   ],
   "route": {
     "rules": [
-      {
-        "protocol": "dns",
-        "outbound": "dns-out"
-      },
-      {
-        "ip_is_private": true,
-        "outbound": "direct"
-      }
+      {"protocol": "dns", "outbound": "dns-out"},
+      {"ip_is_private": true, "outbound": "direct"}
     ],
     "final": "proxy",
     "auto_detect_interface": true
@@ -189,6 +148,34 @@ EOF
     read -rs -n 1 -p ""
 }
 
+# 通用添加节点函数
+_sb_add_node() {
+    local node_json=$1
+    local port=$2
+    local node_tag=$3
+    
+    (
+        flock -x 200
+        cp "$SB_CONF" "${SB_CONF}.bak"
+        # 使用 --slurpfile 读取临时 JSON 文件，避免 jq 内部语法错误
+        echo "$node_json" > "$TMP_DIR/node.json"
+        jq --slurpfile node "$TMP_DIR/node.json" \
+           '.inbounds += $node[0] 
+           | .outbounds |= map(if .tag == "proxy" then .outbounds += [$node[0][0].tag] | .default = $node[0][0].tag else . end)' "$SB_CONF" > "$TMP_DIR/sb_cfg.json"
+        
+        if $SB_BIN check -c "$TMP_DIR/sb_cfg.json" >/dev/null 2>&1; then
+            mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
+            iptables -C INPUT -p tcp --dport ${port} -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport ${port} -j ACCEPT
+            iptables -C INPUT -p udp --dport ${port} -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport ${port} -j ACCEPT
+            systemctl restart sing-box
+            echo -e "${G}✅ 节点添加成功！${R}"
+        else
+            echo -e "${RED}❌ 配置校验失败，已回滚。${R}"
+            cp "${SB_CONF}.bak" "$SB_CONF"
+        fi
+    ) 200>"$SB_CONF_LOCK"
+}
+
 sb_add_reality() {
     sb_check || return
     local port=$(shuf -i 10000-65535 -n 1)
@@ -200,25 +187,112 @@ sb_add_reality() {
     local short_id=$($SB_BIN generate rand --hex 8)
     local node_tag="vless-reality-${port}"
     
-    (
-        flock -x 200
-        cp "$SB_CONF" "${SB_CONF}.bak"
-        jq --arg p "$port" --arg u "$uuid" --arg s "$sni" --arg pk "$priv_key" --arg sid "$short_id" --arg tag "$node_tag" \
-           '.inbounds += [{"type":"vless","tag":$tag,"listen":"::","listen_port":($p|tonumber),"users":[{"uuid":$u,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$s,"alpn":["h2","http/1.1"],"reality":{"enabled":true,"handshake":{"server":$s,"server_port":443},"private_key":$pk,"short_id":[$sid]}}}]
-           | .outbounds |= map(if .tag == "proxy" then .outbounds += [$tag] | .default = $tag else . end)' "$SB_CONF" > "$TMP_DIR/sb_cfg.json" && mv "$TMP_DIR/sb_cfg.json" "$SB_CONF"
-    ) 200>"$SB_CONF_LOCK"
+    # 构造 JSON 字符串
+    local node_json=$(cat <<EOF
+[{
+  "type": "vless",
+  "tag": "$node_tag",
+  "listen": "::",
+  "listen_port": $port,
+  "users": [{"uuid": "$uuid", "flow": "xtls-rprx-vision"}],
+  "tls": {
+    "enabled": true,
+    "server_name": "$sni",
+    "alpn": ["h2", "http/1.1"],
+    "reality": {
+      "enabled": true,
+      "handshake": {"server": "$sni", "server_port": 443},
+      "private_key": "$priv_key",
+      "short_id": ["$short_id"]
+    }
+  }
+}]
+EOF
+)
+    _sb_add_node "$node_json" "$port" "$node_tag"
     
-    if $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
-        iptables -C INPUT -p tcp --dport ${port} -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport ${port} -j ACCEPT
-        iptables -C INPUT -p udp --dport ${port} -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport ${port} -j ACCEPT
-        systemctl restart sing-box
-        echo -e "${G}✅ VLESS-Reality 部署成功！${R}"
+    if jq -e '.inbounds[] | select(.tag == "'$node_tag'")' "$SB_CONF" >/dev/null 2>&1; then
         local server_ip=$(get_my_ip)
         local link="vless://${uuid}@${server_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&spx=%2F#YW-Reality"
         echo -e "${C}节点链接: ${link}${R}"
-    else
-        echo -e "${RED}❌ 配置校验失败${R}"
-        cp "${SB_CONF}.bak" "$SB_CONF"
+    fi
+    read -rs -n 1 -p ""
+}
+
+sb_add_hysteria2() {
+    sb_check || return
+    local port=$(shuf -i 10000-65535 -n 1)
+    local pass=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)
+    local sni="www.apple.com"
+    local cert_dir="/etc/sing-box/certs/hy2-${port}"
+    mkdir -p "$cert_dir"
+    openssl ecparam -genkey -name prime256v1 -out "${cert_dir}/key.pem" 2>/dev/null
+    openssl req -new -x509 -days 3650 -key "${cert_dir}/key.pem" -out "${cert_dir}/cert.pem" -subj "/CN=${sni}" 2>/dev/null
+    local node_tag="hysteria2-${port}"
+    
+    local node_json=$(cat <<EOF
+[{
+  "type": "hysteria2",
+  "tag": "$node_tag",
+  "listen": "::",
+  "listen_port": $port,
+  "users": [{"password": "$pass"}],
+  "tls": {
+    "enabled": true,
+    "server_name": "$sni",
+    "alpn": ["h3"],
+    "certificate_path": "${cert_dir}/cert.pem",
+    "key_path": "${cert_dir}/key.pem"
+  },
+  "ignore_client_bandwidth": false
+}]
+EOF
+)
+    _sb_add_node "$node_json" "$port" "$node_tag"
+    
+    if jq -e '.inbounds[] | select(.tag == "'$node_tag'")' "$SB_CONF" >/dev/null 2>&1; then
+        local server_ip=$(get_my_ip)
+        local link="hysteria2://$(url_encode "$pass")@${server_ip}:${port}?insecure=1&alpn=h3&sni=${sni}#YW-Hy2"
+        echo -e "${C}节点链接: ${link}${R}"
+    fi
+    read -rs -n 1 -p ""
+}
+
+sb_add_tuic() {
+    sb_check || return
+    local port=$(shuf -i 10000-65535 -n 1)
+    local uuid=$($SB_BIN generate uuid)
+    local pass=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)
+    local sni="www.apple.com"
+    local cert_dir="/etc/sing-box/certs/tuic-${port}"
+    mkdir -p "$cert_dir"
+    openssl ecparam -genkey -name prime256v1 -out "${cert_dir}/key.pem" 2>/dev/null
+    openssl req -new -x509 -days 3650 -key "${cert_dir}/key.pem" -out "${cert_dir}/cert.pem" -subj "/CN=${sni}" 2>/dev/null
+    local node_tag="tuic-${port}"
+    
+    local node_json=$(cat <<EOF
+[{
+  "type": "tuic",
+  "tag": "$node_tag",
+  "listen": "::",
+  "listen_port": $port,
+  "users": [{"uuid": "$uuid", "password": "$pass"}],
+  "tls": {
+    "enabled": true,
+    "server_name": "$sni",
+    "alpn": ["h3"],
+    "certificate_path": "${cert_dir}/cert.pem",
+    "key_path": "${cert_dir}/key.pem"
+  }
+}]
+EOF
+)
+    _sb_add_node "$node_json" "$port" "$node_tag"
+    
+    if jq -e '.inbounds[] | select(.tag == "'$node_tag'")' "$SB_CONF" >/dev/null 2>&1; then
+        local server_ip=$(get_my_ip)
+        local link="tuic://${uuid}:$(url_encode "$pass")@${server_ip}:${port}?congestion_control=bbr&alpn=h3&sni=${sni}&allow_insecure=1#YW-TUIC"
+        echo -e "${C}节点链接: ${link}${R}"
     fi
     read -rs -n 1 -p ""
 }
@@ -227,7 +301,16 @@ sb_show_links() {
     sb_check || return
     local server_ip=$(get_my_ip)
     echo -e "\n${Y}===== 节点链接 =====${R}"
-    jq -r '.inbounds[] | select(.type=="vless" and .tls.reality.enabled==true) | "vless://" + (.users[0].uuid) + "@" + "'"$server_ip"':" + (.listen_port|tostring) + "?encryption=none&flow=xtls-rprx-vision&security=reality&sni=" + .tls.server_name + "&fp=chrome&pbk=" + (.tls.reality.public_key // "ERROR") + "&sid=" + (.tls.reality.short_id[0] // "") + "&type=tcp&spx=%2F#Node"' "$SB_CONF" 2>/dev/null
+    
+    # Reality
+    jq -r --arg ip "$server_ip" '.inbounds[] | select(.type=="vless" and .tls.reality.enabled==true) | "vless://" + (.users[0].uuid) + "@" + $ip + ":" + (.listen_port|tostring) + "?encryption=none&flow=xtls-rprx-vision&security=reality&sni=" + .tls.server_name + "&fp=chrome&pbk=" + .tls.reality.public_key + "&sid=" + (.tls.reality.short_id[0]|default("")) + "&type=tcp&spx=%2F#Node"' "$SB_CONF" 2>/dev/null
+    
+    # Hysteria2
+    jq -r --arg ip "$server_ip" '.inbounds[] | select(.type=="hysteria2") | "hysteria2://" + .users[0].password + "@" + $ip + ":" + (.listen_port|tostring) + "?insecure=1&alpn=h3&sni=" + .tls.server_name + "#Node"' "$SB_CONF" 2>/dev/null
+    
+    # TUIC
+    jq -r --arg ip "$server_ip" '.inbounds[] | select(.type=="tuic") | "tuic://" + .users[0].uuid + ":" + .users[0].password + "@" + $ip + ":" + (.listen_port|tostring) + "?congestion_control=bbr&alpn=h3&sni=" + .tls.server_name + "&allow_insecure=1#Node"' "$SB_CONF" 2>/dev/null
+    
     read -rs -n 1 -p ""
 }
 
@@ -235,17 +318,21 @@ sb_menu() {
     while true; do
         clear
         echo -e "${G}╔════════════════════════════════╗"
-        echo -e "║       Sing-Box 极简管理面板        ║"
+        echo -e "║       Sing-Box 管理面板            ║"
         echo -e "╚════════════════════════════════╝${R}"
         echo -e "    ${Y}[1] 安装 Sing-Box${R}"
         echo -e "    ${Y}[2] 添加 VLESS-Reality 节点${R}"
-        echo -e "    ${Y}[3] 查看节点链接${R}"
+        echo -e "    ${Y}[3] 添加 Hysteria2 节点${R}"
+        echo -e "    ${Y}[4] 添加 TUIC v5 节点${R}"
+        echo -e "    ${Y}[5] 查看所有节点链接${R}"
         echo -e "    ${H}[0] 返回主菜单${R}"
         read -e -p "  选择: " c
         case "$c" in
             1) clear; sb_install ;;
             2) clear; sb_add_reality ;;
-            3) clear; sb_show_links ;;
+            3) clear; sb_add_hysteria2 ;;
+            4) clear; sb_add_tuic ;;
+            5) clear; sb_show_links ;;
             0|"") break ;;
         esac
     done
