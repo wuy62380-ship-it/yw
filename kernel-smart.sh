@@ -2,34 +2,49 @@
 
 if [ -t 0 ]; then :; else exec </dev/tty; fi
 
-: "${gl_bai:=\033[0m}" "${gl_lv:=\033[32m}" "${gl_huang:=\033[33m}" "${gl_hui:=\033[90m}" "${gl_red:=\033[31m}" "${gl_kjlan:=\033[36m}"
+# 修复：使用 $'\033' 确保所有终端兼容颜色
+gl_bai=$'\033[0m'; gl_lv=$'\033[32m'; gl_huang=$'\033[33m'; gl_hui=$'\033[90m'; gl_red=$'\033[31m'; gl_kjlan=$'\033[36m'
 R="${gl_bai}"; G="${gl_lv}"; Y="${gl_huang}"; H="${gl_hui}"; RED="${gl_red}"; C="${gl_kjlan}"
 SB_CONF_LOCK="/var/lock/sing-box-config.lock"
+SB_BIN="/usr/local/bin/sing-box"
+SB_CONF="/etc/sing-box/config.json"
+META_DIR="/etc/sing-box/meta" # 用于存储 reality 公钥等元数据
+
 mkdir -p /var/lock 2>/dev/null
+mkdir -p "$META_DIR" 2>/dev/null
 
 root_use() { [ "$(id -u)" -ne 0 ] && { echo -e "${RED}错误：请使用 root 用户运行此脚本${R}"; exit 1; }; }
 
+# 修复：支持 Debian/Ubuntu 和 CentOS/RHEL
 check_env() {
     root_use
     local need_update=0
-    for cmd in curl wget jq openssl iptables tar ip ss free shuf; do
+    for cmd in curl wget jq openssl iptables ip6tables tar ip ss shuf; do
         command -v $cmd >/dev/null 2>&1 || need_update=1
     done
     if [ "$need_update" -eq 1 ]; then
         echo -e "${Y}正在准备基础环境...${R}"
         export DEBIAN_FRONTEND=noninteractive
-        apt-get update -y >/dev/null 2>&1
-        apt-get install -y curl wget jq openssl iptables tar iproute2 procps coreutils >/dev/null 2>&1
+        if command -v apt-get >/dev/null 2>&1; then
+            apt-get update -y >/dev/null 2>&1
+            # 安装 iptables-persistent 用于持久化规则
+            apt-get install -y curl wget jq openssl iptables ip6tables tar iproute2 procps coreutils iptables-persistent >/dev/null 2>&1
+        elif command -v yum >/dev/null 2>&1; then
+            yum update -y >/dev/null 2>&1
+            yum install -y curl wget jq openssl iptables ip6tables tar iproute procps-ng coreutils iptables-services >/dev/null 2>&1
+        elif command -v dnf >/dev/null 2>&1; then
+            dnf update -y >/dev/null 2>&1
+            dnf install -y curl wget jq openssl iptables ip6tables tar iproute procps-ng coreutils iptables-services >/dev/null 2>&1
+        fi
         echo -e "${G}✅ 基础环境准备完毕！${R}"
     fi
 }
 
 get_my_ip() { 
-    local server_ip=$(curl -s --max-time 3 https://api4.ipify.org 2>/dev/null)
+    local server_ip=$(curl -s4 --max-time 6 https://api4.ipify.org 2>/dev/null)
     [ -z "$server_ip" ] && server_ip=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++)if($i=="src")print $(i+1)}')
     echo "$server_ip"
 }
-url_encode() { jq -rn --arg v "$1" '$v|@uri' | sed 's/%2F/\//g'; }
 
 # ================= 网络优化 (极简安全版) =================
 smart_auto_optimize() {
@@ -47,18 +62,17 @@ net.ipv4.tcp_fastopen = 3
 net.ipv4.tcp_mtu_probing = 1
 net.ipv4.tcp_ecn = 0
 EOF
-    sysctl -p /etc/sysctl.d/99-yw-optimize.conf >/dev/null 2>&1
+    # 修复：检测 sysctl 是否应用成功
+    if ! sysctl -p /etc/sysctl.d/99-yw-optimize.conf >/dev/null 2>&1; then
+        echo -e "${RED}⚠ sysctl 部分应用失败，请检查内核支持情况${R}"
+    fi
     echo -e "${G}✅ 优化完成！已启用最安全的 BBR 模式。${R}"
     read -rs -n 1 -p "按任意键继续..."
 }
 
 # ================= Sing-Box 核心 =================
-SB_BIN="/usr/local/bin/sing-box"
-SB_CONF="/etc/sing-box/config.json"
-
 sb_init_conf() { 
     mkdir -p /etc/sing-box
-    # 核心修复：完全复制甬哥的极简服务端模板，彻底移除 dns 模块，避免1.12+报错
     cat > "$SB_CONF" <<'EOF'
 {
   "log": {"disabled": false, "level": "info", "timestamp": true},
@@ -79,8 +93,8 @@ sb_check() {
     if ! command -v $SB_BIN >/dev/null 2>&1; then 
         echo -e "${RED}请先安装 Sing-Box${R}"; read -rs -n 1 -p ""; return 1; 
     fi
-    # 只要配置文件不是上面的纯净模板，就强制重置，避免旧配置干扰
-    if ! grep -q '"proxy"' "$SB_CONF" 2>/dev/null || grep -q '"dns"' "$SB_CONF" 2>/dev/null || ! $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
+    # 修复：直接用 check 作为唯一标准，去掉脆弱的 grep 判断
+    if ! $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
         echo -e "${Y}检测到配置文件非标准模板或已损坏，正在强制重置...${R}"
         mv "$SB_CONF" "${SB_CONF}.bak.$(date +%s)" 2>/dev/null
         sb_init_conf
@@ -98,7 +112,9 @@ sb_install() {
     echo -e "${Y}正在安装 Sing-Box v${latest_ver}...${R}"
     mkdir -p /etc/sing-box
     curl -L -o /tmp/sb.tar.gz "https://github.com/SagerNet/sing-box/releases/download/v${latest_ver}/sing-box-${latest_ver}-linux-${arch}.tar.gz" 2>/dev/null
-    tar xzf /tmp/sb.tar.gz -C /tmp 2>/dev/null
+    # 修复：增加解压与二进制文件存在性检查
+    tar xzf /tmp/sb.tar.gz -C /tmp 2>/dev/null || { echo -e "${RED}❌ 解压失败${R}"; return 1; }
+    [ -f "/tmp/sing-box-${latest_ver}-linux-${arch}/sing-box" ] || { echo -e "${RED}❌ 二进制文件缺失${R}"; return 1; }
     mv /tmp/sing-box-${latest_ver}-linux-${arch}/sing-box $SB_BIN
     rm -rf /tmp/sb.tar.gz /tmp/sing-box-*
     chmod +x $SB_BIN
@@ -121,7 +137,26 @@ EOF
     read -rs -n 1 -p ""
 }
 
-# 核心修复：使用 cat 直接写入配置片段，替代 jq 拼接，确保 100% 无语法错误
+# 修复：抽取防火墙操作公共函数，支持持久化与双栈
+save_iptables() {
+    if command -v netfilter-persistent >/dev/null 2>&1; then
+        netfilter-persistent save >/dev/null 2>&1
+    elif command -v iptables-save >/dev/null 2>&1; then
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null
+        ip6tables-save > /etc/iptables/rules.v6 2>/dev/null
+    fi
+}
+
+open_port() {
+    local port=$1
+    iptables -C INPUT -p tcp --dport ${port} -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport ${port} -j ACCEPT
+    iptables -C INPUT -p udp --dport ${port} -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport ${port} -j ACCEPT
+    # 修复：补充 IPv6 防火墙规则
+    ip6tables -C INPUT -p tcp --dport ${port} -j ACCEPT 2>/dev/null || ip6tables -I INPUT -p tcp --dport ${port} -j ACCEPT
+    ip6tables -C INPUT -p udp --dport ${port} -j ACCEPT 2>/dev/null || ip6tables -I INPUT -p udp --dport ${port} -j ACCEPT
+    save_iptables
+}
+
 sb_add_reality() {
     sb_check || return
     local port=$(shuf -i 10000-65535 -n 1)
@@ -130,7 +165,6 @@ sb_add_reality() {
     local keys_output=$($SB_BIN generate reality-keypair)
     local priv_key=$(echo "$keys_output" | awk '/PrivateKey/{print $2}')
     local pub_key=$(echo "$keys_output" | awk '/PublicKey/{print $2}')
-    # 甬哥脚本中 short_id 使用 4 位 hex
     local short_id=$($SB_BIN generate rand --hex 4)
     local node_tag="vless-reality-${port}"
     
@@ -138,7 +172,6 @@ sb_add_reality() {
         flock -x 200
         cp "$SB_CONF" "${SB_CONF}.bak"
         
-        # 构造 Inbound JSON 片段
         local node_json=$(cat <<EOF
 {
   "tag": "$node_tag",
@@ -159,18 +192,21 @@ sb_add_reality() {
 }
 EOF
 )
-        # 合并到主配置
         jq --argjson node "$node_json" '.inbounds += [$node] | .outbounds[0].outbounds += [$node.tag] | .outbounds[0].default = $node.tag' "$SB_CONF" > "$SB_CONF.tmp"
         
         if $SB_BIN check -c "$SB_CONF.tmp" > /tmp/check.log 2>&1; then
             mv "$SB_CONF.tmp" "$SB_CONF"
-            iptables -C INPUT -p tcp --dport ${port} -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport ${port} -j ACCEPT
-            iptables -C INPUT -p udp --dport ${port} -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport ${port} -j ACCEPT
+            open_port $port
+            
+            # 核心修复：由于 sing-box 配置文件不能存额外字段，把 public_key 等元数据单独存文件
+            cat > "${META_DIR}/${node_tag}.json" <<EOF
+{"public_key":"$pub_key","short_id":"$short_id","sni":"$sni","uuid":"$uuid","port":$port}
+EOF
+            
             systemctl restart sing-box
             echo -e "${G}✅ VLESS-Reality 部署成功！${R}"
             local server_ip=$(get_my_ip)
-            # 链接格式严格对齐甬哥脚本，包含 headerType=none
-            local link="vless://${uuid}@${server_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#YW-Reality"
+            local link="vless://${uuid}@${server_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#YW-Reality-${port}"
             echo -e "${C}节点链接: ${link}${R}"
         else
             echo -e "${RED}❌ 校验失败，错误详情：${R}"
@@ -185,7 +221,7 @@ EOF
 sb_add_hysteria2() {
     sb_check || return
     local port=$(shuf -i 10000-65535 -n 1)
-    local pass=$($SB_BIN generate uuid) # 甬哥脚本里 hy2 密码用的是 UUID
+    local pass=$($SB_BIN generate rand --hex 16) # 修复：使用标准 hex 作为密码
     local sni="www.bing.com"
     local cert_dir="/etc/sing-box/certs/hy2-${port}"
     mkdir -p "$cert_dir"
@@ -218,12 +254,11 @@ EOF
         
         if $SB_BIN check -c "$SB_CONF.tmp" > /tmp/check.log 2>&1; then
             mv "$SB_CONF.tmp" "$SB_CONF"
-            iptables -C INPUT -p tcp --dport ${port} -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport ${port} -j ACCEPT
-            iptables -C INPUT -p udp --dport ${port} -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport ${port} -j ACCEPT
+            open_port $port
             systemctl restart sing-box
             echo -e "${G}✅ Hysteria2 部署成功！${R}"
             local server_ip=$(get_my_ip)
-            local link="hysteria2://${pass}@${server_ip}:${port}?security=tls&sni=${sni}&alpn=h3&insecure=1#YW-Hy2"
+            local link="hysteria2://${pass}@${server_ip}:${port}?security=tls&sni=${sni}&alpn=h3&insecure=1#YW-Hy2-${port}"
             echo -e "${C}节点链接: ${link}${R}"
         else
             echo -e "${RED}❌ 校验失败，错误详情：${R}"
@@ -240,9 +275,26 @@ sb_show_links() {
     local server_ip=$(get_my_ip)
     echo -e "\n${Y}===== 节点链接 =====${R}"
     
-    jq -r --arg ip "$server_ip" '.inbounds[] | select(.type=="vless" and .tls.reality.enabled==true) | "vless://" + (.users[0].uuid) + "@" + $ip + ":" + (.listen_port|tostring) + "?encryption=none&flow=xtls-rprx-vision&security=reality&sni=" + .tls.server_name + "&fp=chrome&pbk=" + .tls.reality.private_key + "&sid=" + (.tls.reality.short_id[0]|default("")) + "&type=tcp&headerType=none#Node"' "$SB_CONF" 2>/dev/null
-    
-    jq -r --arg ip "$server_ip" '.inbounds[] | select(.type=="hysteria2") | "hysteria2://" + .users[0].password + "@" + $ip + ":" + (.listen_port|tostring) + "?security=tls&sni=" + .tls.server_name + "&alpn=h3&insecure=1#Node"' "$SB_CONF" 2>/dev/null
+    (
+        flock -s 200 # 修复：加共享锁防止读到写一半的数据
+        
+        # 核心修复：从 meta 目录读取公钥，不再错误地使用 private_key
+        jq -r '.inbounds[] | select(.type=="vless" and .tls.reality.enabled==true) | .tag' "$SB_CONF" 2>/dev/null | while read -r tag; do
+            if [ -n "$tag" ] && [ -f "${META_DIR}/${tag}.json" ]; then
+                local meta="${META_DIR}/${tag}.json"
+                local uuid=$(jq -r '.uuid' "$meta")
+                local port=$(jq -r '.port' "$meta")
+                local sni=$(jq -r '.sni' "$meta")
+                local pub_key=$(jq -r '.public_key' "$meta")
+                local short_id=$(jq -r '.short_id' "$meta")
+                echo "vless://${uuid}@${server_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#${tag}"
+            fi
+        done
+        
+        # 修复：节点名改为真实的 tag
+        jq -r --arg ip "$server_ip" '.inbounds[] | select(.type=="hysteria2") | "hysteria2://" + .users[0].password + "@" + $ip + ":" + (.listen_port|tostring) + "?security=tls&sni=" + .tls.server_name + "&alpn=h3&insecure=1#" + .tag' "$SB_CONF" 2>/dev/null
+        
+    ) 200>"$SB_CONF_LOCK"
     
     read -rs -n 1 -p ""
 }
@@ -250,9 +302,9 @@ sb_show_links() {
 sb_menu() {
     while true; do
         clear
-        echo -e "${G}╔════════════════════════════════╗"
-        echo -e "║       Sing-Box 管理面板            ║"
-        echo -e "╚════════════════════════════════╝${R}"
+        echo -e "${G}╔═══════════════════════════════════════════╗${R}"
+        echo -e "║       Sing-Box 管理面板                   ║${R}"
+        echo -e "╚═══════════════════════════════════════════╝${R}"
         echo -e "    ${Y}[1] 安装 Sing-Box${R}"
         echo -e "    ${Y}[2] 添加 VLESS-Reality 节点${R}"
         echo -e "    ${Y}[3] 添加 Hysteria2 节点${R}"
@@ -274,8 +326,8 @@ main_menu() {
     check_env
     while true; do
         clear
-        echo -e "${G}╔═══════════════════════════════════════════╗"
-        echo -e "║          🎉 YW 服务器优化工具箱             ║"
+        echo -e "${G}╔═══════════════════════════════════════════╗${R}"
+        echo -e "║          🎉 YW 服务器优化工具箱             ║${R}"
         echo -e "╚═══════════════════════════════════════════╝${R}"
         echo -e "    ${Y}[1] 🚀 开启 BBR 网络优化${R}"
         echo -e "    ${Y}[2] 📦 Sing-Box 管理面板${R}"
