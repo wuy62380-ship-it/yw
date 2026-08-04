@@ -125,7 +125,6 @@ restore_default() {
     rm -f "$SYSCTL_CONF"
     rm -f "$MODE_FILE"
     
-    # 尝试恢复部分核心默认设置
     sysctl -w net.core.default_qdisc=fq_codel >/dev/null 2>&1
     sysctl -w net.ipv4.tcp_congestion_control=cubic >/dev/null 2>&1
     sysctl -w net.ipv4.tcp_fastopen=0 >/dev/null 2>&1
@@ -341,9 +340,30 @@ close_port() {
     save_iptables
 }
 
+# 新增：自定义端口输入与校验
+input_custom_port() {
+    local port
+    while true; do
+        read -e -p "请输入端口 (10000-65535，回车随机生成): " port
+        if [ -z "$port" ]; then
+            port=$(shuf -i 10000-65535 -n 1)
+            echo -e "${Y}已随机生成端口: $port${R}"
+            break
+        elif ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 10000 ] || [ "$port" -gt 65535 ]; then
+            echo -e "${RED}端口必须在 10000-65535 之间，请重新输入${R}"
+        elif ss -tuln | grep -q ":$port "; then
+            echo -e "${RED}端口 $port 已被占用，请重新输入${R}"
+        else
+            break
+        fi
+    done
+    echo "$port"
+}
+
 sb_add_reality() {
     sb_check || return
-    local port=$(shuf -i 10000-65535 -n 1)
+    echo -e "${Y}设置 VLESS-Reality 端口${R}"
+    local port=$(input_custom_port)
     local uuid=$($SB_BIN generate uuid)
     local sni="apple.com"
     local keys_output=$($SB_BIN generate reality-keypair)
@@ -412,7 +432,8 @@ EOF
 
 sb_add_hysteria2() {
     sb_check || return
-    local port=$(shuf -i 10000-65535 -n 1)
+    echo -e "${Y}设置 Hysteria2 端口${R}"
+    local port=$(input_custom_port)
     local pass=$($SB_BIN generate rand --hex 16)
     local sni="www.bing.com"
     local cert_dir="/etc/sing-box/certs/hy2-${port}"
@@ -480,7 +501,7 @@ sb_del_node() {
         return
     fi
     
-    echo -e "${Y}当前已有节点，请选择要删除的节点：${R}"
+    echo -e "${Y}当前已有节点，请选择要删除的节点序号，或直接输入端口号删除：${R}"
     local i=1
     for tag in "${tags[@]}"; do
         echo -e "  ${G}[$i]${R} $tag"
@@ -491,9 +512,17 @@ sb_del_node() {
     read -e -p "请选择: " c
     if [ "$c" == "0" ] || [ -z "$c" ]; then return; fi
     
-    local tag="${tags[$((c-1))]}"
+    local tag=""
+    # 如果输入的是数字且在序号范围内，按序号取 tag
+    if [[ "$c" =~ ^[0-9]+$ ]] && [ "$c" -ge 1 ] && [ "$c" -le ${#tags[@]} ]; then
+        tag="${tags[$((c-1))]}"
+    else
+        # 尝试按端口号匹配 tag
+        tag=$(jq -r --arg p "$c" '.inbounds[] | select(.listen_port==($p|tonumber)) | .tag' "$SB_CONF" 2>/dev/null)
+    fi
+    
     if [ -z "$tag" ]; then
-        echo -e "${RED}输入错误${R}"
+        echo -e "${RED}未找到对应的节点${R}"
         read -rs -n 1 -p ""
         return
     fi
@@ -535,6 +564,43 @@ sb_del_node() {
     read -rs -n 1 -p ""
 }
 
+# 新增：手动端口管理
+sb_manage_ports() {
+    while true; do
+        clear
+        echo -e "${G}╔═══════════════════════════════════════════╗${R}"
+        echo -e "║          🔥 端口防火墙管理 (TCP+UDP)       ║${R}"
+        echo -e "╚═══════════════════════════════════════════╝${R}"
+        echo -e "    ${Y}[1] 放行指定端口${R}"
+        echo -e "    ${Y}[2] 关闭指定端口${R}"
+        echo -e "    ${H}[0] 返回上一级${R}"
+        read -e -p "  请选择: " c
+        case "$c" in
+            1) 
+                read -e -p "请输入要放行的端口号: " p
+                if [[ "$p" =~ ^[0-9]+$ ]] && [ "$p" -ge 1 ] && [ "$p" -le 65535 ]; then
+                    open_port $p
+                    echo -e "${G}✅ 端口 $p 已放行 (TCP+UDP)${R}"
+                else
+                    echo -e "${RED}端口号无效${R}"
+                fi
+                read -rs -n 1 -p ""
+                ;;
+            2) 
+                read -e -p "请输入要关闭的端口号: " p
+                if [[ "$p" =~ ^[0-9]+$ ]] && [ "$p" -ge 1 ] && [ "$p" -le 65535 ]; then
+                    close_port $p
+                    echo -e "${G}✅ 端口 $p 已关闭 (TCP+UDP)${R}"
+                else
+                    echo -e "${RED}端口号无效${R}"
+                fi
+                read -rs -n 1 -p ""
+                ;;
+            0|"") break ;;
+        esac
+    done
+}
+
 sb_show_links() {
     sb_check || return
     local server_ip=$(get_my_ip)
@@ -572,7 +638,8 @@ sb_menu() {
         echo -e "    ${Y}[2] 添加 VLESS-Reality 节点${R}"
         echo -e "    ${Y}[3] 添加 Hysteria2 节点${R}"
         echo -e "    ${Y}[4] 查看所有节点链接${R}"
-        echo -e "    ${RED}[5] 删除已添加节点${R}"
+        echo -e "    ${RED}[5] 删除已添加节点 (支持按端口删除)${R}"
+        echo -e "    ${C}[6] 手动管理端口放行 (TCP+UDP)${R}"
         echo -e "    ${H}[0] 返回主菜单${R}"
         read -e -p "  选择: " c
         case "$c" in
@@ -581,6 +648,7 @@ sb_menu() {
             3) clear; sb_add_hysteria2 ;;
             4) clear; sb_show_links ;;
             5) clear; sb_del_node ;;
+            6) clear; sb_manage_ports ;;
             0|"") break ;;
         esac
     done
