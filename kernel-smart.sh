@@ -52,6 +52,18 @@ get_my_ip() {
     echo "$server_ip"
 }
 
+# 通用：询问是否重启
+ask_reboot() {
+    read -e -p "是否立即重启服务器以应用新内核？[Y/n]: " rb
+    if [[ "$rb" =~ ^[Yy]$|^$ ]]; then
+        echo -e "${Y}系统将在 3 秒后重启...${R}"
+        sleep 3
+        reboot
+    else
+        echo -e "${Y}已跳过重启，请稍后手动执行 reboot 命令。${R}"
+    fi
+}
+
 # ================= 网络与内核优化 =================
 apply_optimize() {
     local mode=$1
@@ -174,8 +186,8 @@ bbr_kernel_manage() {
             else
                 grub2-mkconfig -o /boot/grub2/grub.cfg >/dev/null 2>&1
             fi
-            echo -e "${G}✅ 已切换为官方原版内核，请重启服务器后再次运行脚本选择 5 开启 BBR。${R}"
-            read -rs -n 1 -p ""
+            echo -e "${G}✅ 已切换为官方原版内核。${R}"
+            ask_reboot
         fi
     else
         echo -e "${Y}官方原版 BBR 内核管理${R}"
@@ -250,8 +262,8 @@ xanmod_manage() {
                 echo -e "${Y}正在更新 BBRv3 内核...${R}"
                 apt update -y >/dev/null 2>&1
                 apt install -y linux-xanmod-x64v3 >/dev/null 2>&1
-                echo -e "${G}✅ 内核更新/安装完成！建议重启系统以应用最新内核。${R}"
-                read -rs -n 1 -p ""
+                echo -e "${G}✅ 内核更新/安装完成！${R}"
+                ask_reboot
                 ;;
             2)
                 echo -e "${Y}正在卸载 BBRv3 内核...${R}"
@@ -264,8 +276,8 @@ xanmod_manage() {
                 else
                     grub2-mkconfig -o /boot/grub2/grub.cfg >/dev/null 2>&1
                 fi
-                echo -e "${G}✅ BBRv3 内核已卸载，请重启服务器切换回默认内核。${R}"
-                read -rs -n 1 -p ""
+                echo -e "${G}✅ BBRv3 内核已卸载。${R}"
+                ask_reboot
                 ;;
             0|"") return ;;
         esac
@@ -285,8 +297,8 @@ xanmod_manage() {
             else
                 grub2-mkconfig -o /boot/grub2/grub.cfg >/dev/null 2>&1
             fi
-            echo -e "${G}✅ BBRv3 内核安装完成！请重启服务器后再次运行脚本以应用更改。${R}"
-            read -rs -n 1 -p ""
+            echo -e "${G}✅ BBRv3 内核安装完成！${R}"
+            ask_reboot
         fi
     fi
 }
