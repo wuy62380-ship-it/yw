@@ -131,21 +131,14 @@ EOF
     echo -e "内存: ${mem}MB | 拥塞算法: ${cc} | 队列: ${qdisc}"
 }
 
+# 核心修复：只清理脚本自己生成的配置文件，绝不干预系统底层的 BBR 状态
 restore_default() {
     echo -e "${Y}还原默认设置...${R}"
     rm -f "$SYSCTL_CONF"
     rm -f "$MODE_FILE"
     
-    sysctl -w net.core.default_qdisc=fq_codel >/dev/null 2>&1
-    sysctl -w net.ipv4.tcp_congestion_control=cubic >/dev/null 2>&1
-    sysctl -w net.ipv4.tcp_fastopen=0 >/dev/null 2>&1
-    
-    local mem=$(free -m | awk '/Mem:/{print $2}')
-    local cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
-    local qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
-    
-    echo -e "${G}已还原系统默认网络配置${R}"
-    echo -e "内存: ${mem}MB | 拥塞算法: ${cc} | 队列: ${qdisc}"
+    echo -e "${G}已移除自定义优化配置，系统网络参数将恢复为内核默认值。${R}"
+    echo -e "${Y}提示: 如果你之前开启了 BBR，它可能仍然处于开启状态。${R}"
 }
 
 bbr_kernel_manage() {
@@ -502,7 +495,6 @@ input_custom_port() {
     echo "$port"
 }
 
-# 修改：移除死板的正则校验，允许任意字符（包括中文、空格等）
 input_custom_tag() {
     local default_tag=$1
     local custom_tag
