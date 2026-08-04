@@ -27,7 +27,7 @@ check_env() {
         export DEBIAN_FRONTEND=noninteractive
         if command -v apt-get >/dev/null 2>&1; then
             apt-get update -y >/dev/null 2>&1
-            apt-get install -y curl wget jq openssl iptables ip6tables tar iproute2 procps coreutils iptables-persistent >/dev/null 2>&1
+            apt-get install -y curl wget jq openssl iptables ip6tables tar iproute2 procps coreutils iptables-persistent gnupg >/dev/null 2>&1
         elif command -v yum >/dev/null 2>&1; then
             yum update -y >/dev/null 2>&1
             yum install -y curl wget jq openssl iptables ip6tables tar iproute procps-ng coreutils iptables-services >/dev/null 2>&1
@@ -171,7 +171,6 @@ bbr_kernel_manage() {
             fi
             
             echo -e "${Y}正在彻底卸载 XanMod 内核包...${R}"
-            # 核心修复：使用正则匹配彻底清理所有带 xanmod 的包
             apt purge -y $(dpkg -l | grep -i xanmod | awk '{print $2}') -y >/dev/null 2>&1
             rm -f /etc/apt/sources.list.d/xanmod-release.list
             rm -f /usr/share/keyrings/xanmod-archive-keyring.gpg
@@ -179,10 +178,8 @@ bbr_kernel_manage() {
             
             echo -e "${Y}正在安装官方原版内核...${R}"
             apt update -y >/dev/null 2>&1
-            # 安装官方通用内核
             apt install -y linux-image-amd64 linux-headers-amd64 >/dev/null 2>&1 || apt install -y linux-image-generic linux-headers-generic >/dev/null 2>&1
             
-            # 核心修复：强制设定 Grub 第一启动项为官方内核
             if command -v update-grub >/dev/null 2>&1; then
                 sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT=0/g' /etc/default/grub
                 update-grub
@@ -194,7 +191,6 @@ bbr_kernel_manage() {
             ls /boot/vmlinuz-*
             
             echo -e "\n${G}✅ 已尝试切换为官方原版内核。${R}"
-            echo -e "${Y}如果上方列表中不再有 xanmod 字样，说明卸载成功。${R}"
             ask_reboot
         fi
     else
@@ -268,22 +264,22 @@ xanmod_manage() {
         case "$c" in
             1)
                 echo -e "${Y}正在更新 BBRv3 内核...${R}"
-                apt update -y >/dev/null 2>&1
-                apt install -y linux-xanmod-x64v3 >/dev/null 2>&1
+                apt update -y
+                apt install -y linux-xanmod-x64v3
                 echo -e "${G}✅ 内核更新/安装完成！${R}"
                 ask_reboot
                 ;;
             2)
                 echo -e "${Y}正在卸载 BBRv3 内核...${R}"
-                apt purge -y $(dpkg -l | grep -i xanmod | awk '{print $2}') -y >/dev/null 2>&1
+                apt purge -y $(dpkg -l | grep -i xanmod | awk '{print $2}') -y
                 rm -f /etc/apt/sources.list.d/xanmod-release.list
                 rm -f /usr/share/keyrings/xanmod-archive-keyring.gpg
-                apt autoremove -y --purge >/dev/null 2>&1
+                apt autoremove -y --purge
                 if command -v update-grub >/dev/null 2>&1; then
                     sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT=0/g' /etc/default/grub
                     update-grub
                 else
-                    grub2-mkconfig -o /boot/grub2/grub.cfg >/dev/null 2>&1
+                    grub2-mkconfig -o /boot/grub2/grub.cfg
                 fi
                 echo -e "${G}✅ BBRv3 内核已卸载。${R}"
                 ask_reboot
@@ -297,15 +293,16 @@ xanmod_manage() {
         read -e -p "请选择: " c
         if [ "$c" == "1" ]; then
             echo -e "${Y}正在添加 XanMod 源并安装 BBRv3 内核...${R}"
-            echo "deb http://deb.xanmod.org releases main" | tee /etc/apt/sources.list.d/xanmod-release.list >/dev/null 2>&1
-            wget -qO - https://dl.xanmod.org/archive.key | gpg --dearmor --yes -o /usr/share/keyrings/xanmod-archive-keyring.gpg 2>/dev/null
-            apt update -y >/dev/null 2>&1
-            apt install -y linux-xanmod-x64v3 >/dev/null 2>&1
+            echo "deb http://deb.xanmod.org releases main" | tee /etc/apt/sources.list.d/xanmod-release.list
+            wget -qO - https://dl.xanmod.org/archive.key | gpg --dearmor --yes -o /usr/share/keyrings/xanmod-archive-keyring.gpg
+            apt update -y
+            apt install -y linux-xanmod-x64v3
+            
             if command -v update-grub >/dev/null 2>&1; then
                 sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT=0/g' /etc/default/grub
-                update-grub >/dev/null 2>&1
+                update-grub
             else
-                grub2-mkconfig -o /boot/grub2/grub.cfg >/dev/null 2>&1
+                grub2-mkconfig -o /boot/grub2/grub.cfg
             fi
             echo -e "${G}✅ BBRv3 内核安装完成！${R}"
             ask_reboot
