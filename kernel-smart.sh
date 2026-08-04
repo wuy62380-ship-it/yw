@@ -2,20 +2,18 @@
 
 if [ -t 0 ]; then :; else exec </dev/tty; fi
 
-# 修复：使用 $'\033' 确保所有终端兼容颜色
 gl_bai=$'\033[0m'; gl_lv=$'\033[32m'; gl_huang=$'\033[33m'; gl_hui=$'\033[90m'; gl_red=$'\033[31m'; gl_kjlan=$'\033[36m'
 R="${gl_bai}"; G="${gl_lv}"; Y="${gl_huang}"; H="${gl_hui}"; RED="${gl_red}"; C="${gl_kjlan}"
 SB_CONF_LOCK="/var/lock/sing-box-config.lock"
 SB_BIN="/usr/local/bin/sing-box"
 SB_CONF="/etc/sing-box/config.json"
-META_DIR="/etc/sing-box/meta" # 用于存储 reality 公钥等元数据
+META_DIR="/etc/sing-box/meta"
 
 mkdir -p /var/lock 2>/dev/null
 mkdir -p "$META_DIR" 2>/dev/null
 
 root_use() { [ "$(id -u)" -ne 0 ] && { echo -e "${RED}错误：请使用 root 用户运行此脚本${R}"; exit 1; }; }
 
-# 修复：支持 Debian/Ubuntu 和 CentOS/RHEL
 check_env() {
     root_use
     local need_update=0
@@ -27,7 +25,6 @@ check_env() {
         export DEBIAN_FRONTEND=noninteractive
         if command -v apt-get >/dev/null 2>&1; then
             apt-get update -y >/dev/null 2>&1
-            # 安装 iptables-persistent 用于持久化规则
             apt-get install -y curl wget jq openssl iptables ip6tables tar iproute2 procps coreutils iptables-persistent >/dev/null 2>&1
         elif command -v yum >/dev/null 2>&1; then
             yum update -y >/dev/null 2>&1
@@ -38,6 +35,14 @@ check_env() {
         fi
         echo -e "${G}✅ 基础环境准备完毕！${R}"
     fi
+    # 修复：强制同步系统时间，防止 Reality 因时间差握手失败
+    echo -e "${Y}正在同步系统时间...${R}"
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl enable systemd-timesyncd >/dev/null 2>&1
+        systemctl restart systemd-timesyncd >/dev/null 2>&1
+    fi
+    timedatectl set-ntp true >/dev/null 2>&1
+    sleep 2
 }
 
 get_my_ip() { 
@@ -46,7 +51,6 @@ get_my_ip() {
     echo "$server_ip"
 }
 
-# ================= 网络优化 (极简安全版) =================
 smart_auto_optimize() {
     clear
     echo -e "${G}╔═══════════════════════════════════════════╗${R}"
@@ -62,7 +66,6 @@ net.ipv4.tcp_fastopen = 3
 net.ipv4.tcp_mtu_probing = 1
 net.ipv4.tcp_ecn = 0
 EOF
-    # 修复：检测 sysctl 是否应用成功
     if ! sysctl -p /etc/sysctl.d/99-yw-optimize.conf >/dev/null 2>&1; then
         echo -e "${RED}⚠ sysctl 部分应用失败，请检查内核支持情况${R}"
     fi
@@ -70,7 +73,6 @@ EOF
     read -rs -n 1 -p "按任意键继续..."
 }
 
-# ================= Sing-Box 核心 =================
 sb_init_conf() { 
     mkdir -p /etc/sing-box
     cat > "$SB_CONF" <<'EOF'
@@ -93,7 +95,6 @@ sb_check() {
     if ! command -v $SB_BIN >/dev/null 2>&1; then 
         echo -e "${RED}请先安装 Sing-Box${R}"; read -rs -n 1 -p ""; return 1; 
     fi
-    # 修复：直接用 check 作为唯一标准，去掉脆弱的 grep 判断
     if ! $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
         echo -e "${Y}检测到配置文件非标准模板或已损坏，正在强制重置...${R}"
         mv "$SB_CONF" "${SB_CONF}.bak.$(date +%s)" 2>/dev/null
@@ -112,7 +113,6 @@ sb_install() {
     echo -e "${Y}正在安装 Sing-Box v${latest_ver}...${R}"
     mkdir -p /etc/sing-box
     curl -L -o /tmp/sb.tar.gz "https://github.com/SagerNet/sing-box/releases/download/v${latest_ver}/sing-box-${latest_ver}-linux-${arch}.tar.gz" 2>/dev/null
-    # 修复：增加解压与二进制文件存在性检查
     tar xzf /tmp/sb.tar.gz -C /tmp 2>/dev/null || { echo -e "${RED}❌ 解压失败${R}"; return 1; }
     [ -f "/tmp/sing-box-${latest_ver}-linux-${arch}/sing-box" ] || { echo -e "${RED}❌ 二进制文件缺失${R}"; return 1; }
     mv /tmp/sing-box-${latest_ver}-linux-${arch}/sing-box $SB_BIN
@@ -137,7 +137,6 @@ EOF
     read -rs -n 1 -p ""
 }
 
-# 修复：抽取防火墙操作公共函数，支持持久化与双栈
 save_iptables() {
     if command -v netfilter-persistent >/dev/null 2>&1; then
         netfilter-persistent save >/dev/null 2>&1
@@ -151,7 +150,6 @@ open_port() {
     local port=$1
     iptables -C INPUT -p tcp --dport ${port} -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport ${port} -j ACCEPT
     iptables -C INPUT -p udp --dport ${port} -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport ${port} -j ACCEPT
-    # 修复：补充 IPv6 防火墙规则
     ip6tables -C INPUT -p tcp --dport ${port} -j ACCEPT 2>/dev/null || ip6tables -I INPUT -p tcp --dport ${port} -j ACCEPT
     ip6tables -C INPUT -p udp --dport ${port} -j ACCEPT 2>/dev/null || ip6tables -I INPUT -p udp --dport ${port} -j ACCEPT
     save_iptables
@@ -161,7 +159,8 @@ sb_add_reality() {
     sb_check || return
     local port=$(shuf -i 10000-65535 -n 1)
     local uuid=$($SB_BIN generate uuid)
-    local sni="www.apple.com"
+    # 修复：更换为更稳定不易被干扰的 SNI
+    local sni="www.microsoft.com"
     local keys_output=$($SB_BIN generate reality-keypair)
     local priv_key=$(echo "$keys_output" | awk '/PrivateKey/{print $2}')
     local pub_key=$(echo "$keys_output" | awk '/PublicKey/{print $2}')
@@ -198,16 +197,26 @@ EOF
             mv "$SB_CONF.tmp" "$SB_CONF"
             open_port $port
             
-            # 核心修复：由于 sing-box 配置文件不能存额外字段，把 public_key 等元数据单独存文件
             cat > "${META_DIR}/${node_tag}.json" <<EOF
 {"public_key":"$pub_key","short_id":"$short_id","sni":"$sni","uuid":"$uuid","port":$port}
 EOF
             
+            # 核心修复：检查 sing-box 是否真正运行起来
             systemctl restart sing-box
-            echo -e "${G}✅ VLESS-Reality 部署成功！${R}"
-            local server_ip=$(get_my_ip)
-            local link="vless://${uuid}@${server_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#YW-Reality-${port}"
-            echo -e "${C}节点链接: ${link}${R}"
+            sleep 2
+            if ! systemctl is-active --quiet sing-box; then
+                echo -e "${RED}❌ Sing-Box 启动失败！可能是端口冲突或架构不支持。${R}"
+                echo -e "${Y}错误日志：${R}"
+                journalctl -u sing-box -n 10 --no-pager
+                cp "${SB_CONF}.bak" "$SB_CONF"
+                rm -f "${META_DIR}/${node_tag}.json"
+                systemctl restart sing-box
+            else
+                echo -e "${G}✅ VLESS-Reality 部署成功！${R}"
+                local server_ip=$(get_my_ip)
+                local link="vless://${uuid}@${server_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#YW-Reality-${port}"
+                echo -e "${C}节点链接: ${link}${R}"
+            fi
         else
             echo -e "${RED}❌ 校验失败，错误详情：${R}"
             cat /tmp/check.log
@@ -221,7 +230,7 @@ EOF
 sb_add_hysteria2() {
     sb_check || return
     local port=$(shuf -i 10000-65535 -n 1)
-    local pass=$($SB_BIN generate rand --hex 16) # 修复：使用标准 hex 作为密码
+    local pass=$($SB_BIN generate rand --hex 16)
     local sni="www.bing.com"
     local cert_dir="/etc/sing-box/certs/hy2-${port}"
     mkdir -p "$cert_dir"
@@ -256,10 +265,18 @@ EOF
             mv "$SB_CONF.tmp" "$SB_CONF"
             open_port $port
             systemctl restart sing-box
-            echo -e "${G}✅ Hysteria2 部署成功！${R}"
-            local server_ip=$(get_my_ip)
-            local link="hysteria2://${pass}@${server_ip}:${port}?security=tls&sni=${sni}&alpn=h3&insecure=1#YW-Hy2-${port}"
-            echo -e "${C}节点链接: ${link}${R}"
+            sleep 2
+            if ! systemctl is-active --quiet sing-box; then
+                echo -e "${RED}❌ Sing-Box 启动失败！${R}"
+                journalctl -u sing-box -n 10 --no-pager
+                cp "${SB_CONF}.bak" "$SB_CONF"
+                systemctl restart sing-box
+            else
+                echo -e "${G}✅ Hysteria2 部署成功！${R}"
+                local server_ip=$(get_my_ip)
+                local link="hysteria2://${pass}@${server_ip}:${port}?security=tls&sni=${sni}&alpn=h3&insecure=1#YW-Hy2-${port}"
+                echo -e "${C}节点链接: ${link}${R}"
+            fi
         else
             echo -e "${RED}❌ 校验失败，错误详情：${R}"
             cat /tmp/check.log
@@ -276,9 +293,8 @@ sb_show_links() {
     echo -e "\n${Y}===== 节点链接 =====${R}"
     
     (
-        flock -s 200 # 修复：加共享锁防止读到写一半的数据
+        flock -s 200
         
-        # 核心修复：从 meta 目录读取公钥，不再错误地使用 private_key
         jq -r '.inbounds[] | select(.type=="vless" and .tls.reality.enabled==true) | .tag' "$SB_CONF" 2>/dev/null | while read -r tag; do
             if [ -n "$tag" ] && [ -f "${META_DIR}/${tag}.json" ]; then
                 local meta="${META_DIR}/${tag}.json"
@@ -291,7 +307,6 @@ sb_show_links() {
             fi
         done
         
-        # 修复：节点名改为真实的 tag
         jq -r --arg ip "$server_ip" '.inbounds[] | select(.type=="hysteria2") | "hysteria2://" + .users[0].password + "@" + $ip + ":" + (.listen_port|tostring) + "?security=tls&sni=" + .tls.server_name + "&alpn=h3&insecure=1#" + .tag' "$SB_CONF" 2>/dev/null
         
     ) 200>"$SB_CONF_LOCK"
@@ -321,7 +336,6 @@ sb_menu() {
     done
 }
 
-# ================= 主菜单 =================
 main_menu() {
     check_env
     while true; do
