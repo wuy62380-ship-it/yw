@@ -245,7 +245,6 @@ smart_auto_optimize() {
     done
 }
 
-# XanMod 直接下载安装逻辑
 xanmod_manage() {
     if ! command -v dpkg >/dev/null 2>&1; then
         echo -e "${RED}仅支持 Debian/Ubuntu 系统安装 XanMod 内核${R}"
@@ -278,7 +277,7 @@ xanmod_manage() {
     fi
 }
 
-# 彻底放弃 APT 源，直接从 GitHub 下载 deb 包
+# 核心修复：改用 grep 稳健提取链接
 xanmod_download_and_install() {
     echo -e "${Y}正在从 GitHub 获取最新 XanMod BBRv3 内核...${R}"
     local release_data=$(curl -sL --max-time 15 https://api.github.com/repos/xanmod/linux/releases/latest)
@@ -288,15 +287,17 @@ xanmod_download_and_install() {
         read -rs -n 1 -p ""; return 1
     fi
 
-    local deb_url=$(echo "$release_data" | jq -r '.assets[] | select(.name | test("linux-image.*x64v3.*amd64.deb$")) | .browser_download_url' | head -n 1)
+    # 使用 grep 提取包含 x64v3 架构的 deb 包链接
+    local deb_url=$(echo "$release_data" | grep -o 'https://[^"]*linux-image[^"]*x64v3[^"]*amd64.deb' | head -n 1)
     
     # 如果找不到 x64v3 架构的包，尝试找通用的 x64 包
     if [ -z "$deb_url" ]; then
-        deb_url=$(echo "$release_data" | jq -r '.assets[] | select(.name | test("linux-image.*x64.*amd64.deb$")) | .browser_download_url' | head -n 1)
+        deb_url=$(echo "$release_data" | grep -o 'https://[^"]*linux-image[^"]*x64[^"]*amd64.deb' | head -n 1)
     fi
 
     if [ -z "$deb_url" ]; then
         echo -e "${RED}未能找到 XanMod 内核的 deb 安装包。${R}"
+        echo -e "${Y}可能是 XanMod 官方暂未发布对应架构的包，请稍后再试。${R}"
         read -rs -n 1 -p ""; return 1
     fi
 
