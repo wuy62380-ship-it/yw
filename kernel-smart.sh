@@ -145,16 +145,49 @@ bbr_kernel_manage() {
         read -rs -n 1 -p ""; return
     fi
 
-    echo -e "${G}您当前内核版本: ${C}$(uname -r)${R}\n"
-    echo -e "${Y}官方原版 BBR 内核管理${R}"
-    echo -e "------------------------"
-    echo -e "${Y}1. 安装/更新原版 BBR 内核              2. 返回上一级${R}"
-    echo -e "------------------------"
-    read -e -p "请选择: " c
-    if [ "$c" == "1" ]; then
-        echo -e "${Y}点击任意键，即可开启原版BBR加速，ctrl+c退出${R}"
-        read -rs -n 1
-        bash <(curl -Ls https://raw.githubusercontent.com/teddysun/across/master/bbr.sh)
+    local current_kernel=$(uname -r)
+    echo -e "您当前内核版本: ${C}$current_kernel${R}\n"
+    
+    if echo "$current_kernel" | grep -q "xanmod"; then
+        echo -e "${RED}检测到当前正在使用 XanMod 内核。${R}"
+        echo -e "${Y}如需切换到官方原版 BBR 内核，需要先卸载 XanMod 内核并安装官方内核。${R}\n"
+        echo -e "${Y}1. 卸载 XanMod 并安装官方原版内核              2. 返回上一级${R}"
+        echo -e "------------------------"
+        read -e -p "请选择: " c
+        if [ "$c" == "1" ]; then
+            if ! command -v apt-get >/dev/null 2>&1; then
+                echo -e "${RED}仅支持 Debian/Ubuntu 系统进行此操作${R}"
+                read -rs -n 1 -p ""; return
+            fi
+            echo -e "${Y}正在卸载 XanMod 内核...${R}"
+            apt purge -y linux-xanmod-x64v3 linux-image-xanmod-x64v3 >/dev/null 2>&1
+            rm -f /etc/apt/sources.list.d/xanmod-release.list
+            rm -f /usr/share/keyrings/xanmod-archive-keyring.gpg
+            apt autoremove -y >/dev/null 2>&1
+            
+            echo -e "${Y}正在安装官方原版内核...${R}"
+            apt update -y >/dev/null 2>&1
+            apt install -y linux-image-amd64 linux-headers-amd64 >/dev/null 2>&1 || apt install -y linux-image-generic linux-headers-generic >/dev/null 2>&1
+            
+            if command -v update-grub >/dev/null 2>&1; then
+                update-grub >/dev/null 2>&1
+            else
+                grub2-mkconfig -o /boot/grub2/grub.cfg >/dev/null 2>&1
+            fi
+            echo -e "${G}✅ 已切换为官方原版内核，请重启服务器后再次运行脚本选择 5 开启 BBR。${R}"
+            read -rs -n 1 -p ""
+        fi
+    else
+        echo -e "${Y}官方原版 BBR 内核管理${R}"
+        echo -e "------------------------"
+        echo -e "${Y}1. 安装/更新原版 BBR 内核              2. 返回上一级${R}"
+        echo -e "------------------------"
+        read -e -p "请选择: " c
+        if [ "$c" == "1" ]; then
+            echo -e "${Y}点击任意键，即可开启原版BBR加速，ctrl+c退出${R}"
+            read -rs -n 1
+            bash <(curl -Ls https://raw.githubusercontent.com/teddysun/across/master/bbr.sh)
+        fi
     fi
 }
 
