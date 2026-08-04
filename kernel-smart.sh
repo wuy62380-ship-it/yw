@@ -137,14 +137,22 @@ restore_default() {
     echo -e "内存: ${mem}MB | 拥塞算法: ${cc} | 队列: ${qdisc}"
 }
 
-# 新增：原版 BBR 加速 (teddysun)
-bbr_install() {
+# 官方原版 BBR 内核管理
+bbr_kernel_manage() {
     local vi=$(systemd-detect-virt 2>/dev/null)
     if [[ "$vi" =~ lxc|openvz ]]; then
         echo -e "${RED}当前VPS的架构为 $vi，不支持开启原版BBR加速${R}"
         read -rs -n 1 -p ""; return
-    else
-        echo -e "${Y}点击任意键，即可开启BBR加速，ctrl+c退出${R}"
+    fi
+
+    echo -e "${G}您当前内核版本: ${C}$(uname -r)${R}\n"
+    echo -e "${Y}官方原版 BBR 内核管理${R}"
+    echo -e "------------------------"
+    echo -e "${Y}1. 安装/更新原版 BBR 内核              2. 返回上一级${R}"
+    echo -e "------------------------"
+    read -e -p "请选择: " c
+    if [ "$c" == "1" ]; then
+        echo -e "${Y}点击任意键，即可开启原版BBR加速，ctrl+c退出${R}"
         read -rs -n 1
         bash <(curl -Ls https://raw.githubusercontent.com/teddysun/across/master/bbr.sh)
     fi
@@ -171,7 +179,7 @@ smart_auto_optimize() {
         echo -e "${Y}2 直播优化模式：       ${R}针对直播推流优化，UDP 缓冲区加大，减少延迟。"
         echo -e "${Y}3 还原默认设置：       ${R}将系统设置还原为默认配置。"
         echo -e "${C}4 XanMod BBRv3 内核管理${R}"
-        echo -e "${C}5 开启原版 BBR 加速 (teddysun)${R}"
+        echo -e "${C}5 官方原版 BBR 内核管理${R}"
         echo -e "--------------------"
         echo -e "${H}0. 返回上一级选单${R}"
         echo -e "--------------------"
@@ -182,7 +190,7 @@ smart_auto_optimize() {
             2) clear; apply_optimize live "直播优化模式"; echo "操作完成"; read -rs -n 1 -p "按任意键继续..." ;;
             3) clear; restore_default; echo "操作完成"; read -rs -n 1 -p "按任意键继续..." ;;
             4) clear; xanmod_manage ;;
-            5) clear; bbr_install ;;
+            5) clear; bbr_kernel_manage ;;
             0|"") break ;;
         esac
     done
