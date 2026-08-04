@@ -245,65 +245,9 @@ smart_auto_optimize() {
     done
 }
 
-# 新增：XanMod 下载与安装逻辑
-xanmod_download_and_install() {
-    echo -e "${Y}正在获取最新 XanMod BBRv3 内核版本...${R}"
-    local deb_url=$(curl -sL https://api.github.com/repos/xanmod/linux/releases/latest | jq -r '.assets[] | select(.name | test("linux-image.*x64v3.*amd64.deb$")) | .browser_download_url' | head -n 1)
-    local deb_name=$(basename "$deb_url")
-
-    if [ -z "$deb_url" ]; then
-        echo -e "${RED}获取下载链接失败，可能是网络问题或未找到适合 x64v3 架构的包。${R}"
-        read -rs -n 1 -p ""; return 1
-    fi
-
-    echo -e "${Y}正在下载 $deb_name ...${R}"
-    curl -L -o "/tmp/$deb_name" "$deb_url" 2>/dev/null
-
-    if [ ! -f "/tmp/$deb_name" ]; then
-        echo -e "${RED}下载失败！请稍后重试。${R}"
-        read -rs -n 1 -p ""; return 1
-    fi
-
-    echo -e "${Y}正在安装...${R}"
-    dpkg -i "/tmp/$deb_name" 2>/dev/null || apt install -f -y >/dev/null 2>&1
-    
-    rm -f "/tmp/$deb_name"
-
-    if command -v update-grub >/dev/null 2>&1; then
-        sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT=0/g' /etc/default/grub
-        update-grub
-    else
-        grub2-mkconfig -o /boot/grub2/grub.cfg
-    fi
-
-    echo -e "\n${G}当前系统中已安装的内核镜像文件：${R}"
-    ls /boot/vmlinuz-*
-
-    echo -e "\n${G}✅ BBRv3 内核安装完成！${R}"
-    ask_reboot
-}
-
-xanmod_uninstall() {
-    echo -e "${Y}正在查找并卸载 XanMod 内核...${R}"
-    local xanmod_pkgs=$(dpkg -l | grep -i xanmod | awk '{print $2}')
-    if [ -n "$xanmod_pkgs" ]; then
-        dpkg --purge $xanmod_pkgs >/dev/null 2>&1 || apt purge -y $xanmod_pkgs >/dev/null 2>&1
-        apt autoremove -y --purge >/dev/null 2>&1
-        if command -v update-grub >/dev/null 2>&1; then
-            sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT=0/g' /etc/default/grub
-            update-grub
-        else
-            grub2-mkconfig -o /boot/grub2/grub.cfg
-        fi
-        echo -e "${G}✅ BBRv3 内核已卸载。${R}"
-        ask_reboot
-    else
-        echo -e "${Y}未找到 XanMod 内核包，无需卸载。${R}"
-    fi
-}
-
+# XanMod 安装与卸载
 xanmod_manage() {
-    if ! command -v dpkg >/dev/null 2>&1; then
+    if ! command -v apt-get >/dev/null 2>&1; then
         echo -e "${RED}仅支持 Debian/Ubuntu 系统安装 XanMod 内核${R}"
         read -rs -n 1 -p ""; return
     fi
@@ -319,8 +263,32 @@ xanmod_manage() {
         echo -e "${H}0. 返回上一级选单${R}"
         read -e -p "请选择: " c
         case "$c" in
-            1) xanmod_download_and_install ;;
-            2) xanmod_uninstall ;;
+            1)
+                echo -e "${Y}正在更新 BBRv3 内核...${R}"
+                # 核心修复：使用 https 协议，防止 http 被拦截导致 404
+                rm -f /etc/apt/sources.list.d/xanmod-release.list
+                echo "deb https://deb.xanmod.org releases main" | tee /etc/apt/sources.list.d/xanmod-release.list
+                wget -qO - https://dl.xanmod.org/archive.key | gpg --dearmor --yes -o /usr/share/keyrings/xanmod-archive-keyring.gpg
+                apt update -y
+                apt install -y linux-xanmod-x64v3
+                echo -e "${G}✅ 内核更新/安装完成！${R}"
+                ask_reboot
+                ;;
+            2)
+                echo -e "${Y}正在卸载 BBRv3 内核...${R}"
+                apt purge -y $(dpkg -l | grep -i xanmod | awk '{print $2}') -y
+                rm -f /etc/apt/sources.list.d/xanmod-release.list
+                rm -f /usr/share/keyrings/xanmod-archive-keyring.gpg
+                apt autoremove -y --purge
+                if command -v update-grub >/dev/null 2>&1; then
+                    sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT=0/g' /etc/default/grub
+                    update-grub
+                else
+                    grub2-mkconfig -o /boot/grub2/grub.cfg
+                fi
+                echo -e "${G}✅ BBRv3 内核已卸载。${R}"
+                ask_reboot
+                ;;
             0|"") return ;;
         esac
     else
@@ -329,7 +297,21 @@ xanmod_manage() {
         echo -e "0. 返回上一级选单"
         read -e -p "请选择: " c
         if [ "$c" == "1" ]; then
-            xanmod_download_and_install
+            echo -e "${Y}正在添加 XanMod 源并安装 BBRv3 内核...${R}"
+            # 核心修复：使用 https 协议
+            echo "deb https://deb.xanmod.org releases main" | tee /etc/apt/sources.list.d/xanmod-release.list
+            wget -qO - https://dl.xanmod.org/archive.key | gpg --dearmor --yes -o /usr/share/keyrings/xanmod-archive-keyring.gpg
+            apt update -y
+            apt install -y linux-xanmod-x64v3
+            
+            if command -v update-grub >/dev/null 2>&1; then
+                sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT=0/g' /etc/default/grub
+                update-grub
+            else
+                grub2-mkconfig -o /boot/grub2/grub.cfg
+            fi
+            echo -e "${G}✅ BBRv3 内核安装完成！${R}"
+            ask_reboot
         fi
     fi
 }
