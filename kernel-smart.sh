@@ -483,7 +483,6 @@ close_port() {
     save_iptables
 }
 
-# 核心修复：重定向 echo 到 >&2，防止污染返回值
 input_custom_port() {
     local port
     while true; do
@@ -503,6 +502,18 @@ input_custom_port() {
     echo "$port"
 }
 
+# 修改：移除死板的正则校验，允许任意字符（包括中文、空格等）
+input_custom_tag() {
+    local default_tag=$1
+    local custom_tag
+    read -e -p "请输入节点名称 (回车使用默认: $default_tag): " custom_tag
+    if [ -z "$custom_tag" ]; then
+        echo "$default_tag"
+    else
+        echo "$custom_tag"
+    fi
+}
+
 sb_add_reality() {
     sb_check || return
     echo -e "${Y}设置 VLESS-Reality 端口${R}"
@@ -513,7 +524,9 @@ sb_add_reality() {
     local priv_key=$(echo "$keys_output" | awk '/PrivateKey/{print $2}')
     local pub_key=$(echo "$keys_output" | awk '/PublicKey/{print $2}')
     local short_id=$($SB_BIN generate rand --hex 4)
-    local node_tag="vless-reality-${port}"
+    
+    local default_tag="vless-reality-${port}"
+    local node_tag=$(input_custom_tag "$default_tag")
     
     (
         flock -x 200
@@ -565,7 +578,7 @@ EOF
             else
                 echo -e "${G}✅ VLESS-Reality 部署成功！${R}"
                 local server_ip=$(get_my_ip)
-                local link="vless://${uuid}@${server_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#YW-Reality-${port}"
+                local link="vless://${uuid}@${server_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#${node_tag}"
                 echo -e "${C}节点链接: ${link}${R}"
             fi
         else
@@ -588,7 +601,9 @@ sb_add_hysteria2() {
     mkdir -p "$cert_dir"
     openssl ecparam -genkey -name prime256v1 -out "${cert_dir}/key.pem" 2>/dev/null
     openssl req -new -x509 -days 3650 -key "${cert_dir}/key.pem" -out "${cert_dir}/cert.pem" -subj "/CN=${sni}" 2>/dev/null
-    local node_tag="hysteria2-${port}"
+    
+    local default_tag="hysteria2-${port}"
+    local node_tag=$(input_custom_tag "$default_tag")
     
     (
         flock -x 200
@@ -630,7 +645,7 @@ sb_add_hysteria2() {
             else
                 echo -e "${G}✅ Hysteria2 部署成功！${R}"
                 local server_ip=$(get_my_ip)
-                local link="hysteria2://${pass}@${server_ip}:${port}?security=tls&sni=${sni}&alpn=h3&insecure=1#YW-Hy2-${port}"
+                local link="hysteria2://${pass}@${server_ip}:${port}?security=tls&sni=${sni}&alpn=h3&insecure=1#${node_tag}"
                 echo -e "${C}节点链接: ${link}${R}"
             fi
         else
