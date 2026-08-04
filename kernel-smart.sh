@@ -1452,10 +1452,10 @@ sb_menu() {
         echo -e "    当前状态: ${sb_status_text}"
         echo ""
         echo -e "${Y}🎯 TikTok专用 - 性能与安全平衡${R}"
-        echo -e "${G}[1] 添加 VLESS-Reality ⭐⭐⭐⭐⭐ (安全首选)${R}"
+        echo -e "${G}[1] 添加 Hysteria2 ⭐⭐⭐⭐⭐ (性能首选，直连链接最稳)${R}"
+        echo -e "   ${H}QUIC+UDP，直播性能最强，完美兼容 WiFi${R}"
+        echo -e "${G}[2] 添加 VLESS-Reality ⭐⭐⭐⭐ (安全首选)${R}"
         echo -e "   ${H}大厂SNI伪装，TLS指纹完美，封号风险最低${R}"
-        echo -e "${G}[2] 添加 Hysteria2 ⭐⭐⭐⭐ (性能首选)${R}"
-        echo -e "   ${H}QUIC+UDP，直播性能最强，但需注意风控${R}"
         echo -e "${G}[3] 添加 TUIC v5 ⭐⭐⭐ (备选)${R}"
         echo -e "   ${H}纯UDP协议，游戏/直播优化${R}"
         echo -e "${H}────────────────────────${R}"
@@ -1480,7 +1480,7 @@ sb_menu() {
         read -e -p "  选择: " c
         c=$(echo "$c" | tr -d '[:space:]')
         case "$c" in
-            1) clear; sb_add_reality ;; 2) clear; sb_add_hysteria2 ;;
+            1) clear; sb_add_hysteria2 ;; 2) clear; sb_add_reality ;;
             3) clear; sb_add_tuic ;; 4) clear; sb_add_vless_ws ;;
             5) clear; sb_show_nodes_and_links ;; 6) clear; sb_del_node ;;
             14) clear; generate_client_config ;;
