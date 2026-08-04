@@ -130,7 +130,8 @@ sb_add_reality() {
     local keys_output=$($SB_BIN generate reality-keypair)
     local priv_key=$(echo "$keys_output" | awk '/PrivateKey/{print $2}')
     local pub_key=$(echo "$keys_output" | awk '/PublicKey/{print $2}')
-    local short_id=""
+    # 甬哥脚本中 short_id 使用 4 位 hex
+    local short_id=$($SB_BIN generate rand --hex 4)
     local node_tag="vless-reality-${port}"
     
     (
@@ -168,7 +169,7 @@ EOF
             systemctl restart sing-box
             echo -e "${G}✅ VLESS-Reality 部署成功！${R}"
             local server_ip=$(get_my_ip)
-            # 链接格式严格对齐甬哥
+            # 链接格式严格对齐甬哥脚本，包含 headerType=none
             local link="vless://${uuid}@${server_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#YW-Reality"
             echo -e "${C}节点链接: ${link}${R}"
         else
