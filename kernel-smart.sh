@@ -167,11 +167,19 @@ open_port() {
     save_iptables
 }
 
+close_port() {
+    local port=$1
+    iptables -D INPUT -p tcp --dport ${port} -j ACCEPT 2>/dev/null
+    iptables -D INPUT -p udp --dport ${port} -j ACCEPT 2>/dev/null
+    ip6tables -D INPUT -p tcp --dport ${port} -j ACCEPT 2>/dev/null
+    ip6tables -D INPUT -p udp --dport ${port} -j ACCEPT 2>/dev/null
+    save_iptables
+}
+
 sb_add_reality() {
     sb_check || return
     local port=$(shuf -i 10000-65535 -n 1)
     local uuid=$($SB_BIN generate uuid)
-    # 修复：换回参考脚本里的 SNI
     local sni="apple.com"
     local keys_output=$($SB_BIN generate reality-keypair)
     local priv_key=$(echo "$keys_output" | awk '/PrivateKey/{print $2}')
@@ -297,6 +305,77 @@ EOF
     read -rs -n 1 -p ""
 }
 
+sb_del_node() {
+    sb_check || return
+    
+    local tags=($(jq -r '.inbounds[].tag' "$SB_CONF" 2>/dev/null))
+    if [ ${#tags[@]} -eq 0 ]; then
+        echo -e "${Y}当前没有任何节点可删除。${R}"
+        read -rs -n 1 -p ""
+        return
+    fi
+    
+    echo -e "${Y}当前已有节点，请选择要删除的节点：${R}"
+    local i=1
+    for tag in "${tags[@]}"; do
+        echo -e "  ${G}[$i]${R} $tag"
+        ((i++))
+    done
+    echo -e "  ${H}[0] 返回${R}"
+    
+    read -e -p "请选择: " c
+    if [ "$c" == "0" ] || [ -z "$c" ]; then return; fi
+    
+    local tag="${tags[$((c-1))]}"
+    if [ -z "$tag" ]; then
+        echo -e "${RED}输入错误${R}"
+        read -rs -n 1 -p ""
+        return
+    fi
+    
+    # 获取端口与类型
+    local port=$(jq -r --arg t "$tag" '.inbounds[] | select(.tag==$t) | .listen_port' "$SB_CONF")
+    local type=$(jq -r --arg t "$tag" '.inbounds[] | select(.tag==$t) | .type' "$SB_CONF")
+    
+    (
+        flock -x 200
+        cp "$SB_CONF" "${SB_CONF}.bak"
+        
+        # 从 config.json 中删除节点
+        jq --arg t "$tag" 'del(.inbounds[] | select(.tag==$t))' "$SB_CONF" > "$SB_CONF.tmp"
+        
+        if $SB_BIN check -c "$SB_CONF.tmp" > /tmp/check.log 2>&1; then
+            mv "$SB_CONF.tmp" "$SB_CONF"
+            
+            # 删除防火墙规则
+            close_port $port
+            
+            # 清理元数据和证书
+            rm -f "${META_DIR}/${tag}.json"
+            if [ "$type" == "hysteria2" ]; then
+                rm -rf "/etc/sing-box/certs/hy2-${port}"
+            fi
+            
+            systemctl restart sing-box
+            sleep 2
+            if systemctl is-active --quiet sing-box; then
+                echo -e "${G}✅ 节点 $tag 已删除！${R}"
+            else
+                echo -e "${RED}❌ Sing-Box 启动失败，正在回滚...${R}"
+                journalctl -u sing-box -n 10 --no-pager
+                cp "${SB_CONF}.bak" "$SB_CONF"
+                systemctl restart sing-box
+            fi
+        else
+            echo -e "${RED}❌ 删除节点失败，错误详情：${R}"
+            cat /tmp/check.log
+            cp "${SB_CONF}.bak" "$SB_CONF"
+            rm -f "$SB_CONF.tmp"
+        fi
+    ) 200>"$SB_CONF_LOCK"
+    read -rs -n 1 -p ""
+}
+
 sb_show_links() {
     sb_check || return
     local server_ip=$(get_my_ip)
@@ -334,6 +413,7 @@ sb_menu() {
         echo -e "    ${Y}[2] 添加 VLESS-Reality 节点${R}"
         echo -e "    ${Y}[3] 添加 Hysteria2 节点${R}"
         echo -e "    ${Y}[4] 查看所有节点链接${R}"
+        echo -e "    ${RED}[5] 删除已添加节点${R}"
         echo -e "    ${H}[0] 返回主菜单${R}"
         read -e -p "  选择: " c
         case "$c" in
@@ -341,6 +421,7 @@ sb_menu() {
             2) clear; sb_add_reality ;;
             3) clear; sb_add_hysteria2 ;;
             4) clear; sb_show_links ;;
+            5) clear; sb_del_node ;;
             0|"") break ;;
         esac
     done
