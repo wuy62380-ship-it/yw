@@ -870,7 +870,8 @@ sb_add_reality() {
             local server_ip=$(get_my_ip); local server_ip_url="$server_ip"
             if [[ "$server_ip" =~ : ]]; then server_ip_url="[$server_ip]"; fi
             
-            local link="vless://${uuid}@${server_ip_url}:${port}?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=${pub_key}&security=reality&sid=${short_id}&sni=${sni}&type=tcp#$(url_encode "$nn")"
+            # 恢复 spx=%2F 参数，与甬哥脚本完全一致，解决客户端路由处理问题导致的 WiFi 断流
+            local link="vless://${uuid}@${server_ip_url}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&spx=%2F#$(url_encode "$nn")"
             
             echo -e "${C}节点链接: ${link}${R}"
             _persist_iptables; 
@@ -1301,7 +1302,8 @@ sb_show_nodes_and_links() {
                     flow=$(echo "$obj" | jq -r '.users[0].flow // empty' 2>/dev/null)
                     local flow_param=""; [ -n "$flow" ] && flow_param="&flow=${flow}"
                     if [ -n "$pub_key" ]; then
-                        link="vless://${uuid}@${server_ip_url}:${port}?encryption=none${flow_param}&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp#$(url_encode "$nn")"
+                        # 保持 spx=%2F 参数
+                        link="vless://${uuid}@${server_ip_url}:${port}?encryption=none${flow_param}&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&spx=%2F#$(url_encode "$nn")"
                     else
                         link="${RED}无法生成链接：缺少 PublicKey${R}"
                     fi
@@ -1402,7 +1404,7 @@ manual_open_port() {
             1) 
                read -e -p "请输入端口号 (1-65535): " port
                port=$(echo "$port" | tr -d '[:space:]')
-               if [[ "$port" =~ ^[0-9]{1,5}$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
+               if [[ "$port" =~ ^[0-9]{1,5}$ ]] && [ "port" -ge 1 ] && [ "$port" -le 65535 ]; then
                    open_port_both "$port"; _persist_iptables
                else
                    echo -e "${RED}❌ 端口输入错误！${R}"
@@ -1452,10 +1454,10 @@ sb_menu() {
         echo -e "    当前状态: ${sb_status_text}"
         echo ""
         echo -e "${Y}🎯 TikTok专用 - 性能与安全平衡${R}"
-        echo -e "${G}[1] 添加 Hysteria2 ⭐⭐⭐⭐⭐ (性能首选，直连链接最稳)${R}"
-        echo -e "   ${H}QUIC+UDP，直播性能最强，完美兼容 WiFi${R}"
-        echo -e "${G}[2] 添加 VLESS-Reality ⭐⭐⭐⭐ (安全首选)${R}"
+        echo -e "${G}[1] 添加 VLESS-Reality ⭐⭐⭐⭐⭐ (安全首选)${R}"
         echo -e "   ${H}大厂SNI伪装，TLS指纹完美，封号风险最低${R}"
+        echo -e "${G}[2] 添加 Hysteria2 ⭐⭐⭐⭐ (性能首选)${R}"
+        echo -e "   ${H}QUIC+UDP，直播性能最强，但需注意风控${R}"
         echo -e "${G}[3] 添加 TUIC v5 ⭐⭐⭐ (备选)${R}"
         echo -e "   ${H}纯UDP协议，游戏/直播优化${R}"
         echo -e "${H}────────────────────────${R}"
@@ -1480,7 +1482,7 @@ sb_menu() {
         read -e -p "  选择: " c
         c=$(echo "$c" | tr -d '[:space:]')
         case "$c" in
-            1) clear; sb_add_hysteria2 ;; 2) clear; sb_add_reality ;;
+            1) clear; sb_add_reality ;; 2) clear; sb_add_hysteria2 ;;
             3) clear; sb_add_tuic ;; 4) clear; sb_add_vless_ws ;;
             5) clear; sb_show_nodes_and_links ;; 6) clear; sb_del_node ;;
             14) clear; generate_client_config ;;
