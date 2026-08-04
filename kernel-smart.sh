@@ -52,7 +52,6 @@ get_my_ip() {
     echo "$server_ip"
 }
 
-# 通用：询问是否重启
 ask_reboot() {
     read -e -p "是否立即重启服务器以应用新内核？[Y/n]: " rb
     if [[ "$rb" =~ ^[Yy]$|^$ ]]; then
@@ -149,7 +148,6 @@ restore_default() {
     echo -e "内存: ${mem}MB | 拥塞算法: ${cc} | 队列: ${qdisc}"
 }
 
-# 官方原版 BBR 内核管理
 bbr_kernel_manage() {
     local vi=$(systemd-detect-virt 2>/dev/null)
     if [[ "$vi" =~ lxc|openvz ]]; then
@@ -171,22 +169,32 @@ bbr_kernel_manage() {
                 echo -e "${RED}仅支持 Debian/Ubuntu 系统进行此操作${R}"
                 read -rs -n 1 -p ""; return
             fi
-            echo -e "${Y}正在卸载 XanMod 内核...${R}"
-            apt purge -y linux-xanmod-x64v3 linux-image-xanmod-x64v3 >/dev/null 2>&1
+            
+            echo -e "${Y}正在彻底卸载 XanMod 内核包...${R}"
+            # 核心修复：使用正则匹配彻底清理所有带 xanmod 的包
+            apt purge -y $(dpkg -l | grep -i xanmod | awk '{print $2}') -y >/dev/null 2>&1
             rm -f /etc/apt/sources.list.d/xanmod-release.list
             rm -f /usr/share/keyrings/xanmod-archive-keyring.gpg
-            apt autoremove -y >/dev/null 2>&1
+            apt autoremove -y --purge >/dev/null 2>&1
             
             echo -e "${Y}正在安装官方原版内核...${R}"
             apt update -y >/dev/null 2>&1
+            # 安装官方通用内核
             apt install -y linux-image-amd64 linux-headers-amd64 >/dev/null 2>&1 || apt install -y linux-image-generic linux-headers-generic >/dev/null 2>&1
             
+            # 核心修复：强制设定 Grub 第一启动项为官方内核
             if command -v update-grub >/dev/null 2>&1; then
-                update-grub >/dev/null 2>&1
+                sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT=0/g' /etc/default/grub
+                update-grub
             else
                 grub2-mkconfig -o /boot/grub2/grub.cfg >/dev/null 2>&1
             fi
-            echo -e "${G}✅ 已切换为官方原版内核。${R}"
+            
+            echo -e "\n${G}当前系统中已安装的内核镜像文件：${R}"
+            ls /boot/vmlinuz-*
+            
+            echo -e "\n${G}✅ 已尝试切换为官方原版内核。${R}"
+            echo -e "${Y}如果上方列表中不再有 xanmod 字样，说明卸载成功。${R}"
             ask_reboot
         fi
     else
@@ -267,12 +275,13 @@ xanmod_manage() {
                 ;;
             2)
                 echo -e "${Y}正在卸载 BBRv3 内核...${R}"
-                apt purge -y linux-xanmod-x64v3 linux-image-xanmod-x64v3 >/dev/null 2>&1
+                apt purge -y $(dpkg -l | grep -i xanmod | awk '{print $2}') -y >/dev/null 2>&1
                 rm -f /etc/apt/sources.list.d/xanmod-release.list
                 rm -f /usr/share/keyrings/xanmod-archive-keyring.gpg
-                apt autoremove -y >/dev/null 2>&1
+                apt autoremove -y --purge >/dev/null 2>&1
                 if command -v update-grub >/dev/null 2>&1; then
-                    update-grub >/dev/null 2>&1
+                    sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT=0/g' /etc/default/grub
+                    update-grub
                 else
                     grub2-mkconfig -o /boot/grub2/grub.cfg >/dev/null 2>&1
                 fi
@@ -293,6 +302,7 @@ xanmod_manage() {
             apt update -y >/dev/null 2>&1
             apt install -y linux-xanmod-x64v3 >/dev/null 2>&1
             if command -v update-grub >/dev/null 2>&1; then
+                sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT=0/g' /etc/default/grub
                 update-grub >/dev/null 2>&1
             else
                 grub2-mkconfig -o /boot/grub2/grub.cfg >/dev/null 2>&1
