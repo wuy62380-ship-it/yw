@@ -500,13 +500,13 @@ close_port() {
 input_custom_port() {
     local port
     while true; do
-        read -e -p "请输入端口 (10000-65535，回车随机生成): " port
+        read -e -p "请输入端口 (1-65535，回车随机生成): " port
         if [ -z "$port" ]; then
-            port=$(shuf -i 10000-65535 -n 1)
+            port=$(shuf -i 443-65535 -n 1)
             echo -e "${Y}已随机生成端口: $port${R}" >&2
             break
-        elif ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 10000 ] || [ "$port" -gt 65535 ]; then
-            echo -e "${RED}端口必须在 10000-65535 之间，请重新输入${R}" >&2
+        elif ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+            echo -e "${RED}端口必须在 1-65535 之间，请重新输入${R}" >&2
         elif ss -tuln | grep -q ":$port "; then
             echo -e "${RED}端口 $port 已被占用，请重新输入${R}" >&2
         else
@@ -557,7 +557,7 @@ sb_add_reality() {
             type: "vless",
             listen: "::",
             listen_port: $port,
-            users: [{uuid: $uuid, flow: "xtls-rprx-vision"}],
+            users: [{uuid: $uuid}],
             tls: {
               enabled: true,
               server_name: $sni,
@@ -591,7 +591,7 @@ EOF
             else
                 echo -e "${G}✅ VLESS-Reality 部署成功！${R}"
                 local server_ip=$(get_my_ip)
-                local link="vless://${uuid}@${server_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#${node_tag}"
+                local link="vless://${uuid}@${server_ip}:${port}?encryption=none&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#${node_tag}"
                 echo -e "${C}节点链接: ${link}${R}"
             fi
         else
@@ -794,7 +794,7 @@ sb_show_links() {
                 local sni=$(jq -r '.sni' "$meta")
                 local pub_key=$(jq -r '.public_key' "$meta")
                 local short_id=$(jq -r '.short_id' "$meta")
-                echo "vless://${uuid}@${server_ip}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#${tag}"
+                echo "vless://${uuid}@${server_ip}:${port}?encryption=none&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#${tag}"
             fi
         done
         
