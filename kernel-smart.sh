@@ -474,6 +474,7 @@ save_iptables() {
     if command -v netfilter-persistent >/dev/null 2>&1; then
         netfilter-persistent save >/dev/null 2>&1
     elif command -v iptables-save >/dev/null 2>&1; then
+        mkdir -p /etc/iptables
         iptables-save > /etc/iptables/rules.v4 2>/dev/null
         ip6tables-save > /etc/iptables/rules.v6 2>/dev/null
     fi
