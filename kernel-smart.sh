@@ -616,6 +616,65 @@ EOF
     read -rs -n 1 -p ""
 }
 
+sb_add_vless_tcp() {
+    sb_check || return
+    echo -e "${Y}设置 VLESS-TCP 端口${R}"
+    local port=$(input_custom_port)
+    local uuid=$($SB_BIN generate uuid)
+    
+    local default_tag="vless-tcp-${port}"
+    local node_tag=$(input_custom_tag "$default_tag")
+    
+    (
+        flock -x 200
+        cp "$SB_CONF" "${SB_CONF}.bak"
+        
+        local node_json=$(jq -n \
+          --arg tag "$node_tag" \
+          --argjson port $port \
+          --arg uuid "$uuid" \
+          '{
+            tag: $tag,
+            type: "vless",
+            listen: "::",
+            listen_port: $port,
+            users: [{uuid: $uuid}]
+          }')
+        
+        jq --argjson node "$node_json" '.inbounds += [$node]' "$SB_CONF" > "$SB_CONF.tmp"
+        
+        if $SB_BIN check -c "$SB_CONF.tmp" > /tmp/check.log 2>&1; then
+            mv "$SB_CONF.tmp" "$SB_CONF"
+            open_port $port
+            
+            cat > "${META_DIR}/${node_tag}.json" <<EOF
+{"uuid":"$uuid","port":$port}
+EOF
+            
+            systemctl restart sing-box
+            sleep 2
+            if ! systemctl is-active --quiet sing-box; then
+                echo -e "${RED}❌ Sing-Box 启动失败！可能是端口冲突。${R}"
+                journalctl -u sing-box -n 10 --no-pager
+                cp "${SB_CONF}.bak" "$SB_CONF"
+                rm -f "${META_DIR}/${node_tag}.json"
+                systemctl restart sing-box
+            else
+                echo -e "${G}✅ VLESS-TCP 部署成功！${R}"
+                local server_ip=$(get_my_ip)
+                local link="vless://${uuid}@${server_ip}:${port}?encryption=none&security=none&type=tcp&headerType=none#${node_tag}"
+                echo -e "${C}节点链接: ${link}${R}"
+            fi
+        else
+            echo -e "${RED}❌ 校验失败，错误详情：${R}"
+            cat /tmp/check.log
+            cp "${SB_CONF}.bak" "$SB_CONF"
+            rm -f "$SB_CONF.tmp"
+        fi
+    ) 200>"$SB_CONF_LOCK"
+    read -rs -n 1 -p ""
+}
+
 sb_add_hysteria2() {
     sb_check || return
     echo -e "${Y}设置 Hysteria2 端口${R}"
@@ -798,6 +857,7 @@ sb_show_links() {
     (
         flock -s 200
         
+        # VLESS-Reality
         jq -r '.inbounds[] | select(.type=="vless" and .tls.reality.enabled==true) | .tag' "$SB_CONF" 2>/dev/null | while read -r tag; do
             if [ -n "$tag" ] && [ -f "${META_DIR}/${tag}.json" ]; then
                 local meta="${META_DIR}/${tag}.json"
@@ -815,6 +875,17 @@ sb_show_links() {
             fi
         done
         
+        # VLESS-TCP
+        jq -r '.inbounds[] | select(.type=="vless" and (.tls == null or .tls == {})) | .tag' "$SB_CONF" 2>/dev/null | while read -r tag; do
+            if [ -n "$tag" ] && [ -f "${META_DIR}/${tag}.json" ]; then
+                local meta="${META_DIR}/${tag}.json"
+                local uuid=$(jq -r '.uuid' "$meta")
+                local port=$(jq -r '.port' "$meta")
+                echo "vless://${uuid}@${server_ip}:${port}?encryption=none&security=none&type=tcp&headerType=none#${tag}"
+            fi
+        done
+        
+        # Hysteria2
         jq -r --arg ip "$server_ip" '.inbounds[] | select(.type=="hysteria2") | "hysteria2://" + .users[0].password + "@" + $ip + ":" + (.listen_port|tostring) + "?security=tls&sni=" + .tls.server_name + "&alpn=h3&insecure=1#" + .tag' "$SB_CONF" 2>/dev/null
         
     ) 200>"$SB_CONF_LOCK"
@@ -830,19 +901,21 @@ sb_menu() {
         echo -e "╚═══════════════════════════════════════════╝${R}"
         echo -e "    ${Y}[1] 安装 Sing-Box${R}"
         echo -e "    ${Y}[2] 添加 VLESS-Reality 节点${R}"
-        echo -e "    ${Y}[3] 添加 Hysteria2 节点${R}"
-        echo -e "    ${Y}[4] 查看所有节点链接${R}"
-        echo -e "    ${RED}[5] 删除已添加节点 (支持按端口删除)${R}"
-        echo -e "    ${C}[6] 手动管理端口放行 (TCP+UDP)${R}"
+        echo -e "    ${Y}[3] 添加 VLESS-TCP 节点${R}"
+        echo -e "    ${Y}[4] 添加 Hysteria2 节点${R}"
+        echo -e "    ${Y}[5] 查看所有节点链接${R}"
+        echo -e "    ${RED}[6] 删除已添加节点 (支持按端口删除)${R}"
+        echo -e "    ${C}[7] 手动管理端口放行 (TCP+UDP)${R}"
         echo -e "    ${H}[0] 返回主菜单${R}"
         read -e -p "  选择: " c
         case "$c" in
             1) clear; sb_install ;;
             2) clear; sb_add_reality ;;
-            3) clear; sb_add_hysteria2 ;;
-            4) clear; sb_show_links ;;
-            5) clear; sb_del_node ;;
-            6) clear; sb_manage_ports ;;
+            3) clear; sb_add_vless_tcp ;;
+            4) clear; sb_add_hysteria2 ;;
+            5) clear; sb_show_links ;;
+            6) clear; sb_del_node ;;
+            7) clear; sb_manage_ports ;;
             0|"") break ;;
         esac
     done
