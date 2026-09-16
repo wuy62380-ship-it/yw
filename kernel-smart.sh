@@ -542,6 +542,12 @@ sb_add_reality() {
     local default_tag="vless-reality-${port}"
     local node_tag=$(input_custom_tag "$default_tag")
     
+    read -e -p "是否开启 xtls-rprx-vision 流控？[Y/n]: " enable_vision
+    local flow=""
+    if [[ "$enable_vision" =~ ^[Yy]$|^$ ]]; then
+        flow="xtls-rprx-vision"
+    fi
+    
     (
         flock -x 200
         cp "$SB_CONF" "${SB_CONF}.bak"
@@ -553,12 +559,13 @@ sb_add_reality() {
           --arg sni "$sni" \
           --arg priv_key "$priv_key" \
           --arg short_id "$short_id" \
+          --arg flow "$flow" \
           '{
             tag: $tag,
             type: "vless",
             listen: "::",
             listen_port: $port,
-            users: [{uuid: $uuid}],
+            users: (if $flow == "" then [{uuid: $uuid}] else [{uuid: $uuid, flow: $flow}] end),
             tls: {
               enabled: true,
               server_name: $sni,
@@ -578,7 +585,7 @@ sb_add_reality() {
             open_port $port
             
             cat > "${META_DIR}/${node_tag}.json" <<EOF
-{"public_key":"$pub_key","short_id":"$short_id","sni":"$sni","uuid":"$uuid","port":$port}
+{"public_key":"$pub_key","short_id":"$short_id","sni":"$sni","uuid":"$uuid","port":$port,"flow":"$flow"}
 EOF
             
             systemctl restart sing-box
@@ -592,7 +599,11 @@ EOF
             else
                 echo -e "${G}✅ VLESS-Reality 部署成功！${R}"
                 local server_ip=$(get_my_ip)
-                local link="vless://${uuid}@${server_ip}:${port}?encryption=none&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#${node_tag}"
+                local flow_param=""
+                if [ -n "$flow" ]; then
+                    flow_param="&flow=${flow}"
+                fi
+                local link="vless://${uuid}@${server_ip}:${port}?encryption=none${flow_param}&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#${node_tag}"
                 echo -e "${C}节点链接: ${link}${R}"
             fi
         else
@@ -795,7 +806,12 @@ sb_show_links() {
                 local sni=$(jq -r '.sni' "$meta")
                 local pub_key=$(jq -r '.public_key' "$meta")
                 local short_id=$(jq -r '.short_id' "$meta")
-                echo "vless://${uuid}@${server_ip}:${port}?encryption=none&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#${tag}"
+                local flow=$(jq -r '.flow // empty' "$meta")
+                local flow_param=""
+                if [ -n "$flow" ]; then
+                    flow_param="&flow=${flow}"
+                fi
+                echo "vless://${uuid}@${server_ip}:${port}?encryption=none${flow_param}&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#${tag}"
             fi
         done
         
