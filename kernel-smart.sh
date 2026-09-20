@@ -296,7 +296,7 @@ restore_advanced_default() {
     
     local current_mem=$(free -m | awk '/Mem:/{print $2}')
     local current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
-    local current_qdisc=sysctl -n net.core.default_qdisc 2>/dev/null)
+    local current_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
     
     echo -e "${G}✅ 还原完毕${R}"
     echo -e "内存: ${current_mem}MB | 拥塞算法: ${current_cc} | 队列: ${current_qdisc}"
