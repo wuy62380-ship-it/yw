@@ -81,8 +81,7 @@ apply_optimize() {
     echo -e "${Y}写入优化配置...${R}"
     
     # 清理高级调优的配置，防止冲突
-    rm -f "$ADV_SYSCTL_CONF" "$ADV_MODE_FILE" 2>/dev/null
-    sysctl --system >/dev/null 2>&1
+    rm -f "$ADV_SYSCTL_CONF" "$ADV_MODE_FILE" "$ADV_SNAPSHOT" 2>/dev/null
 
     if [ "$mode" == "balance" ]; then
         cat > "$SYSCTL_CONF" << EOF
@@ -143,6 +142,7 @@ EOF
     
     echo -e "${G}${mode_name} 优化完成！配置已持久化到 ${SYSCTL_CONF}${R}"
     echo -e "内存: ${mem}MB | 拥塞算法: ${cc} | 队列: ${qdisc}"
+    echo -e "${Y}提示：网络参数已变更，若出现终端卡顿或断开，请重新连接 SSH 即可。${R}"
 }
 
 restore_default() {
@@ -163,6 +163,7 @@ restore_default() {
     
     echo -e "${G}已还原系统默认网络配置${R}"
     echo -e "内存: ${mem}MB | 拥塞算法: ${cc} | 队列: ${qdisc}"
+    echo -e "${Y}提示：网络参数已变更，若出现终端卡顿或断开，请重新连接 SSH 即可。${R}"
 }
 
 # ================= 高级动态调优 (防OOM/精准回滚) =================
@@ -191,7 +192,6 @@ apply_advanced_optimize() {
     
     # 清理标准模式的配置，防止冲突
     rm -f "$SYSCTL_CONF" "$MODE_FILE" 2>/dev/null
-    sysctl --system >/dev/null 2>&1
 
     # 1. 调优前先备份出厂状态
     take_adv_snapshot
@@ -264,6 +264,7 @@ EOF
     
     echo -e "${G}✅ ${mode_name}完成！配置已持久化到 ${ADV_SYSCTL_CONF}${R}"
     echo -e "内存: ${current_mem}MB | 拥塞算法: ${current_cc} | 队列: ${current_qdisc}"
+    echo -e "${Y}提示：网络参数已变更，若出现终端卡顿或断开，请重新连接 SSH 即可。${R}"
 }
 
 restore_advanced_default() {
@@ -300,6 +301,7 @@ restore_advanced_default() {
     
     echo -e "${G}✅ 还原完毕${R}"
     echo -e "内存: ${current_mem}MB | 拥塞算法: ${current_cc} | 队列: ${current_qdisc}"
+    echo -e "${Y}提示：网络参数已变更，若出现终端卡顿或断开，请重新连接 SSH 即可。${R}"
 }
 
 bbr_kernel_manage() {
