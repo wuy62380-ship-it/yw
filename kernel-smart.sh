@@ -11,6 +11,11 @@ META_DIR="/etc/sing-box/meta"
 SYSCTL_CONF="/etc/sysctl.d/99-yw-optimize.conf"
 MODE_FILE="/etc/yw_sysctl_mode"
 
+# 高级调优独立配置 (互不干扰)
+ADV_SYSCTL_CONF="/etc/sysctl.d/99-yw-adv-optimize.conf"
+ADV_SNAPSHOT="/etc/sysctl.d/.yw_adv_snapshot"
+ADV_MODE_FILE="/etc/yw_adv_sysctl_mode"
+
 mkdir -p /var/lock 2>/dev/null
 mkdir -p "$META_DIR" 2>/dev/null
 
@@ -27,7 +32,6 @@ check_env() {
         export DEBIAN_FRONTEND=noninteractive
         if command -v apt-get >/dev/null 2>&1; then
             apt-get update -y
-            # 核心修复：移除了不能作为包名的 ip6tables，它包含在 iptables 中
             apt-get install -y curl wget jq openssl iptables tar iproute2 procps coreutils iptables-persistent gnupg ca-certificates
         elif command -v yum >/dev/null 2>&1; then
             yum update -y
@@ -69,13 +73,17 @@ ask_reboot() {
     fi
 }
 
-# ================= 网络与内核优化 =================
+# ================= 标准网络与内核优化 =================
 apply_optimize() {
     local mode=$1
     local mode_name=$2
     echo -e "${Y}切换到${mode_name}...${R}"
     echo -e "${Y}写入优化配置...${R}"
     
+    # 清理高级调优的配置，防止冲突
+    rm -f "$ADV_SYSCTL_CONF" "$ADV_MODE_FILE" 2>/dev/null
+    sysctl --system >/dev/null 2>&1
+
     if [ "$mode" == "balance" ]; then
         cat > "$SYSCTL_CONF" << EOF
 net.ipv4.ip_forward = 1
@@ -139,8 +147,8 @@ EOF
 
 restore_default() {
     echo -e "${Y}还原默认设置...${R}"
-    rm -f "$SYSCTL_CONF"
-    rm -f "$MODE_FILE"
+    rm -f "$SYSCTL_CONF" "$MODE_FILE"
+    rm -f "$ADV_SYSCTL_CONF" "$ADV_MODE_FILE" "$ADV_SNAPSHOT" # 同时清理高级调优
     
     sed -i '/tcp_congestion_control/d' /etc/sysctl.conf
     sed -i '/default_qdisc/d' /etc/sysctl.conf
@@ -155,6 +163,143 @@ restore_default() {
     
     echo -e "${G}已还原系统默认网络配置${R}"
     echo -e "内存: ${mem}MB | 拥塞算法: ${cc} | 队列: ${qdisc}"
+}
+
+# ================= 高级动态调优 (防OOM/精准回滚) =================
+take_adv_snapshot() {
+    if [ -f "$ADV_SNAPSHOT" ]; then
+        return 0
+    fi
+    echo -e "${Y}首次使用高级调优，正在备份出厂网络参数...${R}"
+    {
+        echo "# YW 高级调优出厂快照 $(date)"
+        for k in net.core.default_qdisc net.ipv4.tcp_congestion_control \
+                 net.core.rmem_max net.core.wmem_max \
+                 net.ipv4.tcp_rmem net.ipv4.tcp_wmem \
+                 net.ipv4.udp_rmem_min net.ipv4.udp_wmem_min \
+                 net.core.netdev_max_backlog; do
+            echo "$k = $(sysctl -n "$k" 2>/dev/null)"
+        done
+    } > "$ADV_SNAPSHOT"
+    echo -e "${G}出厂快照已保存至 ${ADV_SNAPSHOT}${R}"
+}
+
+apply_advanced_optimize() {
+    local mode=$1
+    local mode_name=$2
+    echo -e "${Y}执行${mode_name}...${R}"
+    
+    # 清理标准模式的配置，防止冲突
+    rm -f "$SYSCTL_CONF" "$MODE_FILE" 2>/dev/null
+    sysctl --system >/dev/null 2>&1
+
+    # 1. 调优前先备份出厂状态
+    take_adv_snapshot
+
+    # 2. 动态推导 TCP 缓冲区上限 (防止小内存机 OOM)
+    local mem_total_kb=$(awk '/MemTotal:/{print $2}' /proc/meminfo)
+    local mem_mb=$((mem_total_kb / 1024))
+    # 核心逻辑: 取内存的 1/32，上限 64MB (67108864)，下限 4MB (4194304)
+    local buf_max=$(( mem_mb * 1024 * 1024 / 32 ))
+    [ "$buf_max" -gt 67108864 ] && buf_max=67108864
+    [ "$buf_max" -lt 4194304 ] && buf_max=4194304
+    
+    echo -e "${C}物理内存: ${mem_mb} MB | 推导 TCP 缓冲区上限: $(( buf_max / 1024 / 1024 )) MB${R}"
+    
+    # 3. 尝试加载 BBR 模块
+    modprobe tcp_bbr 2>/dev/null
+    local cc="bbr"
+    if ! sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw bbr; then
+        echo -e "${RED}警告：内核不支持 BBR，回退到 cubic${R}"
+        cc="cubic"
+    fi
+
+    # 4. 生成配置到临时文件 (原子化写入)
+    local tmp_conf="/tmp/.yw_adv_sysctl_tmp"
+    cat > "$tmp_conf" << EOF
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 1
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = $cc
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_mtu_probing = 1
+fs.file-max = 1000000
+net.core.somaxconn = 32768
+
+# 动态 TCP 缓冲区调优 (由 YW 工具箱计算生成)
+net.core.rmem_max = $buf_max
+net.core.wmem_max = $buf_max
+net.ipv4.tcp_rmem = 4096 87380 $buf_max
+net.ipv4.tcp_wmem = 4096 65536 $buf_max
+
+net.ipv4.tcp_syncookies = 1
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_fin_timeout = 30
+EOF
+
+    # 根据模式追加参数
+    if [ "$mode" == "live" ]; then
+        echo -e "${C}已融合直播推流 UDP 大缓冲优化参数${R}"
+        cat >> "$tmp_conf" << EOF
+# 直播推流 UDP 专属优化 (减少丢包与花屏)
+net.ipv4.udp_rmem_min = 8192
+net.ipv4.udp_wmem_min = 8192
+net.ipv4.udp_mem = 379008 504512 759360
+net.core.netdev_max_backlog = 32768
+EOF
+    else
+        # 日常代理模式，使用温和的 backlog
+        echo "net.core.netdev_max_backlog = 16384" >> "$tmp_conf"
+    fi
+
+    echo -e "${Y}正在校验并应用优化参数...${R}"
+    # 5. 校验临时配置，成功后再覆盖持久化文件
+    sysctl -p "$tmp_conf" >/dev/null 2>&1
+    mv -f "$tmp_conf" "$ADV_SYSCTL_CONF"
+    echo "$mode_name" > "$ADV_MODE_FILE"
+    
+    local current_mem=$(free -m | awk '/Mem:/{print $2}')
+    local current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+    local current_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
+    
+    echo -e "${G}✅ ${mode_name}完成！配置已持久化到 ${ADV_SYSCTL_CONF}${R}"
+    echo -e "内存: ${current_mem}MB | 拥塞算法: ${current_cc} | 队列: ${current_qdisc}"
+}
+
+restore_advanced_default() {
+    echo -e "${Y}还原高级调优设置...${R}"
+    
+    # 1. 移除持久化配置文件
+    rm -f "$ADV_SYSCTL_CONF"
+    rm -f "$ADV_MODE_FILE"
+    
+    # 2. 优先从快照恢复 (精准还原)
+    if [ -f "$ADV_SNAPSHOT" ]; then
+        echo -e "${Y}检测到出厂快照，正在精准还原...${R}"
+        while IFS='=' read -r key val; do
+            [[ "$key" =~ ^# ]] && continue
+            [ -z "$key" ] && continue
+            key=$(echo "$key" | xargs); val=$(echo "$val" | xargs)
+            sysctl -w "$key=$val" >/dev/null 2>&1
+        done < "$ADV_SNAPSHOT"
+        rm -f "$ADV_SNAPSHOT"
+        echo -e "${G}✅ 已按出厂快照精准还原网络配置${R}"
+    else
+        # 3. 无快照时的兜底策略
+        echo -e "${Y}未找到出厂快照，应用系统默认配置...${R}"
+        sed -i '/tcp_congestion_control/d' /etc/sysctl.conf
+        sed -i '/default_qdisc/d' /etc/sysctl.conf
+        echo "net.ipv4.tcp_congestion_control = cubic" >> /etc/sysctl.conf
+        echo "net.core.default_qdisc = fq_codel" >> /etc/sysctl.conf
+        sysctl -p >/dev/null 2>&1
+    fi
+    
+    local current_mem=$(free -m | awk '/Mem:/{print $2}')
+    local current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+    local current_qdisc=sysctl -n net.core.default_qdisc 2>/dev/null)
+    
+    echo -e "${G}✅ 还原完毕${R}"
+    echo -e "内存: ${current_mem}MB | 拥塞算法: ${current_cc} | 队列: ${current_qdisc}"
 }
 
 bbr_kernel_manage() {
@@ -181,6 +326,8 @@ smart_auto_optimize() {
         local current_mode="默认设置"
         if [ -f "$MODE_FILE" ]; then
             current_mode=$(cat "$MODE_FILE")
+        elif [ -f "$ADV_MODE_FILE" ]; then
+            current_mode=$(cat "$ADV_MODE_FILE")
         elif [ "$current_cc" = "bbr" ]; then
             current_mode="原版 BBR"
         elif [ "$current_cc" = "cubic" ]; then
@@ -196,6 +343,9 @@ smart_auto_optimize() {
         echo -e "${Y}3 还原默认设置：       ${R}将系统设置还原为默认配置。"
         echo -e "${C}4 XanMod BBRv3 内核管理${R}"
         echo -e "${C}5 开启原版 BBR 加速 (teddysun)${R}"
+        echo -e "${G}6 高级代理调优：       ${R}动态推导TCP防OOM，带快照精准回滚，适合日常。"
+        echo -e "${G}7 高级直播调优：       ${R}动态TCP+加大UDP缓冲防OOM防花屏，适合TikTok。"
+        echo -e "${G}8 还原高级调优：       ${R}从快照精准还原出厂网络参数。"
         echo -e "--------------------"
         echo -e "${H}0. 返回上一级选单${R}"
         echo -e "--------------------"
@@ -207,6 +357,9 @@ smart_auto_optimize() {
             3) clear; restore_default; echo "操作完成"; read -rs -n 1 -p "按任意键继续..." ;;
             4) clear; xanmod_manage ;;
             5) clear; bbr_kernel_manage ;;
+            6) clear; apply_advanced_optimize proxy "高级代理调优"; echo "操作完成"; read -rs -n 1 -p "按任意键继续..." ;;
+            7) clear; apply_advanced_optimize live "高级直播调优"; echo "操作完成"; read -rs -n 1 -p "按任意键继续..." ;;
+            8) clear; restore_advanced_default; echo "操作完成"; read -rs -n 1 -p "按任意键继续..." ;;
             0|"") break ;;
         esac
     done
