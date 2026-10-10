@@ -1095,4 +1095,43 @@ main_menu() {
     done
 }
 
+# ================= 自动创建快捷指令 =================
+YW_URL="https://raw.githubusercontent.com/wuy62380-ship-it/yw/refs/heads/main/kernel-smart.sh"
+
+auto_shortcut() {
+    local target="/usr/local/bin/yw"
+    local src="${BASH_SOURCE[0]:-$0}"
+
+    [ "$(id -u)" -ne 0 ] && return 0     # 非 root 跳过
+    [ "$src" == "$target" ] && return 0  # 本身就是 yw，跳过
+
+    # 路径1：本地文件运行 → 复制自身
+    if [ -f "$src" ]; then
+        local s=$(realpath "$src" 2>/dev/null || echo "$src")
+        [ "$s" == "$target" ] && return 0
+        if cp -f "$s" "$target" 2>/dev/null; then
+            chmod +x "$target"
+            return 0
+        fi
+    fi
+
+    # 路径2：curl 一键运行 → 自动从 GitHub 下载自身装成 yw
+    local tmp="/tmp/.yw_download"
+    if curl -Ls --max-time 30 "$YW_URL" -o "$tmp" 2>/dev/null \
+       && head -n 1 "$tmp" | grep -q '^#!' && grep -q '^main_menu$' "$tmp"; then
+        local first=0
+        [ -f "$target" ] || first=1
+        mv -f "$tmp" "$target"
+        chmod +x "$target"
+        if [ "$first" -eq 1 ]; then
+            clear
+            echo -e "${G}✅ 快捷指令创建成功！以后在任意位置输入 ${C}yw${R} 即可呼出菜单${R}"
+            sleep 2
+        fi
+    else
+        rm -f "$tmp"
+    fi
+}
+
+auto_shortcut
 main_menu
