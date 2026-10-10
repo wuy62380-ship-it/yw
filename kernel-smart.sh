@@ -171,7 +171,7 @@ take_adv_snapshot() {
     if [ -f "$ADV_SNAPSHOT" ]; then
         return 0
     fi
-    echo --e "${Y}首次使用高级调优，正在备份出厂网络参数...${R}"
+    echo -e "${Y}首次使用高级调优，正在备份出厂网络参数...${R}"
     {
         echo "# YW 高级调优出厂快照 $(date)"
         for k in net.core.default_qdisc net.ipv4.tcp_congestion_control \
@@ -268,7 +268,7 @@ EOF
 }
 
 restore_advanced_default() {
-    echo --e "${Y}还原高级调优设置...${R}"
+    echo -e "${Y}还原高级调优设置...${R}"
     
     # 1. 移除持久化配置文件
     rm -f "$ADV_SYSCTL_CONF"
@@ -307,7 +307,7 @@ restore_advanced_default() {
 bbr_kernel_manage() {
     local vi=$(systemd-detect-virt 2>/dev/null)
     if [[ "$vi" =~ lxc|openvz ]]; then
-        echo --e "${RED}当前VPS的架构为 $vi，不支持开启原版BBR加速${R}"
+        echo -e "${RED}当前VPS的架构为 $vi，不支持开启原版BBR加速${R}"
         read -rs -n 1 -p ""; return
     fi
 
@@ -340,14 +340,14 @@ smart_auto_optimize() {
         echo -e "当前模式: ${Y}$current_mode${R}\n"
         echo -e "Linux系统内核参数优化"
         echo -e "--------------------"
-        echo --e "${Y}1 均衡优化模式：       ${R}在性能与资源消耗之间取得平衡，适合日常使用。"
-        echo --e "${Y}2 直播优化模式：       ${R}针对直播推流优化，UDP 缓冲区加大，减少延迟。"
-        echo --e "${Y}3 还原默认设置：       ${R}将系统设置还原为默认配置。"
-        echo --e "${C}4 XanMod BBRv3 内核管理${R}"
-        echo --e "${C}5 开启原版 BBR 加速 (teddysun)${R}"
-        echo --e "${G}6 高级代理调优：       ${R}动态推导TCP防OOM，带快照精准回滚，适合日常。"
-        echo --e "${G}7 高级直播调优：       ${R}动态TCP+加大UDP缓冲防OOM防花屏，适合TikTok。"
-        echo --e "${G}8 还原高级调优：       ${R}从快照精准还原出厂网络参数。"
+        echo -e "${Y}1 均衡优化模式：       ${R}在性能与资源消耗之间取得平衡，适合日常使用。"
+        echo -e "${Y}2 直播优化模式：       ${R}针对直播推流优化，UDP 缓冲区加大，减少延迟。"
+        echo -e "${Y}3 还原默认设置：       ${R}将系统设置还原为默认配置。"
+        echo -e "${C}4 XanMod BBRv3 内核管理${R}"
+        echo -e "${C}5 开启原版 BBR 加速 (teddysun)${R}"
+        echo -e "${G}6 高级代理调优：       ${R}动态推导TCP防OOM，带快照精准回滚，适合日常。"
+        echo -e "${G}7 高级直播调优：       ${R}动态TCP+加大UDP缓冲防OOM防花屏，适合TikTok。"
+        echo -e "${G}8 还原高级调优：       ${R}从快照精准还原出厂网络参数。"
         echo -e "--------------------"
         echo -e "${H}0. 返回上一级选单${R}"
         echo -e "--------------------"
@@ -390,7 +390,7 @@ xanmod_add_repo() {
     fi
 
     if [ -z "$os_codename" ]; then
-        echo --e "${RED}无法获取系统代号，无法配置XanMod源${R}"
+        echo -e "${RED}无法获取系统代号，无法配置XanMod源${R}"
         return 1
     fi
 
@@ -398,12 +398,12 @@ xanmod_add_repo() {
     apt-get install -y wget gnupg ca-certificates >/dev/null 2>&1
     mkdir -p /usr/share/keyrings /etc/apt/sources.list.d
     if ! wget -qO - "$key_url" | gpg --dearmor -o "$keyring" --yes; then
-        echo --e "${RED}官方密钥下载失败${R}"
+        echo -e "${RED}官方密钥下载失败${R}"
         return 1
     fi
     chmod 644 "$keyring"
     echo "deb [signed-by=$keyring] http://deb.xanmod.org $os_codename main" > "$list_file"
-    echo --e "${G}XanMod 源配置完成 (系统代号: $os_codename)${R}"
+    echo -e "${G}XanMod 源配置完成 (系统代号: $os_codename)${R}"
 }
 
 xanmod_detect_psabi_level() {
@@ -442,7 +442,7 @@ xanmod_detect_package() {
         while [ "$level" -ge 1 ]; do
             package="${prefix}-x64v${level}"
             if xanmod_package_available "$package"; then
-                echo --e "${G}已自动匹配合适安装包: $package${R}" >&2
+                echo -e "${G}已自动匹配合适安装包: $package${R}" >&2
                 printf '%s\n' "$package"
                 return 0
             fi
@@ -450,7 +450,7 @@ xanmod_detect_package() {
         done
     done
 
-    echo --e "${RED}软件源中未找到适配此CPU的XanMod内核包${R}" >&2
+    echo -e "${RED}软件源中未找到适配此CPU的XanMod内核包${R}" >&2
     return 1
 }
 
@@ -463,12 +463,12 @@ xanmod_install_or_update() {
     local package=""
 
     xanmod_add_repo || {
-        echo --e "${RED}XanMod官方仓库配置失败，请稍后重试${R}"
+        echo -e "${RED}XanMod官方仓库配置失败，请稍后重试${R}"
         return 1
     }
 
     package=$(xanmod_detect_package) || {
-        echo --e "${RED}无法识别当前CPU或找不到匹配内核包，已取消安装${R}"
+        echo -e "${RED}无法识别当前CPU或找不到匹配内核包，已取消安装${R}"
         return 1
     }
 
@@ -476,24 +476,24 @@ xanmod_install_or_update() {
     apt-get update -y
     if [ "$action" = "update" ]; then
         apt-get install -y --only-upgrade "$package" || apt-get install -y "$package" || {
-            echo --e "${RED}XanMod内核更新失败，请检查软件源或稍后重试${R}"
+            echo -e "${RED}XanMod内核更新失败，请检查软件源或稍后重试${R}"
             return 1
         }
     else
         apt-get install -y "$package" || {
-            echo --e "${RED}XanMod内核安装失败，请检查软件源或稍后重试${R}"
+            echo -e "${RED}XanMod内核安装失败，请检查软件源或稍后重试${R}"
             return 1
         }
     fi
 
     apply_optimize balance "均衡优化模式" > /dev/null
     
-    echo --e "${G}XanMod BBRv3内核处理完成。重启后生效${R}"
+    echo -e "${G}XanMod BBRv3内核处理完成。重启后生效${R}"
     ask_reboot
 }
 
 xanmod_uninstall() {
-    echo --e "${Y}正在卸载 XanMod 内核...${R}"
+    echo -e "${Y}正在卸载 XanMod 内核...${R}"
     apt-get purge -y 'linux-*xanmod*'
     apt-get autoremove -y
     if command -v update-grub >/dev/null 2>&1; then
@@ -504,13 +504,13 @@ xanmod_uninstall() {
     fi
     rm -f /etc/apt/sources.list.d/xanmod-release.list
     rm -f /usr/share/keyrings/xanmod-archive-keyring.gpg
-    echo --e "${G}XanMod内核已卸载。重启后生效${R}"
+    echo -e "${G}XanMod内核已卸载。重启后生效${R}"
     ask_reboot
 }
 
 xanmod_manage() {
     if ! command -v apt-get >/dev/null 2>&1; then
-        echo --e "${RED}仅支持 Debian/Ubuntu 系统安装 XanMod 内核${R}"
+        echo -e "${RED}仅支持 Debian/Ubuntu 系统安装 XanMod 内核${R}"
         read -rs -n 1 -p ""; return
     fi
 
@@ -518,11 +518,11 @@ xanmod_manage() {
         while true; do
             clear
             local kernel_version=$(uname -r)
-            echo --e "${G}您已安装xanmod的BBRv3内核${R}"
-            echo --e "当前内核版本: ${C}$kernel_version${R}\n"
-            echo --e "${Y}内核管理${R}"
+            echo -e "${G}您已安装xanmod的BBRv3内核${R}"
+            echo -e "当前内核版本: ${C}$kernel_version${R}\n"
+            echo -e "${Y}内核管理${R}"
             echo -e "------------------------"
-            echo --e "${Y}1. 更新BBRv3内核              2. 卸载BBRv3内核${R}"
+            echo -e "${Y}1. 更新BBRv3内核              2. 卸载BBRv3内核${R}"
             echo -e "------------------------"
             echo -e "${H}0. 返回上一级选单${R}"
             read -e -p "请输入你的选择: " sub_choice
@@ -534,7 +534,7 @@ xanmod_manage() {
         done
     else
         clear
-        echo --e "${Y}设置BBR3加速${R}"
+        echo -e "${Y}设置BBR3加速${R}"
         echo -e "------------------------------------------------"
         echo -e "仅支持Debian/Ubuntu"
         echo -e "请备份数据，将为你升级Linux内核开启BBR3"
@@ -542,7 +542,7 @@ xanmod_manage() {
         read -e -p "确定继续吗？[Y/n]: " choice
         case "$choice" in
             [Yy]|"") xanmod_install_or_update install ;;
-            *) echo --e "${Y}已取消${R}" ;;
+            *) echo -e "${Y}已取消${R}" ;;
         esac
     fi
 }
@@ -568,14 +568,14 @@ EOF
 
 sb_check() { 
     if ! command -v $SB_BIN >/dev/null 2>&1; then 
-        echo --e "${RED}请先安装 Sing-Box${R}"; read -rs -n 1 -p ""; return 1; 
+        echo -e "${RED}请先安装 Sing-Box${R}"; read -rs -n 1 -p ""; return 1; 
     fi
     
     if ! systemctl is-active --quiet sing-box 2>/dev/null; then
         systemctl restart sing-box >/dev/null 2>&1
         sleep 2
         if ! systemctl is-active --quiet sing-box 2>/dev/null; then
-            echo --e "${Y}检测到 Sing-Box 服务未运行，可能是旧配置损坏，正在自动重置基础配置...${R}"
+            echo -e "${Y}检测到 Sing-Box 服务未运行，可能是旧配置损坏，正在自动重置基础配置...${R}"
             mv "$SB_CONF" "${SB_CONF}.bak.$(date +%s)" 2>/dev/null
             sb_init_conf
             systemctl restart sing-box >/dev/null 2>&1
@@ -584,7 +584,7 @@ sb_check() {
     fi
     
     if ! $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
-        echo --e "${Y}检测到配置文件语法错误，正在强制重置...${R}"
+        echo -e "${Y}检测到配置文件语法错误，正在强制重置...${R}"
         mv "$SB_CONF" "${SB_CONF}.bak.$(date +%s)" 2>/dev/null
         sb_init_conf
         systemctl restart sing-box >/dev/null 2>&1
@@ -601,8 +601,8 @@ sb_install() {
     echo -e "${Y}正在安装 Sing-Box v${latest_ver}...${R}"
     mkdir -p /etc/sing-box
     curl -L -o /tmp/sb.tar.gz "https://github.com/SagerNet/sing-box/releases/download/v${latest_ver}/sing-box-${latest_ver}-linux-${arch}.tar.gz" 2>/dev/null
-    tar xzf /tmp/sb.tar.gz -C /tmp 2>/dev/null || { echo --e "${RED}❌ 解压失败${R}"; return 1; }
-    [ -f "/tmp/sing-box-${latest_ver}-linux-${arch}/sing-box" ] || { echo --e "${RED}❌ 二进制文件缺失${R}"; return 1; }
+    tar xzf /tmp/sb.tar.gz -C /tmp 2>/dev/null || { echo -e "${RED}❌ 解压失败${R}"; return 1; }
+    [ -f "/tmp/sing-box-${latest_ver}-linux-${arch}/sing-box" ] || { echo -e "${RED}❌ 二进制文件缺失${R}"; return 1; }
     mv /tmp/sing-box-${latest_ver}-linux-${arch}/sing-box $SB_BIN
     rm -rf /tmp/sb.tar.gz /tmp/sing-box-*
     chmod +x $SB_BIN
@@ -621,7 +621,7 @@ WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
     systemctl enable sing-box --now >/dev/null 2>&1
-    echo --e "${G}✅ 安装成功！${R}"
+    echo -e "${G}✅ 安装成功！${R}"
     read -rs -n 1 -p ""
 }
 
@@ -662,9 +662,9 @@ input_custom_port() {
             echo -e "${Y}已随机生成端口: $port${R}" >&2
             break
         elif ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
-            echo --e "${RED}端口必须在 1-65535 之间，请重新输入${R}" >&2
+            echo -e "${RED}端口必须在 1-65535 之间，请重新输入${R}" >&2
         elif ss -tuln | grep -q ":$port "; then
-            echo --e "${RED}端口 $port 已被占用，请重新输入${R}" >&2
+            echo -e "${RED}端口 $port 已被占用，请重新输入${R}" >&2
         else
             break
         fi
@@ -752,7 +752,7 @@ EOF
                 rm -f "${META_DIR}/${node_tag}.json"
                 systemctl restart sing-box
             else
-                echo --e "${G}✅ VLESS-Reality 部署成功！${R}"
+                echo -e "${G}✅ VLESS-Reality 部署成功！${R}"
                 local server_ip=$(get_my_ip)
                 local flow_param=""
                 if [ -n "$flow" ]; then
@@ -773,7 +773,7 @@ EOF
 
 sb_add_vless_tcp() {
     sb_check || return
-    echo --e "${Y}设置 VLESS-TCP 端口${R}"
+    echo -e "${Y}设置 VLESS-TCP 端口${R}"
     local port=$(input_custom_port)
     local uuid=$($SB_BIN generate uuid)
     
@@ -832,7 +832,7 @@ EOF
 
 sb_add_hysteria2() {
     sb_check || return
-    echo --e "${Y}设置 Hysteria2 端口${R}"
+    echo -e "${Y}设置 Hysteria2 端口${R}"
     local port=$(input_custom_port)
     local pass=$($SB_BIN generate rand --hex 16)
     local sni="www.bing.com"
@@ -888,7 +888,7 @@ sb_add_hysteria2() {
                 echo -e "${C}节点链接: ${link}${R}"
             fi
         else
-            echo --e "${RED}❌ 校验失败，错误详情：${R}"
+            echo -e "${RED}❌ 校验失败，错误详情：${R}"
             cat /tmp/check.log
             cp "${SB_CONF}.bak" "$SB_CONF"
             rm -f "$SB_CONF.tmp"
@@ -902,7 +902,7 @@ sb_del_node() {
     
     local tags=($(jq -r '.inbounds[].tag' "$SB_CONF" 2>/dev/null))
     if [ ${#tags[@]} -eq 0 ]; then
-        echo --e "${Y}当前没有任何节点可删除。${R}"
+        echo -e "${Y}当前没有任何节点可删除。${R}"
         read -rs -n 1 -p ""
         return
     fi
@@ -926,7 +926,7 @@ sb_del_node() {
     fi
     
     if [ -z "$tag" ]; then
-        echo --e "${RED}未找到对应的节点${R}"
+        echo -e "${RED}未找到对应的节点${R}"
         read -rs -n 1 -p ""
         return
     fi
@@ -951,7 +951,7 @@ sb_del_node() {
             systemctl restart sing-box
             sleep 2
             if systemctl is-active --quiet sing-box; then
-                echo --e "${G}✅ 节点 $tag 已删除！${R}"
+                echo -e "${G}✅ 节点 $tag 已删除！${R}"
             else
                 echo -e "${RED}❌ Sing-Box 启动失败，正在回滚...${R}"
                 journalctl -u sing-box -n 10 --no-pager
@@ -972,7 +972,7 @@ sb_manage_ports() {
     while true; do
         clear
         echo -e "${G}╔═══════════════════════════════════════════╗${R}"
-        echo --e "║          🔥 端口防火墙管理 (TCP+UDP)       ║${R}"
+        echo -e "║          🔥 端口防火墙管理 (TCP+UDP)       ║${R}"
         echo -e "╚═══════════════════════════════════════════╝${R}"
         echo -e "    ${Y}[1] 放行指定端口${R}"
         echo -e "    ${Y}[2] 关闭指定端口${R}"
@@ -993,7 +993,7 @@ sb_manage_ports() {
                 read -e -p "请输入要关闭的端口号: " p
                 if [[ "$p" =~ ^[0-9]+$ ]] && [ "$p" -ge 1 ] && [ "$p" -le 65535 ]; then
                     close_port $p
-                    echo --e "${G}✅ 端口 $p 已关闭 (TCP+UDP)${R}"
+                    echo -e "${G}✅ 端口 $p 已关闭 (TCP+UDP)${R}"
                 else
                     echo -e "${RED}端口号无效${R}"
                 fi
@@ -1051,17 +1051,17 @@ sb_show_links() {
 sb_menu() {
     while true; do
         clear
-        echo --e "${G}╔═══════════════════════════════════════════╗${R}"
-        echo --e "║       Sing-Box 管理面板                   ║${R}"
+        echo -e "${G}╔═══════════════════════════════════════════╗${R}"
+        echo -e "║       Sing-Box 管理面板                   ║${R}"
         echo -e "╚═══════════════════════════════════════════╝${R}"
-        echo --e "    ${Y}[1] 安装 Sing-Box${R}"
+        echo -e "    ${Y}[1] 安装 Sing-Box${R}"
         echo -e "    ${Y}[2] 添加 VLESS-Reality 节点${R}"
         echo -e "    ${Y}[3] 添加 VLESS-TCP 节点${R}"
         echo -e "    ${Y}[4] 添加 Hysteria2 节点${R}"
         echo -e "    ${Y}[5] 查看所有节点链接${R}"
-        echo --e "    ${RED}[6] 删除已添加节点 (支持按端口删除)${R}"
+        echo -e "    ${RED}[6] 删除已添加节点 (支持按端口删除)${R}"
         echo -e "    ${C}[7] 手动管理端口放行 (TCP+UDP)${R}"
-        echo --e "    ${H}[0] 返回主菜单${R}"
+        echo -e "    ${H}[0] 返回主菜单${R}"
         read -e -p "  选择: " c
         case "$c" in
             1) clear; sb_install ;;
@@ -1076,39 +1076,16 @@ sb_menu() {
     done
 }
 
-# ★★★ 新增：自动创建快捷指令 =================
-auto_shortcut() {
-    local target="/usr/local/bin/yw"
-    local src="${BASH_SOURCE[0]:-$0}"
-
-    [ "$(id -u)" -ne 0 ] && return 0     # 非 root 跳过
-    [ -f "$src" ] || return 0            # 管道方式运行(如 curl | bash)时跳过
-    src=$(realpath "$src" 2>/dev/null || echo "$src")
-    [ "$src" == "$target" ] && return 0  # 本身就是 yw，跳过防止自我复制
-
-    local first=0
-    [ -f "$target" ] || first=1
-
-    if cp -f "$src" "$target" 2>/dev/null; then
-        chmod +x "$target"
-        if [ "$first" -eq 1 ]; then
-            clear
-            echo -e "${G}✅ 快捷指令创建成功！以后在任意位置输入 ${C}yw${R} 即可呼出菜单${R}"
-            sleep 2
-        fi
-    fi
-}
-
 main_menu() {
     check_env
     while true; do
         clear
-        echo --e "${G}╔═══════════════════════════════════════════╗${R}"
+        echo -e "${G}╔═══════════════════════════════════════════╗${R}"
         echo -e "║          🎉 YW 服务器优化工具箱             ║${R}"
         echo -e "╚═══════════════════════════════════════════╝${R}"
-        echo --e "    ${Y}[1] 🚀 网络与内核优化 (BBR/XanMod)${R}"
+        echo -e "    ${Y}[1] 🚀 网络与内核优化 (BBR/XanMod)${R}"
         echo -e "    ${Y}[2] 📦 Sing-Box 管理面板${R}"
-        echo --e "    ${H}[0] 退出${R}"
+        echo -e "    ${H}[0] 退出${R}"
         read -e -p "  请选择: " c
         case "$c" in
             1) clear; smart_auto_optimize ;;
@@ -1118,6 +1095,4 @@ main_menu() {
     done
 }
 
-# ★★★ 新增：先自动安装快捷指令，再进主菜单
-auto_shortcut
 main_menu
