@@ -98,7 +98,9 @@ root_use() { [ "$(id -u)" -ne 0 ] && { echo -e "${RED}错误：请使用 root �
 check_env() {
     root_use
     local need_update=0
-    for cmd in curl wget jq openssl iptables ip6tables tar ip ss shuf; do
+    # sed 用于 auto_shortcut 的 trap 组合解析、apply_advanced_optimize 等多处文本处理
+    # 缺失会导致旧 trap 清理动作丢失（CHECK_LOG 残留）和残留列表打印残缺
+    for cmd in curl wget jq openssl iptables ip6tables tar ip ss shuf sed; do
         command -v $cmd >/dev/null 2>&1 || need_update=1
     done
     if [ "$need_update" -eq 1 ]; then
@@ -106,18 +108,18 @@ check_env() {
         export DEBIAN_FRONTEND=noninteractive
         if command -v apt-get >/dev/null 2>&1; then
             apt-get update -y
-            apt-get install -y curl wget jq openssl iptables tar iproute2 procps coreutils iptables-persistent gnupg ca-certificates
+            apt-get install -y curl wget jq openssl iptables tar iproute2 procps coreutils iptables-persistent gnupg ca-certificates sed
         elif command -v yum >/dev/null 2>&1; then
             yum update -y
-            yum install -y curl wget jq openssl iptables tar iproute procps-ng coreutils iptables-services
+            yum install -y curl wget jq openssl iptables tar iproute procps-ng coreutils iptables-services sed
         elif command -v dnf >/dev/null 2>&1; then
             dnf update -y
-            dnf install -y curl wget jq openssl iptables tar iproute procps-ng coreutils iptables-services
+            dnf install -y curl wget jq openssl iptables tar iproute procps-ng coreutils iptables-services sed
         fi
         
         # 安装后全量校验：清单与上方触发清单完全一致（base64 在主脚本中未使用，已剔除）
         local missing=""
-        for cmd in curl wget jq openssl iptables ip6tables tar ip ss shuf; do
+        for cmd in curl wget jq openssl iptables ip6tables tar ip ss shuf sed; do
             command -v $cmd >/dev/null 2>&1 || missing="$missing $cmd"
         done
         if [ -n "$missing" ]; then
@@ -147,15 +149,46 @@ is_private_ip() {
     [[ "$ip" =~ ^0\. ]] && return 0
     return 1
 }
-get_my_ip() { 
-    local server_ip=$(curl -s4 --max-time 6 https://api4.ipify.org 2>/dev/null)
-    [ -z "$server_ip" ] && server_ip=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++)if($i=="src")print $(i+1)}')
+get_my_ip() {
+    local server_ip
+    server_ip=$(curl -s4 --max-time 6 https://api4.ipify.org 2>/dev/null)
+    # 校验：必须是单行合法 IPv4（防止错误页 HTML 或多行响应拼进节点链接）
+    # 用 _is_valid_ipv4 严格校验：每段 0-255、拒绝前导零（010 等）
+    _is_valid_ipv4() {
+        local ip="$1"
+        [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+        local IFS=.
+        local -a segs=($ip)
+        [ ${#segs[@]} -eq 4 ] || return 1
+        local s
+        for s in "${segs[@]}"; do
+            # 拒绝前导零（010 等，与标准 inet_aton 不同，避免歧义）
+            # 单独的 0 合法，但 010 等同于 8（八进制），不可接受
+            [[ "$s" =~ ^0[0-9]+$ ]] && return 1
+            [ "$s" -ge 0 ] 2>/dev/null && [ "$s" -le 255 ] 2>/dev/null || return 1
+        done
+        return 0
+    }
+    if ! _is_valid_ipv4 "$server_ip"; then
+        server_ip=""
+    fi
+    if [ -z "$server_ip" ]; then
+        server_ip=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++)if($i=="src")print $(i+1)}')
+        # 同样校验回退路径拿到的 IP
+        if ! _is_valid_ipv4 "$server_ip"; then
+            server_ip=""
+        fi
+    fi
     is_private_ip "$server_ip" && server_ip=""
     echo "$server_ip"
 }
 
 ask_reboot() {
-    read -e -p "是否立即重启服务器以应用新内核？[Y/n]: " rb
+    # read 失败（EOF/Ctrl+D）时直接走默认"不重启"分支，不当作"是"
+    if ! read -r -e -p "是否立即重启服务器以应用新内核？[Y/n]: " rb; then
+        echo -e "${Y}已跳过重启（输入 EOF），请稍后手动执行 reboot 命令。${R}"
+        return
+    fi
     if [[ "$rb" =~ ^[Yy]$|^$ ]]; then
         echo -e "${Y}系统将在 3 秒后重启...${R}"
         sleep 3
@@ -281,6 +314,14 @@ net.ipv4.tcp_syncookies = 1
 net.ipv4.tcp_tw_reuse = 1
 net.ipv4.tcp_fin_timeout = 30
 EOF
+    fi
+
+    # 检查配置文件是否真写进去：路径被占成目录、磁盘满、权限不足时 cat 会失败但 bash 不报错
+    # 回读校验：写完文件应非空且至少包含一个 '='（key=value 行）
+    if [ ! -s "$SYSCTL_CONF" ] || ! grep -q '=' "$SYSCTL_CONF" 2>/dev/null; then
+        echo -e "${RED}❌ 写入 $SYSCTL_CONF 失败（可能路径被占用、磁盘满或权限不足）${R}" >&2
+        echo -e "${RED}   参数未落盘，重启后不会生效。请检查 $SYSCTL_CONF 路径后重试${R}" >&2
+        return 1
     fi
 
     echo -e "${Y}应用优化参数...${R}"
@@ -474,6 +515,22 @@ EOF
             sed -i "/^${k//./\\.}[[:space:]]*=/d" "$tmp_conf"
         fi
     done < "$tmp_conf"
+    # 校验配置真写进去 + 残行清理兜底：
+    #   - mktemp 失败 / 磁盘满 → tmp_conf 空
+    #   - 应用循环里 sed 删行不会清空最后一行 → 残留 1-2 行注释/空行
+    #   - applied=0（一个都没应用上，如只读容器）
+    # 三种情况都不应 mv 一个无效文件覆盖 ADV_SYSCTL_CONF，让用户以为已落盘
+    # 用 "至少一行 'key = value'" 作为有效配置的判定
+    # 注：grep -c 无匹配时退出码 1 会触发 `|| echo 0`，需用 head -1 取首行避免 "0\n0" 多行字符串
+    local _valid_lines
+    _valid_lines=$(grep -cE '^[^#[:space:]].*[[:space:]]*=[[:space:]]*' "$tmp_conf" 2>/dev/null | head -1)
+    _valid_lines=${_valid_lines:-0}
+    if [ "$_valid_lines" -eq 0 ] 2>/dev/null || [ "$applied" -eq 0 ]; then
+        echo -e "${RED}❌ 生成 $ADV_SYSCTL_CONF 失败：有效参数行数为 ${_valid_lines:-0}，应用 ${applied} 项${R}" >&2
+        echo -e "${RED}   参数未落盘，重启后不会生效（可能是只读容器或所有 key 写入失败）${R}" >&2
+        rm -f "$tmp_conf"
+        return 1
+    fi
     mv -f "$tmp_conf" "$ADV_SYSCTL_CONF"
     chmod 644 "$ADV_SYSCTL_CONF" 2>/dev/null # mktemp 默认 0600，恢复常规配置文件权限
     echo -e "${G}已应用 ${applied} 项参数${R}"
@@ -544,11 +601,11 @@ bbr_kernel_manage() {
     local vi=$(systemd-detect-virt 2>/dev/null)
     if [[ "$vi" =~ lxc|openvz ]]; then
         echo -e "${RED}当前VPS的架构为 $vi，不支持开启原版BBR加速${R}"
-        read -rs -n 1 -p ""; return
+        read -r -s -n 1 -p ""; return
     fi
 
     echo -e "${Y}点击任意键，即可开启原版BBR加速，ctrl+c退出${R}"
-    read -rs -n 1
+    read -r -s -n 1
     bash <(curl -Ls https://raw.githubusercontent.com/teddysun/across/master/bbr.sh)
 }
 
@@ -587,17 +644,17 @@ smart_auto_optimize() {
         echo -e "--------------------"
         echo -e "${H}0. 返回上一级选单${R}"
         echo -e "--------------------"
-        read -e -p "请输入你的选择: " c
+        read -r -e -p "请输入你的选择: " c
         
         case "$c" in
-            1) clear; if apply_optimize balance "均衡优化模式"; then echo -e "${G}操作完成${R}"; else echo -e "${RED}操作未完成${R}"; fi; read -rs -n 1 -p "按任意键继续..." ;;
-            2) clear; if apply_optimize live "直播优化模式"; then echo -e "${G}操作完成${R}"; else echo -e "${RED}操作未完成${R}"; fi; read -rs -n 1 -p "按任意键继续..." ;;
-            3) clear; if restore_default; then echo -e "${G}操作完成${R}"; else echo -e "${RED}操作未完成${R}"; fi; read -rs -n 1 -p "按任意键继续..." ;;
+            1) clear; if apply_optimize balance "均衡优化模式"; then echo -e "${G}操作完成${R}"; else echo -e "${RED}操作未完成${R}"; fi; read -r -s -n 1 -p "按任意键继续..." ;;
+            2) clear; if apply_optimize live "直播优化模式"; then echo -e "${G}操作完成${R}"; else echo -e "${RED}操作未完成${R}"; fi; read -r -s -n 1 -p "按任意键继续..." ;;
+            3) clear; if restore_default; then echo -e "${G}操作完成${R}"; else echo -e "${RED}操作未完成${R}"; fi; read -r -s -n 1 -p "按任意键继续..." ;;
             4) clear; xanmod_manage ;;
             5) clear; bbr_kernel_manage ;;
-            6) clear; if apply_advanced_optimize proxy "高级代理调优"; then echo -e "${G}操作完成${R}"; else echo -e "${RED}操作未完成${R}"; fi; read -rs -n 1 -p "按任意键继续..." ;;
-            7) clear; if apply_advanced_optimize live "高级直播调优"; then echo -e "${G}操作完成${R}"; else echo -e "${RED}操作未完成${R}"; fi; read -rs -n 1 -p "按任意键继续..." ;;
-            8) clear; if restore_advanced_default; then echo -e "${G}操作完成${R}"; else echo -e "${RED}操作未完成${R}"; fi; read -rs -n 1 -p "按任意键继续..." ;;
+            6) clear; if apply_advanced_optimize proxy "高级代理调优"; then echo -e "${G}操作完成${R}"; else echo -e "${RED}操作未完成${R}"; fi; read -r -s -n 1 -p "按任意键继续..." ;;
+            7) clear; if apply_advanced_optimize live "高级直播调优"; then echo -e "${G}操作完成${R}"; else echo -e "${RED}操作未完成${R}"; fi; read -r -s -n 1 -p "按任意键继续..." ;;
+            8) clear; if restore_advanced_default; then echo -e "${G}操作完成${R}"; else echo -e "${RED}操作未完成${R}"; fi; read -r -s -n 1 -p "按任意键继续..." ;;
             0|"") break ;;
         esac
     done
@@ -742,10 +799,36 @@ xanmod_uninstall() {
     apt-get purge -y 'linux-*xanmod*'
     apt-get autoremove -y
     if command -v update-grub >/dev/null 2>&1; then
-        sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT=0/g' /etc/default/grub
-        update-grub
+        # 改 grub 前先备份：用户可能设置过 GRUB_DEFAULT=saved 或指定内核序号，静默丢失后无法还原
+        local _grub_backup_ok=0
+        if [ -f /etc/default/grub ]; then
+            local _grub_bak="/etc/default/grub.bak.$(date +%s)"
+            if cp -a /etc/default/grub "$_grub_bak" 2>/dev/null; then
+                echo -e "${Y}已备份 GRUB 配置到 $_grub_bak${R}"
+                echo -e "${Y}如需还原：cp -a $_grub_bak /etc/default/grub && update-grub${R}"
+                _grub_backup_ok=1
+            else
+                echo -e "${RED}❌ GRUB 配置备份失败（可能磁盘满或权限不足），未改动 GRUB_DEFAULT${R}" >&2
+                echo -e "${RED}   原配置保留，请手动备份后重试卸载${R}" >&2
+            fi
+        else
+            echo -e "${Y}/etc/default/grub 不存在，跳过 GRUB_DEFAULT 修改${R}"
+        fi
+        # 只在备份成功时才改 GRUB_DEFAULT，否则保留原值（仅 update-grub 让卸载后内核列表生效）
+        [ "$_grub_backup_ok" -eq 1 ] && sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT=0/g' /etc/default/grub
+        # 检查 update-grub 退出码：失败时 grub.cfg 未重新生成，
+        # GRUB_DEFAULT 已改成 0 但启动项列表没刷新 → 旧配置若指向已删除内核条目会启动失败/进错系统
+        # 不能静默放过，必须显式警告让用户手动处理
+        if ! update-grub; then
+            echo -e "${RED}❌ update-grub 失败：GRUB_DEFAULT 已改为 0，但 grub.cfg 未重新生成${R}" >&2
+            echo -e "${RED}   请手动执行：update-grub 或 grub2-mkconfig -o /boot/grub2/grub.cfg${R}" >&2
+            echo -e "${RED}   如需还原原 GRUB_DEFAULT：cp -a <备份文件> /etc/default/grub && update-grub${R}" >&2
+        fi
     else
-        grub2-mkconfig -o /boot/grub2/grub.cfg
+        # grub2-mkconfig 同样检查退出码
+        if ! grub2-mkconfig -o /boot/grub2/grub.cfg; then
+            echo -e "${RED}❌ grub2-mkconfig 失败：grub.cfg 未重新生成，请手动执行${R}" >&2
+        fi
     fi
     rm -f /etc/apt/sources.list.d/xanmod-release.list
     rm -f /usr/share/keyrings/xanmod-archive-keyring.gpg
@@ -756,7 +839,7 @@ xanmod_uninstall() {
 xanmod_manage() {
     if ! command -v apt-get >/dev/null 2>&1; then
         echo -e "${RED}仅支持 Debian/Ubuntu 系统安装 XanMod 内核${R}"
-        read -rs -n 1 -p ""; return
+        read -r -s -n 1 -p ""; return
     fi
 
     if xanmod_installed; then
@@ -770,7 +853,7 @@ xanmod_manage() {
             echo -e "${Y}1. 更新BBRv3内核              2. 卸载BBRv3内核${R}"
             echo -e "------------------------"
             echo -e "${H}0. 返回上一级选单${R}"
-            read -e -p "请输入你的选择: " sub_choice
+            read -r -e -p "请输入你的选择: " sub_choice
             case $sub_choice in
                 1) xanmod_install_or_update update ;;
                 2) xanmod_uninstall ;;
@@ -784,7 +867,13 @@ xanmod_manage() {
         echo -e "仅支持Debian/Ubuntu"
         echo -e "请备份数据，将为你升级Linux内核开启BBR3"
         echo -e "------------------------------------------------"
-        read -e -p "确定继续吗？[Y/n]: " choice
+        local choice=""
+        # EOF（如管道答案耗尽）不应默认放行安装内核——这是高风险操作
+        if ! read -r -e -p "确定继续吗？[Y/n]: " choice; then
+            echo "" >&2
+            echo -e "${RED}错误：输入 EOF，已取消（内核安装不会默认放行）${R}" >&2
+            return 1
+        fi
         case "$choice" in
             [Yy]|"") xanmod_install_or_update install ;;
             *) echo -e "${Y}已取消${R}" ;;
@@ -793,7 +882,7 @@ xanmod_manage() {
 }
 
 # ================= Sing-Box 核心 =================
-sb_init_conf() { 
+sb_init_conf() {
     mkdir -p /etc/sing-box
     cat > "$SB_CONF" <<'EOF'
 {
@@ -811,29 +900,134 @@ sb_init_conf() {
 EOF
 }
 
-sb_check() { 
-    if ! command -v $SB_BIN >/dev/null 2>&1; then 
-        echo -e "${RED}请先安装 Sing-Box${R}"; read -rs -n 1 -p ""; return 1; 
+# 原子写配置：从临时文件 mv 到目标，但保留软链语义 + 原文件权限
+# 用法：sb_write_conf_atomic <tmp_file> <target_file>
+# 返回 0 成功，1 失败（已打印错误消息）
+# 解决三个问题：
+#   1. 配置文件是软链时（如挂到 dotfiles 目录管理），mv 会把软链替换成普通文件，
+#      软链指向的目标文件永远停在旧内容。检测软链并改用 cp 写入目标。
+#   2. mv 失败时（权限/磁盘满）原配置不应被破坏
+#   3. 不写死 chmod 644：原文件若是 600（用户主动收紧权限，config.json 含 Reality 私钥/hy2 密码），
+#      写死 chmod 644 会放宽权限。改成保留原权限：先记下原 stat，写完恢复。
+sb_write_conf_atomic() {
+    local src="$1" dst="$2"
+    # 检查 jq 是否真生成了有效内容（jq 失败时 tmp 文件可能为空或半截）
+    if [ ! -s "$src" ]; then
+        echo -e "${RED}❌ 配置生成失败：临时文件为空（jq 可能异常退出）${R}" >&2
+        return 1
     fi
-    
+    # 记录原文件权限（软链则记真实目标的权限），写完恢复，避免写死 644 放宽用户收紧的权限
+    # config.json 含 Reality 私钥、hy2 密码等敏感信息，600 应保留为 600
+    local _orig_mode=""
+    if [ -L "$dst" ]; then
+        local _rt
+        _rt=$(readlink -f "$dst" 2>/dev/null)
+        [ -n "$_rt" ] && [ -e "$_rt" ] && _orig_mode=$(stat -c '%a' "$_rt" 2>/dev/null)
+    elif [ -e "$dst" ]; then
+        _orig_mode=$(stat -c '%a' "$dst" 2>/dev/null)
+    fi
+
+    if [ -L "$dst" ]; then
+        # 目标是软链：mv 会替换软链本身而非写入指向的文件，需用 cp 写入软链目标
+        # 用 `--remove-destination` 让 cp 先 unlink 目标文件再写新内容（避免 symlink 写穿邻居）
+        # 但更安全的方式：解析软链指向的真实路径，直接写那个路径
+        local real_target
+        real_target=$(readlink -f "$dst" 2>/dev/null)
+        if [ -z "$real_target" ]; then
+            echo -e "${RED}❌ 配置文件 $dst 是软链但无法解析目标${R}" >&2
+            return 1
+        fi
+        if ! cp --remove-destination "$src" "$real_target" 2>/dev/null; then
+            echo -e "${RED}❌ 写入软链目标 $real_target 失败${R}" >&2
+            return 1
+        fi
+        # 恢复原权限（不主动 chmod 644）
+        [ -n "$_orig_mode" ] && chmod "$_orig_mode" "$real_target" 2>/dev/null
+    else
+        # 普通文件：mv 原子替换（同文件系统下走 rename(2)，不破坏 symlink）
+        # mv 后新文件继承 src 的权限（mktemp 默认 600），所以仍需恢复原权限
+        if ! mv -f "$src" "$dst" 2>/dev/null; then
+            echo -e "${RED}❌ mv 替换 $dst 失败（可能磁盘满或权限不足）${R}" >&2
+            return 1
+        fi
+        [ -n "$_orig_mode" ] && chmod "$_orig_mode" "$dst" 2>/dev/null
+    fi
+    return 0
+}
+
+sb_check() {
+    if ! command -v $SB_BIN >/dev/null 2>&1; then
+        echo -e "${RED}请先安装 Sing-Box${R}"; read -r -s -n 1 -p ""; return 1;
+    fi
+
     # 先做只读语法校验：只有语法真正损坏才备份重置，绝不因服务没起来就清空用户节点
     if ! $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
         echo -e "${Y}检测到配置文件语法错误，正在备份并重置为基础配置...${R}"
-        mv "$SB_CONF" "${SB_CONF}.bak.$(date +%s)" 2>/dev/null
-        # 损坏重置的备份只保留最近 5 份，避免无限累积
-        ls -t "${SB_CONF}.bak."* 2>/dev/null | tail -n +6 | xargs -r rm -f
-        sb_init_conf
+        # 备份用 cp 而非 mv：保留原文件（含软链本身）在原位置不动
+        #   - 若用 mv，软链本身会被移走，备份里是个软链（指向已不存在的路径），
+        #     软链指向的目标文件永远停在坏内容
+        #   - 用 cp -a 复制内容（解析软链），.bak 里存的是真实配置内容
+        #   - 备份后原文件（软链本身或普通文件）仍在原位置，再让 sb_init_conf 走 helper 写入
+        local _bak_file="${SB_CONF}.bak.$(date +%s)"
+        if ! cp -a "$SB_CONF" "$_bak_file" 2>/dev/null; then
+            echo -e "${RED}❌ 备份失败：无法复制 $SB_CONF 到 $_bak_file（可能磁盘满或权限不足）${R}" >&2
+            echo -e "${RED}   原配置未改动，请手动备份后重试：cp -a $SB_CONF ${SB_CONF}.manual_bak${R}" >&2
+            read -r -s -n 1 -p ""
+            return 1
+        fi
+        # 验证备份是真内容而非空文件或软链本身
+        # cp -a 对软链默认复制软链本身；要复制指向的内容需 -L（dereference）
+        # 重新检查：如果 _bak_file 是软链或空，改用 cp -aL 重做（解析软链）
+        if [ -L "$_bak_file" ] || [ ! -s "$_bak_file" ]; then
+            rm -f "$_bak_file" 2>/dev/null
+            if ! cp -aL "$SB_CONF" "$_bak_file" 2>/dev/null; then
+                echo -e "${RED}❌ 备份失败：无法复制 $SB_CONF 内容（软链解析失败或磁盘满）${R}" >&2
+                echo -e "${RED}   原配置未改动，请手动备份后重试${R}" >&2
+                read -r -s -n 1 -p ""
+                return 1
+            fi
+        fi
+        touch "$_bak_file" 2>/dev/null   # 更新 mtime，避免被轮换删除
+        # 损坏重置的备份只保留最近 5 份（按文件名时间戳排序，不依赖 mtime）
+        ls -1 "${SB_CONF}.bak."* 2>/dev/null | sort -t. -k3 -n | head -n -5 | xargs -r rm -f
+        # 重置：用临时文件 + sb_write_conf_atomic 写入，处理软链 + 保留权限
+        # sb_init_conf 直接 cat > $SB_CONF 会破坏软链（替换成普通文件）
+        local _init_tmp
+        _init_tmp=$(mktemp /tmp/.yw_sb_init.XXXXXX) || {
+            echo -e "${RED}❌ 无法创建临时文件，重置失败${R}" >&2
+            return 1
+        }
+        # 生成基础配置到临时文件
+        cat > "$_init_tmp" <<'EOF'
+{
+  "log": {"disabled": false, "level": "info", "timestamp": true},
+  "inbounds": [],
+  "outbounds": [
+    {"type": "selector", "tag": "proxy", "outbounds": ["direct"], "default": "direct"},
+    {"type": "direct", "tag": "direct"}
+  ],
+  "route": {
+    "final": "proxy",
+    "auto_detect_interface": true
+  }
+}
+EOF
+        if ! sb_write_conf_atomic "$_init_tmp" "$SB_CONF"; then
+            rm -f "$_init_tmp"
+            return 1
+        fi
+        rm -f "$_init_tmp"
         # 重置后重启服务：避免内存中仍跑着旧配置、与磁盘不一致
         systemctl restart sing-box >/dev/null 2>&1
         sleep 2
     fi
-    
+
     if ! systemctl is-active --quiet sing-box 2>/dev/null; then
         systemctl restart sing-box >/dev/null 2>&1
         sleep 2
         if ! systemctl is-active --quiet sing-box 2>/dev/null; then
             echo -e "${RED}❌ Sing-Box 服务无法启动（配置语法正常），请检查端口占用或执行 journalctl -u sing-box 排查${R}"
-            read -rs -n 1 -p ""
+            read -r -s -n 1 -p ""
             return 1
         fi
     fi
@@ -842,16 +1036,17 @@ sb_check() {
 
 sb_install() {
     local fresh=1
+    local old_binary_backup=""
     if command -v $SB_BIN >/dev/null 2>&1; then
         fresh=0
         local cur_ver=$($SB_BIN version 2>/dev/null | head -1)
         echo -e "${Y}Sing-Box 已安装 (${cur_ver})${R}"
         local up
-        read -e -p "是否重新安装/升级到最新版？[y/N]: " up
-        [[ "$up" =~ ^[Yy]$ ]] || { read -rs -n 1 -p ""; return; }
+        read -r -e -p "是否重新安装/升级到最新版？[y/N]: " up
+        [[ "$up" =~ ^[Yy]$ ]] || { read -r -s -n 1 -p ""; return; }
     fi
     local arch=$(uname -m); case "$arch" in x86_64) arch="amd64";; aarch64) arch="arm64";; *) echo -e "${RED}❌ 不支持 ${arch}${R}"; return 1;; esac
-    
+
     # jq 用 // empty：API 限流返回错误 JSON 时 .tag_name 是字面量 "null"，必须过滤掉否则拼出 sing-box-null-*.tar.gz
     local latest_ver=$(curl -sL --max-time 15 https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r '.tag_name // empty' | sed 's/v//')
     if [ -z "$latest_ver" ] || [ "$latest_ver" = "null" ]; then
@@ -861,13 +1056,56 @@ sb_install() {
     echo -e "${Y}正在安装 Sing-Box v${latest_ver}...${R}"
     mkdir -p /etc/sing-box
     local workdir=$(mktemp -d /tmp/.yw_sbdl.XXXXXX)
+    # 挂多信号 trap 清理 workdir：curl 下载 / tar 解压期间 Ctrl+C 或被 TERM 时，
+    # 正常退出路径都覆盖不到，会留下 /tmp/.yw_sbdl.* 垃圾目录
+    # 用局部辅助函数统一清理 + 解除 trap，避免每个 return 1 路径重复
+    _sb_install_trap_cleanup() {
+        rm -rf "$workdir" 2>/dev/null
+        trap - EXIT INT TERM HUP
+        # 恢复脚本开头的全局 trap（`trap 'rm -f "$CHECK_LOG"' EXIT`）
+        trap 'rm -f "$CHECK_LOG"' EXIT
+    }
+    trap 'rc=$?; rm -rf "'"$workdir"'" 2>/dev/null; exit $rc' EXIT INT TERM HUP
     curl -L -o "${workdir}/sb.tar.gz" "https://github.com/SagerNet/sing-box/releases/download/v${latest_ver}/sing-box-${latest_ver}-linux-${arch}.tar.gz" 2>/dev/null
-    tar xzf "${workdir}/sb.tar.gz" -C "$workdir" 2>/dev/null || { echo -e "${RED}❌ 解压失败${R}"; rm -rf "$workdir"; return 1; }
-    [ -f "${workdir}/sing-box-${latest_ver}-linux-${arch}/sing-box" ] || { echo -e "${RED}❌ 二进制文件缺失${R}"; rm -rf "$workdir"; return 1; }
-    mv "${workdir}/sing-box-${latest_ver}-linux-${arch}/sing-box" $SB_BIN
-    rm -rf "$workdir"
-    chmod +x $SB_BIN
+    tar xzf "${workdir}/sb.tar.gz" -C "$workdir" 2>/dev/null || { echo -e "${RED}❌ 解压失败${R}"; _sb_install_trap_cleanup; return 1; }
+    [ -f "${workdir}/sing-box-${latest_ver}-linux-${arch}/sing-box" ] || { echo -e "${RED}❌ 二进制文件缺失${R}"; _sb_install_trap_cleanup; return 1; }
+
+    # 升级前备份旧二进制（同目录，便于失败回滚）
+    # 注：fresh=1 路径下若二进制不存在（rm 过/容器重置），跳过备份；
+    # 但若二进制不存在而配置存在，视为"重装但配置保留"——必须保护配置（见下面 fresh 分支）
+    if [ "$fresh" -eq 0 ] && [ -f "$SB_BIN" ]; then
+        old_binary_backup="${SB_BIN}.old.$(date +%s)"
+        # 检查 cp 退出码：失败（磁盘满/权限）时显式警告，不静默继续
+        # 否则真需要回滚时才发现备份不存在（回滚分支有存在性守卫不会乱覆盖，但用户以为有备份其实没有）
+        if ! cp -a "$SB_BIN" "$old_binary_backup" 2>/dev/null; then
+            echo -e "${RED}❌ 旧二进制备份失败（可能磁盘满或权限不足），无法回滚，已取消升级${R}" >&2
+            _sb_install_trap_cleanup
+            return 1
+        fi
+    fi
+
+    # 用临时文件 + mv 原子替换二进制，避免中途被杀留下半截文件
+    local _new_bin="${workdir}/sing-box-${latest_ver}-linux-${arch}/sing-box"
+    chmod +x "$_new_bin" 2>/dev/null
+    if ! mv -f "$_new_bin" "$SB_BIN" 2>/dev/null; then
+        echo -e "${RED}❌ 写入 $SB_BIN 失败${R}"
+        # 回滚旧二进制
+        [ -n "$old_binary_backup" ] && [ -f "$old_binary_backup" ] && mv -f "$old_binary_backup" "$SB_BIN" 2>/dev/null
+        _sb_install_trap_cleanup
+        return 1
+    fi
+    # 二进制已 mv 到 SB_BIN，workdir 此时可清，解除 trap 避免影响后续 systemctl 调用
+    _sb_install_trap_cleanup
+
     if [ "$fresh" -eq 1 ]; then
+        # fresh 路径：但若配置已存在（二进制被 rm 但配置保留），必须备份后再重置，否则用户节点全丢
+        if [ -f "$SB_CONF" ]; then
+            local _conf_bak="${SB_CONF}.bak.$(date +%s)"
+            cp -a "$SB_CONF" "$_conf_bak" 2>/dev/null
+            touch "$_conf_bak" 2>/dev/null
+            echo -e "${Y}检测到现有配置，已备份到 ${_conf_bak}${R}"
+            echo -e "${Y}如需恢复节点：cp ${_conf_bak} ${SB_CONF} && systemctl restart sing-box${R}"
+        fi
         sb_init_conf
         cat > /etc/systemd/system/sing-box.service <<EOF
 [Unit]
@@ -885,15 +1123,53 @@ WantedBy=multi-user.target
 EOF
         systemctl daemon-reload
         systemctl enable sing-box --now >/dev/null 2>&1
+        # fresh 后验证服务状态：装完不验证就报成功是误导
+        sleep 2
+        if ! systemctl is-active --quiet sing-box 2>/dev/null; then
+            echo -e "${RED}❌ 安装完成但服务未启动，请检查 journalctl -u sing-box${R}"
+            return 1
+        fi
+        # 清理旧二进制备份（fresh 后没用了）
+        [ -n "$old_binary_backup" ] && rm -f "$old_binary_backup" 2>/dev/null
     else
         # 升级：保留现有配置，重启服务并校验结果
-        systemctl restart sing-box >/dev/null 2>&1
-        if ! systemctl is-active --quiet sing-box 2>/dev/null; then
-            echo -e "${RED}警告：sing-box 服务重启后未处于运行状态，请手动检查（systemctl status sing-box）${R}"
+        # 先校验新二进制是否能解析现有配置，避免重启后服务挂
+        if ! "$SB_BIN" check -c "$SB_CONF" >/dev/null 2>&1; then
+            echo -e "${RED}❌ 新二进制无法解析现有配置（可能版本不兼容），正在回滚旧二进制...${R}"
+            if [ -n "$old_binary_backup" ] && [ -f "$old_binary_backup" ]; then
+                mv -f "$old_binary_backup" "$SB_BIN" 2>/dev/null
+                chmod +x "$SB_BIN" 2>/dev/null
+                echo -e "${G}已回滚到旧版本${R}"
+            else
+                echo -e "${RED}无旧二进制备份可回滚，请手动处理${R}"
+            fi
+            return 1
         fi
+        systemctl restart sing-box >/dev/null 2>&1
+        sleep 2
+        if ! systemctl is-active --quiet sing-box 2>/dev/null; then
+            echo -e "${RED}❌ 升级后服务未启动，正在回滚旧二进制...${R}"
+            journalctl -u sing-box -n 5 --no-pager 2>&1 | sed 's/^/  /'
+            if [ -n "$old_binary_backup" ] && [ -f "$old_binary_backup" ]; then
+                mv -f "$old_binary_backup" "$SB_BIN" 2>/dev/null
+                chmod +x "$SB_BIN" 2>/dev/null
+                systemctl restart sing-box >/dev/null 2>&1
+                sleep 2
+                if systemctl is-active --quiet sing-box 2>/dev/null; then
+                    echo -e "${G}已回滚到旧版本，服务恢复正常${R}"
+                else
+                    echo -e "${RED}回滚后服务仍未恢复，请手动检查（systemctl status sing-box）${R}"
+                fi
+            else
+                echo -e "${RED}无旧二进制备份可回滚，请手动重装旧版本${R}"
+            fi
+            return 1
+        fi
+        # 升级成功，清理旧二进制备份
+        [ -n "$old_binary_backup" ] && rm -f "$old_binary_backup" 2>/dev/null
     fi
     echo -e "${G}✅ 安装成功！${R}"
-    read -rs -n 1 -p ""
+    read -r -s -n 1 -p ""
 }
 
 save_iptables() {
@@ -971,7 +1247,12 @@ close_port() {
 input_custom_port() {
     local port
     while true; do
-        read -e -p "请输入端口 (1-65535，回车随机生成): " port
+        # read 失败（EOF）时退出而非走默认（管道答案耗尽时不应继续随机建节点）
+        if ! read -r -e -p "请输入端口 (1-65535，回车随机生成): " port; then
+            echo "" >&2
+            echo -e "${RED}错误：输入 EOF，已取消${R}" >&2
+            return 1
+        fi
         if [ -z "$port" ]; then
             # 随机端口同样检测占用，避免撞端口后白走一轮写配置→重启失败→回滚
             while true; do
@@ -1003,7 +1284,12 @@ input_custom_tag() {
     local default_tag=$1
     local custom_tag
     while true; do
-        read -e -p "请输入节点名称 (回车使用默认: $default_tag): " custom_tag
+        # read 失败（EOF）时退出而非走默认名
+        if ! read -r -e -p "请输入节点名称 (回车使用默认: $default_tag): " custom_tag; then
+            echo "" >&2
+            echo -e "${RED}错误：输入 EOF，已取消${R}" >&2
+            return 1
+        fi
         if [ -z "$custom_tag" ]; then
             custom_tag="$default_tag"
         else
@@ -1027,38 +1313,49 @@ sb_add_reality() {
     local server_ip=$(get_my_ip)
     if [ -z "$server_ip" ]; then
         echo -e "${RED}❌ 无法获取服务器 IP（网络不可达），请检查网络后重试${R}"
-        read -rs -n 1 -p ""
+        read -r -s -n 1 -p ""
         return 1
     fi
     local listen_addr=$(sb_listen_addr)
     echo -e "${Y}设置 VLESS-Reality 端口${R}"
-    local port=$(input_custom_port)
+    local port
+    port=$(input_custom_port) || return 1   # EOF 时 input 返回 1
     local uuid=$($SB_BIN generate uuid)
     local sni="apple.com"
     local keys_output=$($SB_BIN generate reality-keypair)
     local priv_key=$(echo "$keys_output" | awk '/PrivateKey/{print $2}')
     local pub_key=$(echo "$keys_output" | awk '/PublicKey/{print $2}')
     local short_id=$($SB_BIN generate rand --hex 4)
-    
+
     local default_tag="vless-reality-${port}"
-    local node_tag=$(input_custom_tag "$default_tag")
-    
-    read -e -p "是否开启 xtls-rprx-vision 流控？[Y/n]: " enable_vision
+    local node_tag
+    node_tag=$(input_custom_tag "$default_tag") || return 1   # EOF 时 input 返回 1
+
+    local enable_vision=""
+    if ! read -r -e -p "是否开启 xtls-rprx-vision 流控？[Y/n]: " enable_vision; then
+        echo "" >&2; echo -e "${RED}错误：输入 EOF，已取消${R}" >&2; return 1
+    fi
     local flow=""
     if [[ "$enable_vision" =~ ^[Yy]$|^$ ]]; then
         flow="xtls-rprx-vision"
     fi
-    
+
+    # flock 检测：锁文件无法打开时显式警告，不能静默失效让并发保护名存实亡
+    # 用 `exec 200>"$lock"` 先试打开，失败则不进锁块
+    if ! (exec 200>"$SB_CONF_LOCK") 2>/dev/null; then
+        echo -e "${RED}❌ 无法创建锁文件 $SB_CONF_LOCK，可能权限不足，已取消${R}"
+        return 1
+    fi
     (
-        flock -x 200
+        flock -x 200 || { echo -e "${RED}❌ flock 获取锁失败，并发保护失效，已取消${R}" >&2; exit 1; }
         cp "$SB_CONF" "${SB_CONF}.bak"
         # 锁内复查：input_custom_tag 的重名检查在锁外，并发添加同名节点有竞态窗口
         if jq -e --arg t "$node_tag" '((.inbounds // []) + (.outbounds // []) | map(select(.tag==$t)) | length) > 0' "$SB_CONF" >/dev/null 2>&1; then
             echo -e "${RED}节点名 $node_tag 已存在（并发冲突），本次添加已取消${R}"
             exit 1  # 子 shell 内 exit，仅终止本锁块
         fi
-        
-        
+
+
         local node_json=$(jq -n \
           --arg tag "$node_tag" \
           --argjson port $port \
@@ -1085,34 +1382,50 @@ sb_add_reality() {
               }
             }
           }')
-        
-        jq --argjson node "$node_json" '.inbounds += [$node]' "$SB_CONF" > "$SB_CONF.tmp"
-        
+
+        # 用 jq 生成新配置到临时文件；检查 jq 退出码作为纵深防御
+        # jq 失败（产出空/半截 JSON）时不应继续覆盖原配置
+        if ! jq --argjson node "$node_json" '.inbounds += [$node]' "$SB_CONF" > "$SB_CONF.tmp" 2>/dev/null; then
+            echo -e "${RED}❌ jq 生成新配置失败，原配置未改动${R}" >&2
+            cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null
+            rm -f "$SB_CONF.tmp"
+            exit 1
+        fi
+
         if $SB_BIN check -c "$SB_CONF.tmp" > "$CHECK_LOG" 2>&1; then
-            mv "$SB_CONF.tmp" "$SB_CONF"
+            # 用 helper 写配置：处理软链 + mv 失败
+            if ! sb_write_conf_atomic "$SB_CONF.tmp" "$SB_CONF"; then
+                cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null
+                exit 1
+            fi
             open_port $port
-            
+
             cat > "${META_DIR}/${node_tag}.json" <<EOF
 {"public_key":"$pub_key","short_id":"$short_id","sni":"$sni","uuid":"$uuid","port":$port,"flow":"$flow"}
 EOF
-            
+
+            # 节点链接在 systemctl restart 之前打印：
+            # 配置已生效（写入磁盘 + open_port 已放行），即使 restart 后续失败或用户 Ctrl+C 中断等待，
+            # 节点实际已可访问——只是服务进程尚未重新加载。打印成功+链接让用户知道已建成。
+            echo -e "${G}✅ VLESS-Reality 部署成功！${R}"
+            local flow_param=""
+            if [ -n "$flow" ]; then
+                flow_param="&flow=${flow}"
+            fi
+            local link="vless://${uuid}@${server_ip}:${port}?encryption=none${flow_param}&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#$(urlencode "$node_tag")"
+            echo -e "${C}节点链接: ${link}${R}"
+
             systemctl restart sing-box
             sleep 2
             if ! systemctl is-active --quiet sing-box; then
-                echo -e "${RED}❌ Sing-Box 启动失败！可能是端口冲突。${R}"
-                journalctl -u sing-box -n 10 --no-pager
+                # 重启失败：节点配置已生效但服务未起来——回滚配置让服务能跑
+                echo -e "${RED}❌ Sing-Box 启动失败！可能是端口冲突，正在回滚配置...${R}" >&2
+                journalctl -u sing-box -n 10 --no-pager >&2
                 cp "${SB_CONF}.bak" "$SB_CONF"
                 close_port $port
                 rm -f "${META_DIR}/${node_tag}.json"
                 systemctl restart sing-box
-            else
-                echo -e "${G}✅ VLESS-Reality 部署成功！${R}"
-                local flow_param=""
-                if [ -n "$flow" ]; then
-                    flow_param="&flow=${flow}"
-                fi
-                local link="vless://${uuid}@${server_ip}:${port}?encryption=none${flow_param}&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#$(urlencode "$node_tag")"
-                echo -e "${C}节点链接: ${link}${R}"
+                echo -e "${RED}❌ 节点已回滚，链接暂不可用${R}" >&2
             fi
         else
             echo -e "${RED}❌ 校验失败，错误详情：${R}"
@@ -1121,7 +1434,7 @@ EOF
             rm -f "$SB_CONF.tmp"
         fi
     ) 200>"$SB_CONF_LOCK"
-    read -rs -n 1 -p ""
+    read -r -s -n 1 -p ""
 }
 
 sb_add_vless_tcp() {
@@ -1129,27 +1442,34 @@ sb_add_vless_tcp() {
     local server_ip=$(get_my_ip)
     if [ -z "$server_ip" ]; then
         echo -e "${RED}❌ 无法获取服务器 IP（网络不可达），请检查网络后重试${R}"
-        read -rs -n 1 -p ""
+        read -r -s -n 1 -p ""
         return 1
     fi
     local listen_addr=$(sb_listen_addr)
     echo -e "${Y}设置 VLESS-TCP 端口${R}"
-    local port=$(input_custom_port)
+    local port
+    port=$(input_custom_port) || return 1
     local uuid=$($SB_BIN generate uuid)
-    
+
     local default_tag="vless-tcp-${port}"
-    local node_tag=$(input_custom_tag "$default_tag")
-    
+    local node_tag
+    node_tag=$(input_custom_tag "$default_tag") || return 1
+
+    # flock 检测
+    if ! (exec 200>"$SB_CONF_LOCK") 2>/dev/null; then
+        echo -e "${RED}❌ 无法创建锁文件 $SB_CONF_LOCK，已取消${R}"
+        return 1
+    fi
     (
-        flock -x 200
+        flock -x 200 || { echo -e "${RED}❌ flock 获取锁失败，并发保护失效，已取消${R}" >&2; exit 1; }
         cp "$SB_CONF" "${SB_CONF}.bak"
         # 锁内复查：input_custom_tag 的重名检查在锁外，并发添加同名节点有竞态窗口
         if jq -e --arg t "$node_tag" '((.inbounds // []) + (.outbounds // []) | map(select(.tag==$t)) | length) > 0' "$SB_CONF" >/dev/null 2>&1; then
             echo -e "${RED}节点名 $node_tag 已存在（并发冲突），本次添加已取消${R}"
             exit 1  # 子 shell 内 exit，仅终止本锁块
         fi
-        
-        
+
+
         local node_json=$(jq -n \
           --arg tag "$node_tag" \
           --argjson port $port \
@@ -1162,30 +1482,42 @@ sb_add_vless_tcp() {
             listen_port: $port,
             users: [{uuid: $uuid}]
           }')
-        
-        jq --argjson node "$node_json" '.inbounds += [$node]' "$SB_CONF" > "$SB_CONF.tmp"
-        
+
+        # 用 jq 生成新配置到临时文件；检查 jq 退出码作为纵深防御
+        if ! jq --argjson node "$node_json" '.inbounds += [$node]' "$SB_CONF" > "$SB_CONF.tmp" 2>/dev/null; then
+            echo -e "${RED}❌ jq 生成新配置失败，原配置未改动${R}" >&2
+            cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null
+            rm -f "$SB_CONF.tmp"
+            exit 1
+        fi
+
         if $SB_BIN check -c "$SB_CONF.tmp" > "$CHECK_LOG" 2>&1; then
-            mv "$SB_CONF.tmp" "$SB_CONF"
+            # 用 helper 写配置：处理软链 + mv 失败
+            if ! sb_write_conf_atomic "$SB_CONF.tmp" "$SB_CONF"; then
+                cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null
+                exit 1
+            fi
             open_port $port
-            
+
             cat > "${META_DIR}/${node_tag}.json" <<EOF
 {"uuid":"$uuid","port":$port}
 EOF
-            
+
+            # 节点链接在 systemctl restart 之前打印（参见 reality 同样说明）
+            echo -e "${G}✅ VLESS-TCP 部署成功！${R}"
+            local link="vless://${uuid}@${server_ip}:${port}?encryption=none&security=none&type=tcp&headerType=none#$(urlencode "$node_tag")"
+            echo -e "${C}节点链接: ${link}${R}"
+
             systemctl restart sing-box
             sleep 2
             if ! systemctl is-active --quiet sing-box; then
-                echo -e "${RED}❌ Sing-Box 启动失败！可能是端口冲突。${R}"
-                journalctl -u sing-box -n 10 --no-pager
+                echo -e "${RED}❌ Sing-Box 启动失败！可能是端口冲突，正在回滚配置...${R}" >&2
+                journalctl -u sing-box -n 10 --no-pager >&2
                 cp "${SB_CONF}.bak" "$SB_CONF"
                 close_port $port
                 rm -f "${META_DIR}/${node_tag}.json"
                 systemctl restart sing-box
-            else
-                echo -e "${G}✅ VLESS-TCP 部署成功！${R}"
-                local link="vless://${uuid}@${server_ip}:${port}?encryption=none&security=none&type=tcp&headerType=none#$(urlencode "$node_tag")"
-                echo -e "${C}节点链接: ${link}${R}"
+                echo -e "${RED}❌ 节点已回滚，链接暂不可用${R}" >&2
             fi
         else
             echo -e "${RED}❌ 校验失败，错误详情：${R}"
@@ -1194,7 +1526,7 @@ EOF
             rm -f "$SB_CONF.tmp"
         fi
     ) 200>"$SB_CONF_LOCK"
-    read -rs -n 1 -p ""
+    read -r -s -n 1 -p ""
 }
 
 sb_add_hysteria2() {
@@ -1202,20 +1534,27 @@ sb_add_hysteria2() {
     local server_ip=$(get_my_ip)
     if [ -z "$server_ip" ]; then
         echo -e "${RED}❌ 无法获取服务器 IP（网络不可达），请检查网络后重试${R}"
-        read -rs -n 1 -p ""
+        read -r -s -n 1 -p ""
         return 1
     fi
     local listen_addr=$(sb_listen_addr)
     echo -e "${Y}设置 Hysteria2 端口${R}"
-    local port=$(input_custom_port)
+    local port
+    port=$(input_custom_port) || return 1
     local pass=$($SB_BIN generate rand --hex 16)
     local sni="www.bing.com"
     local cert_dir="/etc/sing-box/certs/hy2-${port}"
     local default_tag="hysteria2-${port}"
-    local node_tag=$(input_custom_tag "$default_tag")
-    
+    local node_tag
+    node_tag=$(input_custom_tag "$default_tag") || return 1
+
+    # flock 检测
+    if ! (exec 200>"$SB_CONF_LOCK") 2>/dev/null; then
+        echo -e "${RED}❌ 无法创建锁文件 $SB_CONF_LOCK，已取消${R}"
+        return 1
+    fi
     (
-        flock -x 200
+        flock -x 200 || { echo -e "${RED}❌ flock 获取锁失败，并发保护失效，已取消${R}" >&2; exit 1; }
         cp "$SB_CONF" "${SB_CONF}.bak"
         # 锁内复查：input_custom_tag 的重名检查在锁外，并发添加同名节点有竞态窗口
         if jq -e --arg t "$node_tag" '((.inbounds // []) + (.outbounds // []) | map(select(.tag==$t)) | length) > 0' "$SB_CONF" >/dev/null 2>&1; then
@@ -1227,8 +1566,8 @@ sb_add_hysteria2() {
         openssl ecparam -genkey -name prime256v1 -out "${cert_dir}/key.pem" 2>/dev/null
         openssl req -new -x509 -days 3650 -key "${cert_dir}/key.pem" -out "${cert_dir}/cert.pem" -subj "/CN=${sni}" 2>/dev/null
         chmod 600 "${cert_dir}/key.pem" 2>/dev/null  # 私钥按 umask 生成常为 0644，收紧为仅属主可读写
-        
-        
+
+
         local node_json=$(jq -n \
           --arg tag "$node_tag" \
           --argjson port $port \
@@ -1252,25 +1591,40 @@ sb_add_hysteria2() {
             },
             ignore_client_bandwidth: false
           }')
-        
-        jq --argjson node "$node_json" '.inbounds += [$node]' "$SB_CONF" > "$SB_CONF.tmp"
-        
+
+        # 用 jq 生成新配置到临时文件；检查 jq 退出码作为纵深防御
+        if ! jq --argjson node "$node_json" '.inbounds += [$node]' "$SB_CONF" > "$SB_CONF.tmp" 2>/dev/null; then
+            echo -e "${RED}❌ jq 生成新配置失败，原配置未改动${R}" >&2
+            cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null
+            rm -f "$SB_CONF.tmp"
+            rm -rf "$cert_dir"
+            exit 1
+        fi
+
         if $SB_BIN check -c "$SB_CONF.tmp" > "$CHECK_LOG" 2>&1; then
-            mv "$SB_CONF.tmp" "$SB_CONF"
+            # 用 helper 写配置：处理软链 + mv 失败
+            if ! sb_write_conf_atomic "$SB_CONF.tmp" "$SB_CONF"; then
+                cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null
+                rm -rf "$cert_dir"
+                exit 1
+            fi
             open_port $port
+
+            # 节点链接在 systemctl restart 之前打印（参见 reality 同样说明）
+            echo -e "${G}✅ Hysteria2 部署成功！${R}"
+            local link="hysteria2://${pass}@${server_ip}:${port}?security=tls&sni=${sni}&alpn=h3&insecure=1#$(urlencode "$node_tag")"
+            echo -e "${C}节点链接: ${link}${R}"
+
             systemctl restart sing-box
             sleep 2
             if ! systemctl is-active --quiet sing-box; then
-                echo -e "${RED}❌ Sing-Box 启动失败！${R}"
-                journalctl -u sing-box -n 10 --no-pager
+                echo -e "${RED}❌ Sing-Box 启动失败！正在回滚配置...${R}" >&2
+                journalctl -u sing-box -n 10 --no-pager >&2
                 cp "${SB_CONF}.bak" "$SB_CONF"
                 close_port $port
                 rm -rf "$cert_dir"
                 systemctl restart sing-box
-            else
-                echo -e "${G}✅ Hysteria2 部署成功！${R}"
-                local link="hysteria2://${pass}@${server_ip}:${port}?security=tls&sni=${sni}&alpn=h3&insecure=1#$(urlencode "$node_tag")"
-                echo -e "${C}节点链接: ${link}${R}"
+                echo -e "${RED}❌ 节点已回滚，链接暂不可用${R}" >&2
             fi
         else
             echo -e "${RED}❌ 校验失败，错误详情：${R}"
@@ -1280,20 +1634,20 @@ sb_add_hysteria2() {
             rm -rf "$cert_dir"
         fi
     ) 200>"$SB_CONF_LOCK"
-    read -rs -n 1 -p ""
+    read -r -s -n 1 -p ""
 }
 
 sb_del_node() {
     sb_check || return
-    
+
     local tags=()
     mapfile -t tags < <(jq -r '.inbounds[].tag' "$SB_CONF" 2>/dev/null)
     if [ ${#tags[@]} -eq 0 ]; then
         echo -e "${Y}当前没有任何节点可删除。${R}"
-        read -rs -n 1 -p ""
+        read -r -s -n 1 -p ""
         return
     fi
-    
+
     echo -e "${Y}当前已有节点，请选择要删除的节点序号，或直接输入端口号删除：${R}"
     local i=1
     for tag in "${tags[@]}"; do
@@ -1301,35 +1655,55 @@ sb_del_node() {
         ((i++))
     done
     echo -e "  ${H}[0] 返回${R}"
-    
-    read -e -p "请选择: " c
+
+    local c=""
+    if ! read -r -e -p "请选择: " c; then
+        echo "" >&2; echo -e "${RED}错误：输入 EOF，已取消${R}" >&2; return 1
+    fi
     if [ "$c" == "0" ] || [ -z "$c" ]; then return; fi
-    
+
     local tag=""
     if [[ "$c" =~ ^[0-9]+$ ]] && [ "$c" -ge 1 ] && [ "$c" -le ${#tags[@]} ]; then
         tag="${tags[$((c-1))]}"
     else
         tag=$(jq -r --arg p "$c" '.inbounds[] | select(.listen_port==($p|tonumber)) | .tag' "$SB_CONF" 2>/dev/null)
     fi
-    
+
     if [ -z "$tag" ]; then
         echo -e "${RED}未找到对应的节点${R}"
-        read -rs -n 1 -p ""
+        read -r -s -n 1 -p ""
         return
     fi
-    
+
     local port=$(jq -r --arg t "$tag" '.inbounds[] | select(.tag==$t) | .listen_port' "$SB_CONF")
     local type=$(jq -r --arg t "$tag" '.inbounds[] | select(.tag==$t) | .type' "$SB_CONF")
-    
-    (
-        flock -x 200
-        cp "$SB_CONF" "${SB_CONF}.bak"
-        
-        jq --arg t "$tag" 'del(.inbounds[] | select(.tag==$t))' "$SB_CONF" > "$SB_CONF.tmp"
-        
-        if $SB_BIN check -c "$SB_CONF.tmp" > "$CHECK_LOG" 2>&1; then
-            mv "$SB_CONF.tmp" "$SB_CONF"
 
+    # flock 检测
+    if ! (exec 200>"$SB_CONF_LOCK") 2>/dev/null; then
+        echo -e "${RED}❌ 无法创建锁文件 $SB_CONF_LOCK，已取消${R}"
+        return 1
+    fi
+    (
+        flock -x 200 || { echo -e "${RED}❌ flock 获取锁失败，并发保护失效，已取消${R}" >&2; exit 1; }
+        cp "$SB_CONF" "${SB_CONF}.bak"
+
+        # 用 jq 生成新配置；检查 jq 退出码
+        if ! jq --arg t "$tag" 'del(.inbounds[] | select(.tag==$t))' "$SB_CONF" > "$SB_CONF.tmp" 2>/dev/null; then
+            echo -e "${RED}❌ jq 生成删除后的配置失败，原配置未改动${R}" >&2
+            cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null
+            rm -f "$SB_CONF.tmp"
+            exit 1
+        fi
+
+        if $SB_BIN check -c "$SB_CONF.tmp" > "$CHECK_LOG" 2>&1; then
+            # 用 helper 写配置：处理软链 + mv 失败
+            if ! sb_write_conf_atomic "$SB_CONF.tmp" "$SB_CONF"; then
+                cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null
+                exit 1
+            fi
+
+            # 删除成功提示在 systemctl restart 之前打印（节点配置已从磁盘移除）
+            echo -e "${G}✅ 节点 $tag 已从配置删除！${R}"
             systemctl restart sing-box
             sleep 2
             if systemctl is-active --quiet sing-box; then
@@ -1339,12 +1713,13 @@ sb_del_node() {
                 if [ "$type" == "hysteria2" ]; then
                     rm -rf "/etc/sing-box/certs/hy2-${port}"
                 fi
-                echo -e "${G}✅ 节点 $tag 已删除！${R}"
+                echo -e "${G}✅ 节点清理完成${R}"
             else
-                echo -e "${RED}❌ Sing-Box 启动失败，正在回滚...${R}"
-                journalctl -u sing-box -n 10 --no-pager
+                echo -e "${RED}❌ Sing-Box 启动失败，正在回滚配置...${R}" >&2
+                journalctl -u sing-box -n 10 --no-pager >&2
                 cp "${SB_CONF}.bak" "$SB_CONF"
                 systemctl restart sing-box
+                echo -e "${RED}❌ 节点已回滚（未删除）${R}" >&2
             fi
         else
             echo -e "${RED}❌ 删除节点失败，错误详情：${R}"
@@ -1353,7 +1728,7 @@ sb_del_node() {
             rm -f "$SB_CONF.tmp"
         fi
     ) 200>"$SB_CONF_LOCK"
-    read -rs -n 1 -p ""
+    read -r -s -n 1 -p ""
 }
 
 sb_manage_ports() {
@@ -1365,10 +1740,10 @@ sb_manage_ports() {
         echo -e "    ${Y}[1] 放行指定端口${R}"
         echo -e "    ${Y}[2] 关闭指定端口${R}"
         echo -e "    ${H}[0] 返回上一级${R}"
-        read -e -p "  请选择: " c
+        read -r -e -p "  请选择: " c
         case "$c" in
             1) 
-                read -e -p "请输入要放行的端口号: " p
+                read -r -e -p "请输入要放行的端口号: " p
                 if [[ "$p" =~ ^[0-9]+$ ]] && [ "$p" -ge 1 ] && [ "$p" -le 65535 ]; then
                     if open_port $p; then
                         echo -e "${G}✅ 端口 $p 已放行 (TCP+UDP)${R}"
@@ -1378,10 +1753,10 @@ sb_manage_ports() {
                 else
                     echo -e "${RED}端口号无效${R}"
                 fi
-                read -rs -n 1 -p ""
+                read -r -s -n 1 -p ""
                 ;;
             2) 
-                read -e -p "请输入要关闭的端口号: " p
+                read -r -e -p "请输入要关闭的端口号: " p
                 if [[ "$p" =~ ^[0-9]+$ ]] && [ "$p" -ge 1 ] && [ "$p" -le 65535 ]; then
                     if close_port $p; then
                         echo -e "${G}✅ 端口 $p 已关闭 (TCP+UDP)${R}"
@@ -1391,7 +1766,7 @@ sb_manage_ports() {
                 else
                     echo -e "${RED}端口号无效${R}"
                 fi
-                read -rs -n 1 -p ""
+                read -r -s -n 1 -p ""
                 ;;
             0|"") break ;;
         esac
@@ -1405,13 +1780,23 @@ sb_show_links() {
         echo -e "${RED}警告：无法获取服务器公网 IP，生成的链接中地址为空，请手动替换为你的公网 IP 后再使用${R}"
     fi
     echo -e "\n${Y}===== 节点链接 =====${R}"
-    
+
+    # flock 检测：用共享锁避免读到正在被修改的配置
+    if ! (exec 200>"$SB_CONF_LOCK") 2>/dev/null; then
+        echo -e "${RED}❌ 无法创建锁文件 $SB_CONF_LOCK，已取消${R}"
+        return 1
+    fi
     (
-        flock -s 200
-        
+        flock -s 200 || { echo -e "${RED}❌ flock 获取共享锁失败，已取消${R}" >&2; exit 1; }
+
         # VLESS-Reality
         jq -r '.inbounds[] | select(.type=="vless" and .tls.reality.enabled==true) | .tag' "$SB_CONF" 2>/dev/null | while read -r tag; do
-            if [ -n "$tag" ] && [ -f "${META_DIR}/${tag}.json" ]; then
+            if [ -n "$tag" ]; then
+                if [ ! -f "${META_DIR}/${tag}.json" ]; then
+                    # meta 文件缺失时打印警告，不要让节点静默消失
+                    echo "# 警告：节点 $tag 的 meta 文件缺失，无法生成链接（节点配置可能已损坏，建议删除后重建）" >&2
+                    continue
+                fi
                 local meta="${META_DIR}/${tag}.json"
                 local uuid=$(jq -r '.uuid' "$meta")
                 local port=$(jq -r '.port' "$meta")
@@ -1426,23 +1811,27 @@ sb_show_links() {
                 echo "vless://${uuid}@${server_ip}:${port}?encryption=none${flow_param}&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#$(urlencode "$tag")"
             fi
         done
-        
+
         # VLESS-TCP
         jq -r '.inbounds[] | select(.type=="vless" and (.tls == null or .tls == {})) | .tag' "$SB_CONF" 2>/dev/null | while read -r tag; do
-            if [ -n "$tag" ] && [ -f "${META_DIR}/${tag}.json" ]; then
+            if [ -n "$tag" ]; then
+                if [ ! -f "${META_DIR}/${tag}.json" ]; then
+                    echo "# 警告：节点 $tag 的 meta 文件缺失，无法生成链接（建议删除后重建）" >&2
+                    continue
+                fi
                 local meta="${META_DIR}/${tag}.json"
                 local uuid=$(jq -r '.uuid' "$meta")
                 local port=$(jq -r '.port' "$meta")
                 echo "vless://${uuid}@${server_ip}:${port}?encryption=none&security=none&type=tcp&headerType=none#$(urlencode "$tag")"
             fi
         done
-        
+
         # Hysteria2
         jq -r --arg ip "$server_ip" '.inbounds[] | select(.type=="hysteria2") | "hysteria2://" + .users[0].password + "@" + $ip + ":" + (.listen_port|tostring) + "?security=tls&sni=" + (.tls.server_name // "www.bing.com") + "&alpn=h3&insecure=1#" + (.tag | @uri)' "$SB_CONF" 2>/dev/null
-        
+
     ) 200>"$SB_CONF_LOCK"
-    
-    read -rs -n 1 -p ""
+
+    read -r -s -n 1 -p ""
 }
 
 sb_menu() {
@@ -1459,7 +1848,7 @@ sb_menu() {
         echo -e "    ${RED}[6] 删除已添加节点 (支持按端口删除)${R}"
         echo -e "    ${C}[7] 手动管理端口放行 (TCP+UDP)${R}"
         echo -e "    ${H}[0] 返回主菜单${R}"
-        read -e -p "  选择: " c
+        read -r -e -p "  选择: " c
         case "$c" in
             1) clear; sb_install ;;
             2) clear; sb_add_reality ;;
@@ -1483,7 +1872,7 @@ main_menu() {
         echo -e "    ${Y}[1] 🚀 网络与内核优化 (BBR/XanMod)${R}"
         echo -e "    ${Y}[2] 📦 Sing-Box 管理面板${R}"
         echo -e "    ${H}[0] 退出${R}"
-        read -e -p "  请选择: " c
+        read -r -e -p "  请选择: " c
         case "$c" in
             1) clear; smart_auto_optimize ;;
             2) clear; sb_menu ;;
@@ -1497,33 +1886,182 @@ main_menu() {
 auto_shortcut() {
     local target="/usr/local/bin/yw"
     local src="${BASH_SOURCE[0]:-$0}"
-    # 把脚本自身的 GitHub raw URL 写死，便于 curl|bash / 粘贴执行时兜底下载
+    # 兜底下载源（仅当本地源文件找不到时用；curl|bash 在脚本开头已被 exit 1，到不了这里）
     local script_url="https://raw.githubusercontent.com/wuy62380-ship-it/yw/main/kernel-smart.sh"
+    local tmp_install="" install_source=""
+    local install_ok=0
+    local src_real=""
 
     [ "$(id -u)" -ne 0 ] && return 0     # 非 root 跳过
-    [ "$src" == "$target" ] && return 0  # 本身就是 yw，跳过
 
-    # 1) 本地文件运行 → 复制自身（最优路径，无需联网）
-    #    排除粘贴执行时的 /dev/fd/0、/dev/stdin，避免误判
+    # 用 realpath 解析 src，做路径等价比较（而非字符串比对）
+    # 防止"自身运行 yw"被误装：bash ./yw、symlink 别名、相对路径等都解析为同一绝对路径
     if [ -n "$src" ] && [ "$src" != "/dev/fd/0" ] && [ "$src" != "/dev/stdin" ] && [ -f "$src" ]; then
-        local s=$(realpath "$src" 2>/dev/null || echo "$src")
-        [ "$s" == "$target" ] && return 0
-        if cp -f "$s" "$target" 2>/dev/null; then
-            chmod +x "$target"
-            echo -e "${G}✅ yw 快捷指令已创建（/usr/local/bin/yw）${R}"
-            return 0
+        src_real=$(realpath "$src" 2>/dev/null || echo "$src")
+    fi
+    # 正在运行的就是 yw 本身，无需安装，直接返回（防止把仓库版静默覆盖正在跑的版本）
+    [ "$src_real" = "$target" ] && return 0
+
+    # 目标已是目录：拒绝，避免把文件塞进去后 chmod 目录假成功
+    if [ -d "$target" ]; then
+        echo -e "${RED}错误：${target} 是目录而非可执行文件，请手动检查后重试${R}" >&2
+        return 1
+    fi
+
+    # 临时文件用 PID 标记：本进程只动自己的文件，绝不扫别人的"残留"
+    #
+    # 历史教训：上一版做了"启动时扫描清理 .yw_install.*"，但实例 A 正在下载时实例 B
+    # 启动会把 A 的临时文件当残留删了（A 的数据继续写到已 unlink 的 inode，最终误报
+    # "下载为空"）。改用 PID 命名后，本进程只动 .yw_install.<pid>.<XXXXXX>，绝不碰
+    # 其他实例的文件——并发安全。
+    #
+    # 残留清理：本进程的 EXIT trap 会清理自己的临时文件，但 trap 不能捕获 SIGKILL
+    # 和断电。这两种情况下会留下一个 .yw_install.<pid>.<XXXXXX> 垃圾文件，本工具
+    # 不会自动清理（自动清理必然涉及扫描，扫描就有并发误删风险，两害相权取其轻）。
+    # 启动时只做"被动提示"——发现疑似残留就告知用户，绝不主动删除。
+    local _tmp_dir _tmp_prefix
+    _tmp_dir="$(dirname "$target")"
+    _tmp_prefix="${_tmp_dir}/.yw_install.$$"
+
+    tmp_install="$(mktemp "${_tmp_prefix}.XXXXXX")" || {
+        echo -e "${RED}错误：无法创建临时文件${R}" >&2
+        return 1
+    }
+
+    # 立即挂多信号 trap（在检测之前，避免 mktemp 与 trap 之间的毫秒级窗口被杀导致残留）
+    #   - 同时挂 EXIT/INT/TERM/HUP：bash 在 wait 子进程（如 curl）时收到 SIGINT，
+    #     EXIT trap 不一定触发；显式 trap INT/TERM/HUP 才能保证 Ctrl+C 等中断也清理
+    #   - 不覆盖脚本开头 `trap 'rm -f "$CHECK_LOG"' EXIT`，而是组合追加
+    #   - 退出码透传：`exit $rc` 保留原退出码
+    #   - 末尾追加 rm -f "$CHECK_LOG" 作为 sed 失败时的兜底（CHECK_LOG 是脚本顶层变量）
+    #   - 注意：trap 无法捕获 SIGKILL 和断电，那种情况下临时文件会残留，
+    #     下次启动会看到下面的"被动提示"，由用户决定是否手动清理
+    local _old_trap_body
+    _old_trap_body=$(trap -p EXIT | sed -E "s/^trap -- '//; s/' EXIT$//" 2>/dev/null)
+    trap 'rc=$?; rm -f "'"${tmp_install}"'" 2>/dev/null; '"${_old_trap_body}"' 2>/dev/null; rm -f "$CHECK_LOG" 2>/dev/null; exit $rc' EXIT INT TERM HUP
+
+    # 被动检测疑似残留（trap 已挂好，本进程自己的临时文件已受保护）
+    # 三层过滤避免误报：
+    #   1) 严格正则 ^\.yw_install\.[0-9]+\.[A-Za-z0-9]{6}$  ← 纯数字 pid + 恰好 6 字母数字
+    #   2) mtime 距今 ≥ 60 秒  ← 60 秒内的可能是其他实例正在使用，绝不报
+    #      （curl 下载最长 20 秒，加 40 秒缓冲足够覆盖任何活跃实例）
+    #   3) 跳过本进程的 tmp_install（精确路径比对，不是 pid 通配——避免 PID 复用残留隐身）
+    #
+    # 不再建议任何 rm 通配命令：
+    #   - pgrep -f yw 守卫失效：残留只产生于跑 .sh 文件的实例（cmdline 不含 yw）
+    #   - 子串匹配过宽：会误中无关进程甚至自身（bash -c 内会自匹配）
+    #   - rm 通配不分年龄：会删掉另一实例刚建的临时文件
+    #   只列出具体路径，让用户逐个手动删除
+    local _stale="" _now _f _mtime _age _name
+    _now=$(date +%s)
+    for _f in "${_tmp_dir}"/.yw_install.*.*; do
+        [ -f "$_f" ] || continue
+        [ "$_f" = "$tmp_install" ] && continue   # 跳过本进程刚创建的（精确路径比对）
+        _name="${_f##*/}"
+        # 严格正则：.yw_install.<纯数字 pid>.<恰好 6 个字母数字>
+        [[ "$_name" =~ ^\.yw_install\.[0-9]+\.[A-Za-z0-9]{6}$ ]] || continue
+        # mtime 在 60 秒内的可能是其他实例正在使用，跳过（避免并发误报）
+        _mtime=$(stat -c %Y "$_f" 2>/dev/null) || continue
+        _age=$((_now - _mtime))
+        [ "$_age" -lt 60 ] && continue
+        _stale="${_stale} $_f"
+    done
+    if [ -n "$_stale" ]; then
+        local _count
+        _count=$(echo "$_stale" | wc -w)
+        echo -e "${Y}提示：检测到 ${_count} 个疑似残留的临时文件（已存在超过 60 秒）：${R}" >&2
+        echo "$_stale" | tr ' ' '\n' | grep -v '^$' | sed 's/^/  /' >&2
+        echo -e "${Y}  这些可能是上次异常退出（kill -9 / 断电）留下的，也可能是其他实例正在使用。${R}" >&2
+        echo -e "${Y}  本工具不自动删除（避免并发误删）。如确认这些具体文件是残留，可逐个手动删除：${R}" >&2
+        echo -e "${C}  rm <上方列出的具体文件路径>${R}" >&2
+    fi
+
+    # 1) 优先本地文件运行：装的就是用户正在跑的版本（保证一致）
+    if [ -n "$src_real" ] && [ -f "$src_real" ]; then
+        if cp -f "$src_real" "$tmp_install" 2>/dev/null; then
+            # 末尾换行符：源若缺，补一个，避免后续 cat 拼接粘行
+            [ -n "$(tail -c1 "$tmp_install" 2>/dev/null)" ] && printf '\n' >> "$tmp_install"
+            # 本地副本也做语法校验，避免装到坏版本
+            if bash -n "$tmp_install" 2>/dev/null; then
+                install_ok=1
+                install_source="本地脚本"
+            else
+                echo -e "${RED}错误：源脚本语法校验失败，未覆盖现有 yw${R}" >&2
+                rm -f "$tmp_install"
+                return 1
+            fi
+        else
+            # 本地 cp 失败不静默：明确告知用户改走下载，避免装的不是正在跑的版本还看似成功
+            echo -e "${Y}提示：本地源读取失败（$src_real），改走 GitHub 下载兜底${R}" >&2
         fi
     fi
 
-    # 2) curl|bash / 粘贴执行 → 从 GitHub 下载兜底
-    #    注：脚本开头会拒绝 curl|bash 并 exit，所以本分支主要服务"粘贴执行"场景
-    echo -e "${Y}未检测到本地源文件，正在从 GitHub 拉取以创建 yw 快捷指令...${R}"
-    if curl -fsSL --max-time 20 "$script_url" -o "$target" 2>/dev/null; then
-        chmod +x "$target"
-        echo -e "${G}✅ yw 快捷指令已创建（/usr/local/bin/yw），以后任意目录敲 yw 即可${R}"
+    # 2) 兜底：从 GitHub 下载到临时文件 → 校验 → 原子安装
+    #    注：curl|bash 用户在脚本开头已被 exit 1 拒绝，到不了这里；本分支实际服务粘贴执行场景
+    if [ "$install_ok" -ne 1 ]; then
+        local http_code curl_rc
+        http_code=$(curl -sSL -w '%{http_code}' --max-time 20 -o "$tmp_install" "$script_url" 2>/dev/null)
+        curl_rc=$?
+
+        # 区分错误码，避免把"传输中断"误报成"不可达"
+        #   6 = DNS 解析失败（真不可达）
+        #   7 = 连接失败/拒绝（真不可达）
+        #  18 = 传输中途断开（服务器已连接、已传部分，常见于大文件下载被打断）
+        #  28 = 超时
+        # 其他 = 笼统"下载失败"
+        if [ "$curl_rc" -ne 0 ]; then
+            case "$curl_rc" in
+                6|7)  echo -e "${Y}提示：GitHub 不可达（curl 退出码 $curl_rc，DNS 或连接失败），跳过 yw 快捷指令创建${R}" >&2 ;;
+                18)   echo -e "${Y}提示：GitHub 传输中断（已连接但中途断开），跳过 yw 快捷指令创建${R}" >&2 ;;
+                28)   echo -e "${Y}提示：从 GitHub 拉取超时（>20s），跳过 yw 快捷指令创建${R}" >&2 ;;
+                *)    echo -e "${Y}提示：GitHub 下载失败（curl 退出码 $curl_rc），跳过 yw 快捷指令创建${R}" >&2 ;;
+            esac
+            echo -e "    手动安装：curl -fsSL $script_url -o /usr/local/bin/yw && chmod 755 /usr/local/bin/yw" >&2
+            rm -f "$tmp_install"
+            return 1
+        fi
+        if [ "$http_code" != "200" ]; then
+            echo -e "${Y}提示：GitHub 返回 HTTP $http_code（非 200），跳过 yw 快捷指令创建${R}" >&2
+            rm -f "$tmp_install"
+            return 1
+        fi
+        # 空文件 / 残片：拒绝
+        if [ ! -s "$tmp_install" ]; then
+            echo -e "${Y}提示：下载内容为空，跳过 yw 快捷指令创建${R}" >&2
+            rm -f "$tmp_install"
+            return 1
+        fi
+
+        # 末尾换行符
+        [ -n "$(tail -c1 "$tmp_install" 2>/dev/null)" ] && printf '\n' >> "$tmp_install"
+
+        # 内容校验：必须是 bash 脚本且语法正确，防止 HTML 错误页被装成 yw（假成功）
+        if ! head -1 "$tmp_install" | grep -q '^#!.*bash'; then
+            echo -e "${RED}错误：下载内容非 bash 脚本（疑似错误页），未安装${R}" >&2
+            rm -f "$tmp_install"
+            return 1
+        fi
+        if ! bash -n "$tmp_install" 2>/dev/null; then
+            echo -e "${RED}错误：下载脚本语法校验失败（疑似内容损坏），未安装${R}" >&2
+            rm -f "$tmp_install"
+            return 1
+        fi
+        install_ok=1
+        install_source="GitHub 仓库当前版本（可能与正在运行的版本不一致）"
+    fi
+
+    # 3) 原子安装：chmod + mv -f 替换 target
+    #    - 临时文件已与 target 同目录，mv -f 走内核 rename(2)：原子替换，无"目标不存在"空窗
+    #    - 若 target 是 symlink，rename(2) 替换 symlink 本身（POSIX 标准），不写穿邻居
+    #    - mv 失败时 tmp_install 仍是独立文件，target 完好无损
+    chmod 755 "$tmp_install" 2>/dev/null
+    if mv -f "$tmp_install" "$target" 2>/dev/null; then
+        echo -e "${G}✅ yw 快捷指令已创建（/usr/local/bin/yw，来源：${install_source}）${R}"
+        return 0
     else
-        echo -e "${Y}提示：自动创建 yw 快捷指令失败（GitHub 不可达），请手动执行：${R}"
-        echo -e "    curl -fsSL $script_url -o /usr/local/bin/yw && chmod +x /usr/local/bin/yw"
+        echo -e "${RED}错误：安装到 $target 失败（原 yw 未被修改）${R}" >&2
+        rm -f "$tmp_install"
+        return 1
     fi
 }
 
