@@ -1497,18 +1497,33 @@ main_menu() {
 auto_shortcut() {
     local target="/usr/local/bin/yw"
     local src="${BASH_SOURCE[0]:-$0}"
+    # 把脚本自身的 GitHub raw URL 写死，便于 curl|bash / 粘贴执行时兜底下载
+    local script_url="https://raw.githubusercontent.com/wuy62380-ship-it/yw/main/kernel-smart.sh"
 
     [ "$(id -u)" -ne 0 ] && return 0     # 非 root 跳过
     [ "$src" == "$target" ] && return 0  # 本身就是 yw，跳过
 
-    # 本地文件运行 → 复制自身为 yw 快捷指令
-    # 注：curl|bash 已在脚本开头被拒绝，不会走到这里；旧的"路径2（从 GitHub 下载）"因此成为死代码，已删除
-    if [ -f "$src" ]; then
+    # 1) 本地文件运行 → 复制自身（最优路径，无需联网）
+    #    排除粘贴执行时的 /dev/fd/0、/dev/stdin，避免误判
+    if [ -n "$src" ] && [ "$src" != "/dev/fd/0" ] && [ "$src" != "/dev/stdin" ] && [ -f "$src" ]; then
         local s=$(realpath "$src" 2>/dev/null || echo "$src")
         [ "$s" == "$target" ] && return 0
         if cp -f "$s" "$target" 2>/dev/null; then
             chmod +x "$target"
+            echo -e "${G}✅ yw 快捷指令已创建（/usr/local/bin/yw）${R}"
+            return 0
         fi
+    fi
+
+    # 2) curl|bash / 粘贴执行 → 从 GitHub 下载兜底
+    #    注：脚本开头会拒绝 curl|bash 并 exit，所以本分支主要服务"粘贴执行"场景
+    echo -e "${Y}未检测到本地源文件，正在从 GitHub 拉取以创建 yw 快捷指令...${R}"
+    if curl -fsSL --max-time 20 "$script_url" -o "$target" 2>/dev/null; then
+        chmod +x "$target"
+        echo -e "${G}✅ yw 快捷指令已创建（/usr/local/bin/yw），以后任意目录敲 yw 即可${R}"
+    else
+        echo -e "${Y}提示：自动创建 yw 快捷指令失败（GitHub 不可达），请手动执行：${R}"
+        echo -e "    curl -fsSL $script_url -o /usr/local/bin/yw && chmod +x /usr/local/bin/yw"
     fi
 }
 
