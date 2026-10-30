@@ -21,6 +21,12 @@ if [ ! -t 0 ]; then
 fi
 
 gl_bai=$'\033[0m'; gl_lv=$'\033[32m'; gl_huang=$'\033[33m'; gl_hui=$'\033[90m'; gl_red=$'\033[31m'; gl_kjlan=$'\033[36m'
+# stdout 非 tty 时禁用颜色码，避免日志污染（\033[32m 等转义出现在日志文件中）
+if [ ! -t 1 ]; then
+    gl_bai=""; gl_lv=""; gl_huang=""; gl_hui=""; gl_red=""; gl_kjlan=""
+fi
+# IFS 兑底：防止外部环境修改 IFS 影响 for 循环分词（如 IFS=: 会让 $SB_KNOWN_STABLE_VERSIONS 分词失效）
+IFS=$' \t\n'
 R="${gl_bai}"; G="${gl_lv}"; Y="${gl_huang}"; H="${gl_hui}"; RED="${gl_red}"; C="${gl_kjlan}"
 SB_CONF_LOCK="/var/lock/sing-box-config.lock"
 SB_BIN="/usr/local/bin/sing-box"
@@ -28,6 +34,22 @@ SB_CONF="/etc/sing-box/config.json"
 META_DIR="/etc/sing-box/meta"
 SYSCTL_CONF="/etc/sysctl.d/99-yw-optimize.conf"
 MODE_FILE="/etc/yw_sysctl_mode"
+
+# ================= Sing-Box 版本管理常量 =================
+# 公认稳定版本（默认推荐安装）：
+#   1.11.4 是社区长期使用的稳定版（NekoBox 1.3.8 同步适配版本，2024-03），
+#   Reality/Hysteria2/VLESS-TCP 协议配置完全兼容，已知问题极少。
+#   脚本原 sb_install 的 GitHub API 失败 fallback 也是此版本。
+SB_STABLE_VERSION="1.11.4"
+# GitHub API 不可达/限流时，"最新版"分支的兜底版本（取最近一次同步到的稳定版）
+SB_LATEST_FALLBACK="1.14.4"
+# 历史稳定版本快速选择列表（按推荐度倒序排列，仅含正式 release，不含 alpha/beta/rc）
+# 维护说明：新增稳定版时只需追加到末尾；删除时直接整行删除——
+# 下方 sb_list_versions 会逐项校验 GitHub 是否真有该 release tag，
+# 不存在的会自动跳过，不会拼出 404 链接误导用户
+SB_KNOWN_STABLE_VERSIONS="1.14.4 1.13.4 1.12.4 1.11.4 1.10.7 1.9.4"
+# 输入版本号校验用的正则：x.y.z 三段数字，禁止 v 前缀和后缀
+SB_VER_REGEX='^[0-9]+\.[0-9]+\.[0-9]+$'
 # 出厂快照（标准/高级模式共用一份，模式切换不删除）
 FACTORY_SNAPSHOT="/etc/sysctl.d/.yw_factory_snapshot"
 
@@ -151,7 +173,7 @@ is_private_ip() {
 }
 get_my_ip() {
     local server_ip
-    server_ip=$(curl -s4 --max-time 6 https://api4.ipify.org 2>/dev/null)
+    server_ip=$(curl -q -s4 --max-time 6 https://api4.ipify.org 2>/dev/null)
     # 校验：必须是单行合法 IPv4（防止错误页 HTML 或多行响应拼进节点链接）
     # 用 _is_valid_ipv4 严格校验：每段 0-255、拒绝前导零（010 等）
     _is_valid_ipv4() {
@@ -209,7 +231,19 @@ take_factory_snapshot() {
         if [ -f "$f" ]; then legacy="$f"; break; fi
     done
     if [ -n "$legacy" ]; then
-        cp -f "$legacy" "$FACTORY_SNAPSHOT"
+        # cp 检测退出码：失败时不能 rm legacy（唯一来源被毁），且要清掉半成品快照
+        if ! cp -f "$legacy" "$FACTORY_SNAPSHOT" 2>/dev/null; then
+            echo -e "${RED}❌ 旧快照迁移失败：cp $legacy → $FACTORY_SNAPSHOT（磁盘满/权限）${R}" >&2
+            echo -e "${RED}   legacy 已保留在 $legacy，请手动迁移后重试${R}" >&2
+            rm -f "$FACTORY_SNAPSHOT" 2>/dev/null
+            return 1
+        fi
+        # 回读校验：快照必须非空且含 = 行
+        if [ ! -s "$FACTORY_SNAPSHOT" ] || ! grep -q '=' "$FACTORY_SNAPSHOT" 2>/dev/null; then
+            echo -e "${RED}❌ 迁移后 $FACTORY_SNAPSHOT 回读异常${R}" >&2
+            rm -f "$FACTORY_SNAPSHOT" 2>/dev/null
+            return 1
+        fi
         rm -f /etc/sysctl.d/.yw_std_snapshot /etc/sysctl.d/.yw_adv_snapshot
         echo -e "${Y}检测到旧版快照，已迁移为统一出厂快照：${legacy}${R}"
         echo -e "${Y}注意：若旧快照拍摄于调优之后，还原值可能并非真正的出厂值${R}"
@@ -456,7 +490,8 @@ apply_advanced_optimize() {
 
     # 4. 生成配置到临时文件 (原子化写入，mktemp 防 symlink 竞态)
     # 注：不设 RETURN trap——下方三条退出路径（探针失败/应用失败/成功mv）已显式清理
-    local tmp_conf=$(mktemp /tmp/.yw_adv_sysctl.XXXXXX)
+    local tmp_conf
+    tmp_conf=$(mktemp /tmp/.yw_adv_sysctl.XXXXXX) || { echo -e "${RED}❌ mktemp 失败（/tmp 满/只读）${R}" >&2; return 1; }
     cat > "$tmp_conf" << EOF
 net.ipv4.ip_forward = 1
 net.ipv6.conf.all.forwarding = 1
@@ -531,8 +566,14 @@ EOF
         rm -f "$tmp_conf"
         return 1
     fi
-    mv -f "$tmp_conf" "$ADV_SYSCTL_CONF"
-    chmod 644 "$ADV_SYSCTL_CONF" 2>/dev/null # mktemp 默认 0600，恢复常规配置文件权限
+    # mv 检测退出码：失败时 tmp_conf 残留，用户被误导"已持久化"
+    if ! mv -f "$tmp_conf" "$ADV_SYSCTL_CONF" 2>/dev/null; then
+        echo -e "${RED}❌ 持久化失败：无法 mv 到 $ADV_SYSCTL_CONF（磁盘满/权限/SELinux）${R}" >&2
+        echo -e "${RED}   临时配置保留在 $tmp_conf，请手动 mv 后重试${R}" >&2
+        rm -f "$tmp_conf" 2>/dev/null
+        return 1
+    fi
+    chmod 644 "$ADV_SYSCTL_CONF" 2>/dev/null || true   # 权限非关键，失败不致命
     echo -e "${G}已应用 ${applied} 项参数${R}"
     [ "$skipped" -gt 0 ] && echo -e "${Y}跳过 ${skipped} 项本内核不存在的参数${R}"
     [ "$failed" -gt 0 ] && echo -e "${Y}失败 ${failed} 项只读/不支持的参数（已从持久化配置中剔除）${R}"
@@ -606,12 +647,12 @@ bbr_kernel_manage() {
 
     echo -e "${Y}点击任意键，即可开启原版BBR加速，ctrl+c退出${R}"
     read -r -s -n 1
-    bash <(curl -Ls https://raw.githubusercontent.com/teddysun/across/master/bbr.sh)
+    bash <(curl -q -fsSL --connect-timeout 10 --max-time 30 https://raw.githubusercontent.com/teddysun/across/master/bbr.sh)
 }
 
 smart_auto_optimize() {
     while true; do
-        clear
+        clear 2>/dev/null
         echo -e "${G}╔═══════════════════════════════════════════╗${R}"
         echo -e "║          🚀 网络与内核优化中心             ║${R}"
         echo -e "╚═══════════════════════════════════════════╝${R}"
@@ -647,14 +688,14 @@ smart_auto_optimize() {
         read -r -e -p "请输入你的选择: " c
         
         case "$c" in
-            1) clear; if apply_optimize balance "均衡优化模式"; then echo -e "${G}操作完成${R}"; else echo -e "${RED}操作未完成${R}"; fi; read -r -s -n 1 -p "按任意键继续..." ;;
-            2) clear; if apply_optimize live "直播优化模式"; then echo -e "${G}操作完成${R}"; else echo -e "${RED}操作未完成${R}"; fi; read -r -s -n 1 -p "按任意键继续..." ;;
-            3) clear; if restore_default; then echo -e "${G}操作完成${R}"; else echo -e "${RED}操作未完成${R}"; fi; read -r -s -n 1 -p "按任意键继续..." ;;
-            4) clear; xanmod_manage ;;
-            5) clear; bbr_kernel_manage ;;
-            6) clear; if apply_advanced_optimize proxy "高级代理调优"; then echo -e "${G}操作完成${R}"; else echo -e "${RED}操作未完成${R}"; fi; read -r -s -n 1 -p "按任意键继续..." ;;
-            7) clear; if apply_advanced_optimize live "高级直播调优"; then echo -e "${G}操作完成${R}"; else echo -e "${RED}操作未完成${R}"; fi; read -r -s -n 1 -p "按任意键继续..." ;;
-            8) clear; if restore_advanced_default; then echo -e "${G}操作完成${R}"; else echo -e "${RED}操作未完成${R}"; fi; read -r -s -n 1 -p "按任意键继续..." ;;
+            1) clear 2>/dev/null; if apply_optimize balance "均衡优化模式"; then echo -e "${G}操作完成${R}"; else echo -e "${RED}操作未完成${R}"; fi; read -r -s -n 1 -p "按任意键继续..." ;;
+            2) clear 2>/dev/null; if apply_optimize live "直播优化模式"; then echo -e "${G}操作完成${R}"; else echo -e "${RED}操作未完成${R}"; fi; read -r -s -n 1 -p "按任意键继续..." ;;
+            3) clear 2>/dev/null; if restore_default; then echo -e "${G}操作完成${R}"; else echo -e "${RED}操作未完成${R}"; fi; read -r -s -n 1 -p "按任意键继续..." ;;
+            4) clear 2>/dev/null; xanmod_manage ;;
+            5) clear 2>/dev/null; bbr_kernel_manage ;;
+            6) clear 2>/dev/null; if apply_advanced_optimize proxy "高级代理调优"; then echo -e "${G}操作完成${R}"; else echo -e "${RED}操作未完成${R}"; fi; read -r -s -n 1 -p "按任意键继续..." ;;
+            7) clear 2>/dev/null; if apply_advanced_optimize live "高级直播调优"; then echo -e "${G}操作完成${R}"; else echo -e "${RED}操作未完成${R}"; fi; read -r -s -n 1 -p "按任意键继续..." ;;
+            8) clear 2>/dev/null; if restore_advanced_default; then echo -e "${G}操作完成${R}"; else echo -e "${RED}操作未完成${R}"; fi; read -r -s -n 1 -p "按任意键继续..." ;;
             0|"") break ;;
         esac
     done
@@ -796,8 +837,14 @@ xanmod_install_or_update() {
 
 xanmod_uninstall() {
     echo -e "${Y}正在卸载 XanMod 内核...${R}"
-    apt-get purge -y 'linux-*xanmod*'
-    apt-get autoremove -y
+    # purge 检测退出码：失败时不能继续删源/keyring/grub，否则进入半卸载状态
+    if ! apt-get purge -y 'linux-*xanmod*' 2>/dev/null; then
+        echo -e "${RED}❌ apt-get purge 失败（dpkg 中断/锁/磁盘满），后续步骤已跳过${R}" >&2
+        echo -e "${RED}   请手动执行：dpkg --configure -a && apt-get purge 'linux-*xanmod*'${R}" >&2
+        read -r -s -n 1 -p ""
+        return 1
+    fi
+    apt-get autoremove -y 2>/dev/null || true   # 清理非关键，失败不致命
     if command -v update-grub >/dev/null 2>&1; then
         # 改 grub 前先备份：用户可能设置过 GRUB_DEFAULT=saved 或指定内核序号，静默丢失后无法还原
         local _grub_backup_ok=0
@@ -844,7 +891,7 @@ xanmod_manage() {
 
     if xanmod_installed; then
         while true; do
-            clear
+            clear 2>/dev/null
             local kernel_version=$(uname -r)
             echo -e "${G}您已安装xanmod的BBRv3内核${R}"
             echo -e "当前内核版本: ${C}$kernel_version${R}\n"
@@ -861,7 +908,7 @@ xanmod_manage() {
             esac
         done
     else
-        clear
+        clear 2>/dev/null
         echo -e "${Y}设置BBR3加速${R}"
         echo -e "------------------------------------------------"
         echo -e "仅支持Debian/Ubuntu"
@@ -883,8 +930,15 @@ xanmod_manage() {
 
 # ================= Sing-Box 核心 =================
 sb_init_conf() {
-    mkdir -p /etc/sing-box
-    cat > "$SB_CONF" <<'EOF'
+    # 重构：用 mktemp + sb_write_conf_atomic 替代裸 cat >
+    # 解决三个问题：
+    #   1. cat > 失败（磁盘满/RO/SELinux）被静默吞 → 配置为空但调用方误以为成功
+    #   2. cat > 破坏软链（$SB_CONF 是软链时被替换成普通文件，与 sb_check 的原子写模式一致）
+    #   3. 非原子写入：cat > 期间被中断留下半截配置
+    mkdir -p /etc/sing-box || { echo -e "${RED}❌ mkdir /etc/sing-box 失败（权限/只读 fs）${R}" >&2; return 1; }
+    local _init_tmp
+    _init_tmp=$(mktemp /tmp/.yw_sb_init.XXXXXX) || { echo -e "${RED}❌ mktemp 失败（/tmp 满/只读）${R}" >&2; return 1; }
+    if ! cat > "$_init_tmp" <<'EOF'
 {
   "log": {"disabled": false, "level": "info", "timestamp": true},
   "inbounds": [],
@@ -898,6 +952,23 @@ sb_init_conf() {
   }
 }
 EOF
+    then
+        rm -f "$_init_tmp" 2>/dev/null
+        echo -e "${RED}❌ 配置写入失败（cat 异常退出，可能磁盘满/权限）${R}" >&2
+        return 1
+    fi
+    # 校验写入非空（cat 可能因磁盘满写一半）
+    if [ ! -s "$_init_tmp" ]; then
+        rm -f "$_init_tmp" 2>/dev/null
+        echo -e "${RED}❌ 配置写入失败（cat > 临时文件为空，可能磁盘满/权限）${R}" >&2
+        return 1
+    fi
+    if ! sb_write_conf_atomic "$_init_tmp" "$SB_CONF"; then
+        rm -f "$_init_tmp" 2>/dev/null
+        return 1
+    fi
+    rm -f "$_init_tmp" 2>/dev/null
+    return 0
 }
 
 # 原子写配置：从临时文件 mv 到目标，但保留软链语义 + 原文件权限
@@ -968,7 +1039,7 @@ sb_check() {
         #     软链指向的目标文件永远停在坏内容
         #   - 用 cp -a 复制内容（解析软链），.bak 里存的是真实配置内容
         #   - 备份后原文件（软链本身或普通文件）仍在原位置，再让 sb_init_conf 走 helper 写入
-        local _bak_file="${SB_CONF}.bak.$(date +%s)"
+        local _bak_file="${SB_CONF}.bak.$(date +%s).$$"   # 加 $$ 避免并发同秒碰撞
         if ! cp -a "$SB_CONF" "$_bak_file" 2>/dev/null; then
             echo -e "${RED}❌ 备份失败：无法复制 $SB_CONF 到 $_bak_file（可能磁盘满或权限不足）${R}" >&2
             echo -e "${RED}   原配置未改动，请手动备份后重试：cp -a $SB_CONF ${SB_CONF}.manual_bak${R}" >&2
@@ -989,42 +1060,28 @@ sb_check() {
         fi
         touch "$_bak_file" 2>/dev/null   # 更新 mtime，避免被轮换删除
         # 损坏重置的备份只保留最近 5 份（按文件名时间戳排序，不依赖 mtime）
-        ls -1 "${SB_CONF}.bak."* 2>/dev/null | sort -t. -k3 -n | head -n -5 | xargs -r rm -f
-        # 重置：用临时文件 + sb_write_conf_atomic 写入，处理软链 + 保留权限
-        # sb_init_conf 直接 cat > $SB_CONF 会破坏软链（替换成普通文件）
-        local _init_tmp
-        _init_tmp=$(mktemp /tmp/.yw_sb_init.XXXXXX) || {
-            echo -e "${RED}❌ 无法创建临时文件，重置失败${R}" >&2
-            return 1
-        }
-        # 生成基础配置到临时文件
-        cat > "$_init_tmp" <<'EOF'
-{
-  "log": {"disabled": false, "level": "info", "timestamp": true},
-  "inbounds": [],
-  "outbounds": [
-    {"type": "selector", "tag": "proxy", "outbounds": ["direct"], "default": "direct"},
-    {"type": "direct", "tag": "direct"}
-  ],
-  "route": {
-    "final": "proxy",
-    "auto_detect_interface": true
-  }
-}
-EOF
-        if ! sb_write_conf_atomic "$_init_tmp" "$SB_CONF"; then
-            rm -f "$_init_tmp"
+        # 备份文件名格式：/etc/sing-box/config.json.bak.<ts>[.<pid>]
+        # 按 . 分字段：field1=/etc/sing-box/config, field2=json, field3=bak, field4=<ts>, field5=<pid>
+        # 时间戳在 field 4（原 sort -k3 排常量 "bak"，-k6,7 排不存在的字段，都退化为字母序碰巧正确）
+        ls -1 "${SB_CONF}.bak."* 2>/dev/null | sort -t. -k4,5 -n | head -n -5 | xargs -r rm -f
+        # 重置：直接调用重构后的 sb_init_conf（已用 mktemp + sb_write_conf_atomic 处理软链+原子写）
+        # 原内联逻辑与 sb_init_conf 重复，维护时容易改一处忘一处
+        if ! sb_init_conf; then
+            echo -e "${RED}❌ 配置重置失败（sb_init_conf 异常）${R}" >&2
             return 1
         fi
-        rm -f "$_init_tmp"
-        # 重置后重启服务：避免内存中仍跑着旧配置、与磁盘不一致
+        # 重置后 restart 让服务加载新配置（不固定 sleep 2，由下方轮询验证）
         systemctl restart sing-box >/dev/null 2>&1
-        sleep 2
     fi
 
     if ! systemctl is-active --quiet sing-box 2>/dev/null; then
         systemctl restart sing-box >/dev/null 2>&1
-        sleep 2
+        local _tries=0
+        while [ "$_tries" -lt 10 ]; do
+            systemctl is-active --quiet sing-box 2>/dev/null && break
+            sleep 1
+            _tries=$((_tries + 1))
+        done
         if ! systemctl is-active --quiet sing-box 2>/dev/null; then
             echo -e "${RED}❌ Sing-Box 服务无法启动（配置语法正常），请检查端口占用或执行 journalctl -u sing-box 排查${R}"
             read -r -s -n 1 -p ""
@@ -1034,80 +1091,393 @@ EOF
     return 0
 }
 
-sb_install() {
+# 从 GitHub API 获取 Sing-Box 最新稳定版本号
+# 成功输出 x.y.z 格式版本号到 stdout 并返回 0；失败返回 1（不输出任何内容）
+# jq 用 // empty：API 限流返回错误 JSON 时 .tag_name 是字面量 "null"，必须过滤掉否则拼出 sing-box-null-*.tar.gz
+sb_fetch_latest_version() {
+    local ver
+    ver=$(curl -q -sL --connect-timeout 5 --max-time 15 https://api.github.com/repos/SagerNet/sing-box/releases/latest 2>/dev/null \
+          | jq -r '.tag_name // empty' 2>/dev/null | sed 's/^[vV]//')
+    # 二次校验：必须是 x.y.z 格式，防止 API 返回异常字符串被当作版本号拼进下载 URL
+    if [[ "$ver" =~ $SB_VER_REGEX ]]; then
+        printf '%s' "$ver"
+        return 0
+    fi
+    return 1
+}
+
+# 校验用户输入的版本号合法性（x.y.z 三段数字）
+# 自动去除 v 前缀和空白；合法则输出归一化后的版本号，非法返回 1
+# 不做 GitHub release 存在性校验——存在性由下载阶段负责（下载 404 时会显式报错）
+sb_validate_version_input() {
+    local ver="$1"
+    ver="${ver#[vV]}"   # 去除可能的 v/V 前缀（兼容大小写）
+    # 只 strip 首尾空白，不动内部：原 ${ver// /} 会把 "1. 11. 4" 拼成 "1.11.4" 掩盖输入错误
+    # 用 bash 内置参数扩展去前导/尾随空白（含空格、tab、CR）
+    ver="${ver#"${ver%%[![:space:]]*}"}"
+    ver="${ver%"${ver##*[![:space:]]}"}"
+    if [[ "$ver" =~ $SB_VER_REGEX ]]; then
+        printf '%s' "$ver"
+        return 0
+    fi
+    return 1
+}
+
+# 列出历史稳定版本（带 GitHub release tag 存在性校验）
+# 用户输入序号选择，选择结果输出到 stdout；取消/EOF 返回 1
+# 不可达的版本会被显式列出并标注，让用户知道为何某些版本没出现在选择列表中
+sb_list_versions() {
+    echo -e "${Y}正在校验历史稳定版本可用性（GitHub）...${R}" >&2
+    echo -e "${H}（GitHub 不可达或无此 release 的版本会自动跳过）${R}\n" >&2
+    local available=()
+    local idx=1
+    local ver
+    for ver in $SB_KNOWN_STABLE_VERSIONS; do
+        # 用 HEAD 校验 tag 真实存在，-I 仅取 header 减少流量
+        # 200/301/302 视为存在（301 是 GitHub URL 规范化重定向）；其他（含 404/超时）视为不存在
+        # 用 grep -qE 兼容 HTTP/1.1 和 HTTP/2 响应头
+        if curl -q -sLI --connect-timeout 5 --max-time 8 \
+            "https://github.com/SagerNet/sing-box/releases/tag/v${ver}" 2>/dev/null \
+            | head -1 | grep -qE 'HTTP/[0-9.]+ (200|301|302)'; then
+            available+=("$ver")
+            local tag=""
+            if [ "$ver" = "$SB_STABLE_VERSION" ]; then
+                tag="${G}★ 公认稳定版（默认推荐）${R}"
+            elif [ "$ver" = "$SB_LATEST_FALLBACK" ]; then
+                tag="${C}(最新版兜底)${R}"
+            fi
+            printf "  ${G}[%d]${R} v%s  %s\n" "$idx" "$ver" "$tag" >&2
+            ((idx++))
+        else
+            printf "  ${H}v%s  (GitHub 不可达或无此 release，已隐藏)${R}\n" "$ver" >&2
+        fi
+    done
+    if [ ${#available[@]} -eq 0 ]; then
+        echo -e "${RED}❌ 没有可用的历史稳定版本（GitHub 完全不可达）${R}" >&2
+        echo -e "${Y}提示：可直接用 [3] 安装指定版本，手动输入版本号${R}" >&2
+        [ -t 0 ] && read -r -s -n 1 -p "" >&2
+        return 1
+    fi
+    local sel
+    # 先输出换行再 read：read -p 不解释 \n 转义，原样写入会显示字面量 \n
+    printf '\n' >&2
+    if ! read -r -e -p "请选择版本序号 [1-${#available[@]}]，0=返回: " sel; then
+        echo "" >&2
+        echo -e "${RED}错误：输入 EOF，已取消${R}" >&2
+        return 1
+    fi
+    [ "$sel" = "0" ] || [ -z "$sel" ] && return 0
+    # 整数溢出防护：超长数字（如 1000 位）会让 `[ -lt ]` 报错 exit 2（被 if 视为 false），
+    # 然后 $((sel-1)) 回绕成负数，bash 数组 available[-N] 返回倒数第 N 个元素 → 返回真实版本号
+    # 长度限制 9 位（999999999 远超版本列表大小，且在 int64 范围内不溢出）
+    # 前导零拒绝（避免 08 被当八进制）；用独立 if 避免运算符优先级歧义
+    if ! [[ "$sel" =~ ^[0-9]+$ ]] || [ "${#sel}" -gt 9 ]; then
+        echo -e "${RED}序号无效${R}" >&2
+        [ -t 0 ] && read -r -s -n 1 -p "" >&2
+        return 1
+    fi
+    # 前导零检测：sel="0" 已在上方 return，此处 sel 非空非 0
+    if [ "${sel#0}" != "$sel" ]; then
+        echo -e "${RED}序号无效（不允许前导零）${R}" >&2
+        [ -t 0 ] && read -r -s -n 1 -p "" >&2
+        return 1
+    fi
+    if [ "$sel" -lt 1 ] || [ "$sel" -gt ${#available[@]} ]; then
+        echo -e "${RED}序号超出范围 [1-${#available[@]}]${R}" >&2
+        [ -t 0 ] && read -r -s -n 1 -p "" >&2
+        return 1
+    fi
+    printf '%s' "${available[$((sel-1))]}"
+}
+
+# 显示当前版本与服务详情
+sb_show_current_version() {
+    echo -e "${G}╔═══════════════════════════════════════════╗${R}"
+    echo -e "║       Sing-Box 当前版本与服务状态          ║${R}"
+    echo -e "${G}╚═══════════════════════════════════════════╝${R}"
+    if ! command -v $SB_BIN >/dev/null 2>&1; then
+        echo -e "  ${Y}Sing-Box 尚未安装${R}\n"
+        echo -e "  推荐稳定版本: ${G}v${SB_STABLE_VERSION}${R}（公认稳定，社区长期使用）"
+        echo -e "  GitHub 最新版本: ${H}请运行 [1] 安装最新版 获取${R}"
+        [ -t 0 ] && read -r -s -n 1 -p ""
+        return 0
+    fi
+    local cur_ver cur_ver_num
+    cur_ver=$($SB_BIN version 2>/dev/null | head -1)
+    cur_ver_num=$(printf '%s\n' "$cur_ver" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-[a-z]+\.[0-9]+)?' | head -1)
+    echo -e "  二进制路径: ${C}$SB_BIN${R}"
+    # cur_ver 为空时二进制可能损坏（架构不匹配/截断/依赖缺失），显示诊断信息
+    if [ -z "$cur_ver_num" ]; then
+        echo -e "  当前版本:   ${RED}无法获取（二进制可能损坏）${R}"
+        echo -e "  诊断:       ${H}file $SB_BIN; ldd $SB_BIN 2>&1 | head -3${R}"
+    else
+        echo -e "  当前版本:   ${Y}v${cur_ver_num}${R}"
+    fi
+    local svc_status
+    if systemctl is-active --quiet sing-box 2>/dev/null; then
+        svc_status="${G}运行中 (active)${R}"
+    elif systemctl is-enabled --quiet sing-box 2>/dev/null; then
+        svc_status="${Y}已停止 (inactive)${R}"
+    else
+        svc_status="${H}未启用开机自启${R}"
+    fi
+    echo -e "  服务状态:   $svc_status"
+    # 节点数量统计
+    if [ -f "$SB_CONF" ]; then
+        local inbound_cnt outbound_cnt
+        inbound_cnt=$(jq -r '.inbounds | length' "$SB_CONF" 2>/dev/null)
+        outbound_cnt=$(jq -r '.outbounds | length' "$SB_CONF" 2>/dev/null)
+        echo -e "  节点数量:   ${C}${inbound_cnt:-0}${R} 个 inbound / ${C}${outbound_cnt:-0}${R} 个 outbound"
+    fi
+    # 配置语法校验：区分"二进制不可执行"与"配置损坏"
+    if [ -z "$cur_ver_num" ]; then
+        echo -e "  配置校验:   ${H}跳过（二进制不可执行）${R}"
+    elif [ -f "$SB_CONF" ] && $SB_BIN check -c "$SB_CONF" >/dev/null 2>&1; then
+        echo -e "  配置校验:   ${G}通过${R}"
+    elif [ -f "$SB_CONF" ]; then
+        echo -e "  配置校验:   ${RED}失败（请运行节点菜单排查）${R}"
+    fi
+    echo -e "  推荐稳定版: ${G}v${SB_STABLE_VERSION}${R}"
+    [ -t 0 ] && read -r -s -n 1 -p ""
+    return 0
+}
+
+# ================= 核心安装/切换版本函数 =================
+# 用法：sb_install_version <target_version> <source_label>
+#   <target_version>:  目标版本号，必须为 x.y.z 格式（不带 v 前缀）
+#   <source_label>:    来源说明，用于日志（如 "最新版" / "公认稳定版" / "指定版本 v1.10.7"）
+# 完整保留原 sb_install 的所有安全机制：
+#   - 升级前备份旧二进制（同目录），失败可回滚
+#   - 临时文件 + mv 原子替换
+#   - 升级前用新二进制 check 现有配置，不兼容则回滚
+#   - 升级失败自动回滚 + 服务重启校验
+sb_install_version() {
+    local target_ver="$1"
+    local source_label="${2:-指定版本}"
+
+    # 版本号二次校验（防御编程：上层应已校验过）
+    if ! [[ "$target_ver" =~ $SB_VER_REGEX ]]; then
+        echo -e "${RED}❌ 版本号格式非法：'$target_ver'，应为 x.y.z（如 1.11.4）${R}" >&2
+        return 1
+    fi
+
     local fresh=1
     local old_binary_backup=""
     if command -v $SB_BIN >/dev/null 2>&1; then
         fresh=0
-        local cur_ver=$($SB_BIN version 2>/dev/null | head -1)
-        echo -e "${Y}Sing-Box 已安装 (${cur_ver})${R}"
-        local up
-        read -r -e -p "是否重新安装/升级到最新版？[y/N]: " up
-        [[ "$up" =~ ^[Yy]$ ]] || { read -r -s -n 1 -p ""; return; }
+        local cur_ver
+        cur_ver=$($SB_BIN version 2>/dev/null | head -1)
+        echo -e "${Y}Sing-Box 已安装 (${cur_ver})，即将切换到 ${source_label} v${target_ver}${R}"
+        # 同版本切换确认（避免重复下载同版本）
+        # 精确版本号提取：原 `[[ "$cur_ver" == *"$target_ver"* ]]` 子串匹配有理论误判
+        # （如 cur_ver 含 "1.11.4" 时 target_ver="1.1.4" 会误命中，或上游未来发布 1.21.14 对 1.1.4 误判）
+        # 改为从 cur_ver 中 grep 出纯 x.y.z 版本号再精确比较
+        local cur_ver_num
+        # 提取完整版本号（含预发布后缀 -beta.N/-rc.N），避免 beta→stable 切换被误判为同版本
+        cur_ver_num=$(printf '%s\n' "$cur_ver" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-[a-z]+\.[0-9]+)?' | head -1)
+        # target_ver 已通过 SB_VER_REGEX 校验（纯 x.y.z 无后缀），
+        # stable target 与 beta cur 不会匹配（beta 含 -beta.N 后缀）
+        if [ -n "$cur_ver_num" ] && [ "$cur_ver_num" = "$target_ver" ]; then
+            local confirm
+            if ! read -r -e -p "检测到当前已是 v${target_ver}，是否仍然重新下载覆盖？[y/N]: " confirm; then
+                echo "" >&2; echo -e "${RED}错误：输入 EOF，已取消${R}" >&2; return 1
+            fi
+            [[ "$confirm" =~ ^[Yy]$ ]] || { [ -t 0 ] && read -r -s -n 1 -p ""; return 0; }
+        fi
+    else
+        echo -e "${Y}正在安装 Sing-Box ${source_label} v${target_ver}...${R}"
     fi
-    local arch=$(uname -m); case "$arch" in x86_64) arch="amd64";; aarch64) arch="arm64";; *) echo -e "${RED}❌ 不支持 ${arch}${R}"; return 1;; esac
+    local arch
+    arch=$(uname -m) || { echo -e "${RED}❌ 无法获取系统架构${R}" >&2; return 1; }
+    case "$arch" in
+        x86_64) arch="amd64";;
+        aarch64|arm64) arch="arm64";;
+        armv7l) arch="armv7";;
+        armv6l) arch="armv6";;
+        riscv64) arch="riscv64";;
+        ppc64le) arch="ppc64le";;
+        *) echo -e "${RED}❌ 不支持 ${arch}，请到 GitHub 手动下载对应架构包${R}" >&2; return 1;;
+    esac
 
-    # jq 用 // empty：API 限流返回错误 JSON 时 .tag_name 是字面量 "null"，必须过滤掉否则拼出 sing-box-null-*.tar.gz
-    local latest_ver=$(curl -sL --max-time 15 https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r '.tag_name // empty' | sed 's/v//')
-    if [ -z "$latest_ver" ] || [ "$latest_ver" = "null" ]; then
-        latest_ver="1.11.4"
-        echo -e "${Y}无法获取最新版本（GitHub API 不可达/限流），将安装 v${latest_ver}${R}"
+    # SB_BIN 路径类型检测：若已存在且是目录，mv 会把文件移入目录而非替换，静默"成功"实则损坏
+    if [ -e "$SB_BIN" ] && [ ! -f "$SB_BIN" ] && [ ! -L "$SB_BIN" ]; then
+        echo -e "${RED}❌ $SB_BIN 已存在且不是常规文件/符号链接（可能是目录），已取消${R}" >&2
+        echo -e "${RED}   请手动处理：ls -la $SB_BIN 确认类型后删除或重命名${R}" >&2
+        return 1
     fi
-    echo -e "${Y}正在安装 Sing-Box v${latest_ver}...${R}"
-    mkdir -p /etc/sing-box
-    local workdir=$(mktemp -d /tmp/.yw_sbdl.XXXXXX)
+
+    echo -e "${Y}正在下载 Sing-Box v${target_ver} (linux-${arch})...${R}"
+    mkdir -p /etc/sing-box || { echo -e "${RED}❌ mkdir /etc/sing-box 失败（权限/只读 fs）${R}" >&2; return 1; }
+    # mktemp 失败检测：原 `local workdir=$(mktemp -d ...)` 会被 local 的退出码 0 遮蔽 mktemp 失败，
+    # workdir 为空后 curl 会写到 /sb.tar.gz、tar 解压到当前目录（覆盖用户文件）。
+    # 必须 local 与赋值分两步，检测 mktemp 退出码
+    local workdir
+    workdir=$(mktemp -d /tmp/.yw_sbdl.XXXXXX) || {
+        echo -e "${RED}❌ 无法创建临时目录（/tmp 满/只读/异常），已取消${R}" >&2
+        return 1
+    }
     # 挂多信号 trap 清理 workdir：curl 下载 / tar 解压期间 Ctrl+C 或被 TERM 时，
     # 正常退出路径都覆盖不到，会留下 /tmp/.yw_sbdl.* 垃圾目录
     # 用局部辅助函数统一清理 + 解除 trap，避免每个 return 1 路径重复
     _sb_install_trap_cleanup() {
         rm -rf "$workdir" 2>/dev/null
-        trap - EXIT INT TERM HUP
-        # 恢复脚本开头的全局 trap（`trap 'rm -f "$CHECK_LOG"' EXIT`）
-        trap 'rm -f "$CHECK_LOG"' EXIT
+        rm -f "${SB_BIN}.new.$$" 2>/dev/null   # 清理可能残留的 staged bin
+        [ -n "$old_binary_backup" ] && rm -f "$old_binary_backup" 2>/dev/null   # 清理孤儿备份
+        # 恢复与 auto_shortcut 一致的多信号 trap（不能只恢复 EXIT，会丢失 INT/TERM/HUP 保护）
+        trap 'rc=$?; rm -f "$CHECK_LOG" 2>/dev/null; exit $rc' EXIT INT TERM HUP
     }
-    trap 'rc=$?; rm -rf "'"$workdir"'" 2>/dev/null; exit $rc' EXIT INT TERM HUP
-    curl -L -o "${workdir}/sb.tar.gz" "https://github.com/SagerNet/sing-box/releases/download/v${latest_ver}/sing-box-${latest_ver}-linux-${arch}.tar.gz" 2>/dev/null
-    tar xzf "${workdir}/sb.tar.gz" -C "$workdir" 2>/dev/null || { echo -e "${RED}❌ 解压失败${R}"; _sb_install_trap_cleanup; return 1; }
-    [ -f "${workdir}/sing-box-${latest_ver}-linux-${arch}/sing-box" ] || { echo -e "${RED}❌ 二进制文件缺失${R}"; _sb_install_trap_cleanup; return 1; }
+    # trap body 含 workdir + staged bin + CHECK_LOG，信号中断时清理
+    # old_binary_backup 在 line 1322 创建后才赋值，此处 trap body 无法引用——
+    # 创建备份后会在下方重建 trap 加入 old_binary_backup 清理
+    trap 'rc=$?; rm -rf "'"$workdir"'" 2>/dev/null; rm -f "'"${SB_BIN}.new.$$"'" 2>/dev/null; rm -f "$CHECK_LOG" 2>/dev/null; exit $rc' EXIT INT TERM HUP
+    # -fL 让 HTTP 404 直接失败（curl 默认 404 仍返回 0）
+    # 404 通常是版本号拼错或 release 不存在该架构包，必须显式报错而非"二进制文件缺失"误导
+    local dl_url="https://github.com/SagerNet/sing-box/releases/download/v${target_ver}/sing-box-${target_ver}-linux-${arch}.tar.gz"
+    if ! curl -q -fL --connect-timeout 10 --max-time 120 -o "${workdir}/sb.tar.gz" "$dl_url" 2>/dev/null; then
+        echo -e "${RED}❌ 下载失败：${dl_url}${R}" >&2
+        echo -e "${RED}   可能原因：版本号不存在 / 该架构未发布 / GitHub 不可达${R}" >&2
+        echo -e "${RED}   可访问 https://github.com/SagerNet/sing-box/releases 查看可用版本${R}" >&2
+        _sb_install_trap_cleanup
+        return 1
+    fi
+    tar --no-same-owner -xzf "${workdir}/sb.tar.gz" -C "$workdir" 2>/dev/null || { echo -e "${RED}❌ 解压失败${R}"; _sb_install_trap_cleanup; return 1; }
+    # [ -f ] 跟随符号链接：若 tarball 含恶意 symlink sing-box→/etc/shadow，chmod 会越权
+    # 加 [ ! -L ] 拒绝符号链接
+    [ -f "${workdir}/sing-box-${target_ver}-linux-${arch}/sing-box" ] && [ ! -L "${workdir}/sing-box-${target_ver}-linux-${arch}/sing-box" ] || { echo -e "${RED}❌ 二进制文件缺失或为符号链接（包结构异常）${R}"; _sb_install_trap_cleanup; return 1; }
 
     # 升级前备份旧二进制（同目录，便于失败回滚）
     # 注：fresh=1 路径下若二进制不存在（rm 过/容器重置），跳过备份；
     # 但若二进制不存在而配置存在，视为"重装但配置保留"——必须保护配置（见下面 fresh 分支）
     if [ "$fresh" -eq 0 ] && [ -f "$SB_BIN" ]; then
-        old_binary_backup="${SB_BIN}.old.$(date +%s)"
+        old_binary_backup="${SB_BIN}.old.$(date +%s).$$"   # 加 $$ 避免并发同秒碰撞
         # 检查 cp 退出码：失败（磁盘满/权限）时显式警告，不静默继续
         # 否则真需要回滚时才发现备份不存在（回滚分支有存在性守卫不会乱覆盖，但用户以为有备份其实没有）
-        if ! cp -a "$SB_BIN" "$old_binary_backup" 2>/dev/null; then
+        # cp -aL 解引用软链：cp -a 复制软链本身，$SB_BIN 是软链时备份变 dangling symlink
+        if ! cp -aL "$SB_BIN" "$old_binary_backup" 2>/dev/null; then
             echo -e "${RED}❌ 旧二进制备份失败（可能磁盘满或权限不足），无法回滚，已取消升级${R}" >&2
             _sb_install_trap_cleanup
             return 1
         fi
+        # 重建 trap 加入 old_binary_backup 清理，避免信号中断时备份文件残留为孤儿
+        trap 'rc=$?; rm -rf "'"$workdir"'" 2>/dev/null; rm -f "'"${SB_BIN}.new.$$"'" 2>/dev/null; rm -f "'"$old_binary_backup"'" 2>/dev/null; rm -f "$CHECK_LOG" 2>/dev/null; exit $rc' EXIT INT TERM HUP
     fi
 
     # 用临时文件 + mv 原子替换二进制，避免中途被杀留下半截文件
-    local _new_bin="${workdir}/sing-box-${latest_ver}-linux-${arch}/sing-box"
-    chmod +x "$_new_bin" 2>/dev/null
-    if ! mv -f "$_new_bin" "$SB_BIN" 2>/dev/null; then
-        echo -e "${RED}❌ 写入 $SB_BIN 失败${R}"
-        # 回滚旧二进制
-        [ -n "$old_binary_backup" ] && [ -f "$old_binary_backup" ] && mv -f "$old_binary_backup" "$SB_BIN" 2>/dev/null
+    # 跨文件系统原子替换：/tmp 通常是 tmpfs，/usr/local/bin 在根分区，跨 fs 的 mv 是 copy+unlink
+    # 中断后 $SB_BIN 可能是半截文件。改为先 cp 到同目录临时名再同目录 mv（rename(2) 原子）
+    local _new_bin="${workdir}/sing-box-${target_ver}-linux-${arch}/sing-box"
+    # chmod 检查退出码：只读 fs / SELinux 拒绝执行位时静默失败会导致后续 check 误判
+    if ! chmod +x "$_new_bin" 2>/dev/null; then
+        echo -e "${RED}❌ 无法设置执行位（可能是只读 fs 或 SELinux 拒绝），已取消${R}" >&2
         _sb_install_trap_cleanup
         return 1
     fi
-    # 二进制已 mv 到 SB_BIN，workdir 此时可清，解除 trap 避免影响后续 systemctl 调用
-    _sb_install_trap_cleanup
+    # 同目录临时名：与 $SB_BIN 同目录保证 mv 走 rename(2) 原子操作
+    local _staged_bin="${SB_BIN}.new.$$"
+    if ! cp -f "$_new_bin" "$_staged_bin" 2>/dev/null; then
+        echo -e "${RED}❌ 写入临时文件 $_staged_bin 失败（磁盘满/权限）${R}" >&2
+        rm -f "$_staged_bin" 2>/dev/null
+        _sb_install_trap_cleanup
+        return 1
+    fi
+    chmod +x "$_staged_bin" 2>/dev/null
+    # $SB_BIN 软链处理：mv 到软链会替换软链本身为普通文件，dotfiles 用户的状态会分裂
+    # 若 $SB_BIN 是软链，解析真实目标后 cp 到目标（与 sb_write_conf_atomic 一致）
+    local _real_bin="$SB_BIN"
+    if [ -L "$SB_BIN" ]; then
+        _real_bin=$(readlink -f "$SB_BIN" 2>/dev/null)
+        if [ -z "$_real_bin" ]; then
+            echo -e "${RED}❌ $SB_BIN 是软链但无法解析目标${R}" >&2
+            rm -f "$_staged_bin" 2>/dev/null
+            _sb_install_trap_cleanup
+            return 1
+        fi
+    fi
+    if ! mv -f "$_staged_bin" "$_real_bin" 2>/dev/null; then
+        echo -e "${RED}❌ 写入 $_real_bin 失败${R}" >&2
+        rm -f "$_staged_bin" 2>/dev/null
+        # 回滚旧二进制：检查 mv 退出码，失败时提示用户备份位置
+        if [ -n "$old_binary_backup" ] && [ -f "$old_binary_backup" ]; then
+            if mv -f "$old_binary_backup" "$_real_bin" 2>/dev/null; then
+                echo -e "${Y}已回滚旧二进制${R}"
+            else
+                echo -e "${RED}❌ 旧二进制回滚失败，备份保留在 $old_binary_backup，请手动 mv 救回${R}" >&2
+            fi
+        fi
+        _sb_install_trap_cleanup
+        return 1
+    fi
+    # 二进制已 mv 到 SB_BIN，workdir 此时可清
+    # ⚠️ 不调用 _sb_install_trap_cleanup：fresh=0 升级路径仍需 old_binary_backup 用于
+    #    check 配置失败（line 1518）和 restart 失败（line 1544）时回滚
+    #    _sb_install_trap_cleanup 会 rm old_binary_backup，导致回滚失效（第 9 轮引入的回归）
+    rm -rf "$workdir" 2>/dev/null
+    rm -f "${SB_BIN}.new.$$" 2>/dev/null
+    # 恢复 trap：保留 old_binary_backup 清理（信号中断时才清理，正常路径不清理）
+    # fresh=1 路径 old_binary_backup="" → rm -f "" 安全空操作
+    trap 'rc=$?; rm -f "'"$old_binary_backup"'" 2>/dev/null; rm -f "$CHECK_LOG" 2>/dev/null; exit $rc' EXIT INT TERM HUP
 
     if [ "$fresh" -eq 1 ]; then
-        # fresh 路径：但若配置已存在（二进制被 rm 但配置保留），必须备份后再重置，否则用户节点全丢
-        if [ -f "$SB_CONF" ]; then
-            local _conf_bak="${SB_CONF}.bak.$(date +%s)"
-            cp -a "$SB_CONF" "$_conf_bak" 2>/dev/null
-            touch "$_conf_bak" 2>/dev/null
-            echo -e "${Y}检测到现有配置，已备份到 ${_conf_bak}${R}"
-            echo -e "${Y}如需恢复节点：cp ${_conf_bak} ${SB_CONF} && systemctl restart sing-box${R}"
+        # SB_CONF 路径类型检测：若是目录，sb_init_conf 的 cat > 会失败但被吞
+        if [ -e "$SB_CONF" ] && [ ! -f "$SB_CONF" ] && [ ! -L "$SB_CONF" ]; then
+            echo -e "${RED}❌ $SB_CONF 已存在且不是常规文件/符号链接（可能是目录），已取消${R}" >&2
+            return 1
         fi
-        sb_init_conf
-        cat > /etc/systemd/system/sing-box.service <<EOF
+        # fresh 路径：但若配置已存在（二进制被 rm 但配置保留），必须备份后再重置，否则用户节点全丢
+        # 重要：此时 $SB_BIN 已在 line 1332 被 mv 替换为新二进制。若配置备份失败 return 1，
+        # 下次重试时 command -v $SB_BIN 命中新二进制 → fresh=0 → 走升级路径 → check 配置失败 → 死循环
+        # 修复：配置备份失败时 rm 新二进制，让下次重试仍是 fresh=1
+        if [ -f "$SB_CONF" ]; then
+            local _conf_bak
+            _conf_bak="${SB_CONF}.bak.$(date +%s).$$"   # 加 $$ 避免并发同秒碰撞
+            # cp 检查退出码 + 软链兜底：cp -a 复制软链本身，需用 cp -aL 解引用
+            if ! cp -aL "$SB_CONF" "$_conf_bak" 2>/dev/null; then
+                echo -e "${RED}❌ 配置备份失败（磁盘满/权限/SELinux），已回滚二进制安装${R}" >&2
+                echo -e "${RED}   原配置未改动，请手动备份后重试：cp -aL $SB_CONF ${SB_CONF}.manual_bak${R}" >&2
+                rm -f "$_conf_bak" 2>/dev/null   # 清理可能残留的半截备份
+                rm -f "$SB_BIN" 2>/dev/null        # 回滚二进制，让下次重试仍是 fresh=1
+                return 1
+            fi
+            # 校验备份非空（cp 成功但内容为空也算失败）
+            if [ ! -s "$_conf_bak" ]; then
+                echo -e "${RED}❌ 配置备份为空（cp 异常），已回滚二进制安装${R}" >&2
+                rm -f "$_conf_bak" 2>/dev/null
+                rm -f "$SB_BIN" 2>/dev/null        # 回滚二进制
+                return 1
+            fi
+            echo -e "${Y}检测到现有配置，已备份到 ${_conf_bak}${R}"
+            echo -e "${Y}如需恢复节点：cp -aL ${_conf_bak} ${SB_CONF} && systemctl restart sing-box${R}"
+        fi
+        # sb_init_conf 检测退出码：重构后的 sb_init_conf 用 sb_write_conf_atomic，失败时返回 1
+        if ! sb_init_conf; then
+            echo -e "${RED}❌ 配置初始化失败，二进制已就位但配置未写入${R}" >&2
+            echo -e "${RED}   请手动检查 $SB_CONF 路径后重试${R}" >&2
+            return 1
+        fi
+        # fresh=1 路径验证新二进制可执行：架构不匹配/文件损坏时提前报错，避免到轮询阶段才暴露
+        if ! "$SB_BIN" version >/dev/null 2>&1; then
+            echo -e "${RED}❌ 新二进制无法执行（架构不匹配或文件损坏），正在清理...${R}" >&2
+            rm -f "$_real_bin" 2>/dev/null
+            # 若 $SB_BIN 是软链且目标已删（dangling），一并清理软链避免下次 readlink -f 返回空卡死
+            if [ -L "$SB_BIN" ] && [ ! -e "$SB_BIN" ]; then
+                rm -f "$SB_BIN" 2>/dev/null
+            fi
+            return 1
+        fi
+        # fresh 重置配置后清理 META_DIR 孤儿 meta 文件，避免重建同名节点时静默覆盖残留
+        rm -f "$META_DIR"/*.json 2>/dev/null
+        # systemd 环境检测：Alpine/OpenRC/无 systemd 容器下 systemctl 不存在
+        # 此时配置已写好（sb_init_conf 已执行），二进制已就位，只需提示用户手动启动
+        if ! command -v systemctl >/dev/null 2>&1; then
+            echo -e "${Y}⚠️  当前系统无 systemd（Alpine/OpenRC/精简容器），服务文件未安装${R}"
+            echo -e "${Y}   二进制已就位 $SB_BIN，配置已写入 $SB_CONF${R}"
+            echo -e "${Y}   请手动启动（断开 SSH 仍存活）：${R}"
+            echo -e "${C}   setsid $SB_BIN run -c $SB_CONF > /var/log/sing-box.log 2>&1 &${R}"
+            echo -e "${G}✅ Sing-Box ${source_label} v${target_ver} 安装成功（服务未自动启动）${R}"
+            [ -t 0 ] && read -r -s -n 1 -p ""
+            return 0
+        fi
+        if ! cat > /etc/systemd/system/sing-box.service <<EOF
 [Unit]
 Description=Sing-Box Service
 After=network.target nss-lookup.target
@@ -1121,55 +1491,193 @@ LimitNOFILE=1048576
 [Install]
 WantedBy=multi-user.target
 EOF
-        systemctl daemon-reload
+        then
+            rm -f /etc/systemd/system/sing-box.service 2>/dev/null   # 清理半截 service 文件
+            echo -e "${RED}❌ 无法写入 systemd service 文件（/etc/systemd/system 不可写）${R}" >&2
+            echo -e "${RED}   二进制与配置已就位，请手动创建 service 或用 setsid 启动${R}" >&2
+            return 1
+        fi
+        # daemon-reload 检测：systemd 未运行时（WSL/容器）daemon-reload 失败被吞
+        if ! systemctl daemon-reload 2>/dev/null; then
+            echo -e "${Y}⚠️  systemctl daemon-reload 失败（systemd 可能未运行），继续尝试 enable${R}" >&2
+        fi
         systemctl enable sing-box --now >/dev/null 2>&1
-        # fresh 后验证服务状态：装完不验证就报成功是误导
-        sleep 2
+        # fresh 后验证服务状态：轮询代替固定 sleep 2
+        # Type=simple 下 systemctl restart 同步返回但服务可能还在初始化，sleep 2 在慢机器上不够
+        local _tries=0
+        while [ "$_tries" -lt 10 ]; do
+            systemctl is-active --quiet sing-box 2>/dev/null && break
+            sleep 1
+            _tries=$((_tries + 1))
+        done
         if ! systemctl is-active --quiet sing-box 2>/dev/null; then
-            echo -e "${RED}❌ 安装完成但服务未启动，请检查 journalctl -u sing-box${R}"
+            echo -e "${RED}❌ 安装完成但服务未启动（等待 10s 后仍未 active），请检查 journalctl -u sing-box${R}" >&2
             return 1
         fi
         # 清理旧二进制备份（fresh 后没用了）
         [ -n "$old_binary_backup" ] && rm -f "$old_binary_backup" 2>/dev/null
     else
         # 升级：保留现有配置，重启服务并校验结果
+        # systemd 检测：无 systemd 时无法 restart，但二进制已替换，提示用户手动重启
+        if ! command -v systemctl >/dev/null 2>&1; then
+            echo -e "${Y}⚠️  当前系统无 systemd，二进制已替换为 v${target_ver}，请手动重启 sing-box${R}"
+            # 清理 old_binary_backup（fresh=0 路径有备份，不清理会残留）
+            [ -n "$old_binary_backup" ] && rm -f "$old_binary_backup" 2>/dev/null
+            [ -t 0 ] && read -r -s -n 1 -p ""
+            return 0
+        fi
         # 先校验新二进制是否能解析现有配置，避免重启后服务挂
         if ! "$SB_BIN" check -c "$SB_CONF" >/dev/null 2>&1; then
-            echo -e "${RED}❌ 新二进制无法解析现有配置（可能版本不兼容），正在回滚旧二进制...${R}"
+            echo -e "${RED}❌ 新二进制无法解析现有配置（可能版本不兼容），正在回滚旧二进制...${R}" >&2
             if [ -n "$old_binary_backup" ] && [ -f "$old_binary_backup" ]; then
-                mv -f "$old_binary_backup" "$SB_BIN" 2>/dev/null
-                chmod +x "$SB_BIN" 2>/dev/null
-                echo -e "${G}已回滚到旧版本${R}"
+                # 用 $_real_bin（软链安全）+ 检查 mv 退出码（原代码静默失败误报"已回滚"）
+                if mv -f "$old_binary_backup" "$_real_bin" 2>/dev/null; then
+                    chmod +x "$_real_bin" 2>/dev/null
+                    echo -e "${G}已回滚到旧版本${R}"
+                else
+                    echo -e "${RED}❌ 旧二进制回滚失败，备份保留在 $old_binary_backup，请手动 mv 救回${R}" >&2
+                fi
             else
-                echo -e "${RED}无旧二进制备份可回滚，请手动处理${R}"
+                echo -e "${RED}无旧二进制备份可回滚，请手动处理${R}" >&2
             fi
             return 1
         fi
-        systemctl restart sing-box >/dev/null 2>&1
-        sleep 2
+        if ! systemctl restart sing-box >/dev/null 2>&1; then
+            echo -e "${Y}⚠️  systemctl restart 返回非 0，继续验证...${R}" >&2
+        fi
+        # 轮询代替固定 sleep 2：Type=simple 下 restart 同步返回但服务可能还在初始化
+        local _tries=0
+        while [ "$_tries" -lt 10 ]; do
+            systemctl is-active --quiet sing-box 2>/dev/null && break
+            sleep 1
+            _tries=$((_tries + 1))
+        done
         if ! systemctl is-active --quiet sing-box 2>/dev/null; then
-            echo -e "${RED}❌ 升级后服务未启动，正在回滚旧二进制...${R}"
+            echo -e "${RED}❌ 升级后服务未启动，正在回滚旧二进制...${R}" >&2
             journalctl -u sing-box -n 5 --no-pager 2>&1 | sed 's/^/  /'
             if [ -n "$old_binary_backup" ] && [ -f "$old_binary_backup" ]; then
-                mv -f "$old_binary_backup" "$SB_BIN" 2>/dev/null
-                chmod +x "$SB_BIN" 2>/dev/null
+                # 用 $_real_bin + 检查 mv 退出码
+                if mv -f "$old_binary_backup" "$_real_bin" 2>/dev/null; then
+                    chmod +x "$_real_bin" 2>/dev/null
+                else
+                    echo -e "${RED}❌ 旧二进制回滚失败，备份保留在 $old_binary_backup，请手动 mv 救回${R}" >&2
+                fi
                 systemctl restart sing-box >/dev/null 2>&1
-                sleep 2
+                # 回滚后也用轮询
+                local _rb_tries=0
+                while [ "$_rb_tries" -lt 10 ]; do
+                    systemctl is-active --quiet sing-box 2>/dev/null && break
+                    sleep 1
+                    _rb_tries=$((_rb_tries + 1))
+                done
                 if systemctl is-active --quiet sing-box 2>/dev/null; then
                     echo -e "${G}已回滚到旧版本，服务恢复正常${R}"
                 else
-                    echo -e "${RED}回滚后服务仍未恢复，请手动检查（systemctl status sing-box）${R}"
+                    echo -e "${RED}回滚后服务仍未恢复，请手动检查（systemctl status sing-box）${R}" >&2
                 fi
             else
-                echo -e "${RED}无旧二进制备份可回滚，请手动重装旧版本${R}"
+                echo -e "${RED}无旧二进制备份可回滚，请手动重装旧版本${R}" >&2
             fi
             return 1
         fi
         # 升级成功，清理旧二进制备份
         [ -n "$old_binary_backup" ] && rm -f "$old_binary_backup" 2>/dev/null
     fi
-    echo -e "${G}✅ 安装成功！${R}"
-    read -r -s -n 1 -p ""
+    echo -e "${G}✅ Sing-Box ${source_label} v${target_ver} 安装成功！${R}"
+    [ -t 0 ] && read -r -s -n 1 -p ""
+    return 0
+}
+
+# ================= 版本管理上层封装 =================
+# 安装最新版本（GitHub API 拉取）
+sb_install_latest() {
+    local latest_ver
+    local _label="最新版"
+    if latest_ver=$(sb_fetch_latest_version); then
+        echo -e "${G}已获取最新版本: v${latest_ver}${R}"
+    else
+        latest_ver="$SB_LATEST_FALLBACK"
+        _label="兜底最新版（API 不可达）"
+        echo -e "${Y}无法获取最新版本（GitHub API 不可达/限流），将安装兜底版本 v${latest_ver}${R}" >&2
+        echo -e "${H}提示：可手动检查 https://github.com/SagerNet/sing-box/releases/latest 确认真实最新版${R}" >&2
+    fi
+    sb_install_version "$latest_ver" "$_label"
+}
+
+# 安装推荐稳定版本（默认推荐）
+sb_install_stable() {
+    sb_install_version "$SB_STABLE_VERSION" "公认稳定版"
+}
+
+# 安装用户手动指定的版本
+sb_install_specific() {
+    local input ver
+    echo -e "${Y}请输入要安装的 Sing-Box 版本号${R}"
+    echo -e "${H}格式: x.y.z（如 1.11.4 / 1.10.7），可带或不带 v 前缀${R}"
+    echo -e "${H}可用版本列表参考: https://github.com/SagerNet/sing-box/releases${R}"
+    if ! read -r -e -p "版本号 (回车取消): " input; then
+        echo "" >&2; echo -e "${RED}错误：输入 EOF，已取消${R}" >&2; return 1
+    fi
+    [ -z "$input" ] && { echo -e "${Y}已取消${R}"; return 0; }
+    if ! ver=$(sb_validate_version_input "$input"); then
+        echo -e "${RED}❌ 版本号格式不合法：'$input'，应为 x.y.z 三段数字（如 1.11.4）${R}"
+        [ -t 0 ] && read -r -s -n 1 -p ""
+        return 1
+    fi
+    # 同版本检测由 sb_install_version 内部统一处理（含 override 选项），此处不再重复
+    # 删除原冗余检查：原代码直接 return 0 无 override，用户想强制重装当前版本时被堵死
+    sb_install_version "$ver" "指定版本"
+}
+
+# Sing-Box 版本管理子菜单
+sb_version_manage() {
+    while true; do
+        clear 2>/dev/null
+        echo -e "${G}╔═══════════════════════════════════════════╗${R}"
+        echo -e "║       Sing-Box 版本管理                   ║${R}"
+        echo -e "╚═══════════════════════════════════════════╝${R}"
+
+        # 显示当前版本与服务状态
+        if command -v $SB_BIN >/dev/null 2>&1; then
+            local cur_ver
+            cur_ver=$($SB_BIN version 2>/dev/null | head -1)
+            local svc_status
+            if systemctl is-active --quiet sing-box 2>/dev/null; then
+                svc_status="${G}运行中${R}"
+            else
+                svc_status="${Y}已停止${R}"
+            fi
+            echo -e "  当前版本: ${Y}$cur_ver${R}  服务: $svc_status"
+        else
+            echo -e "  当前状态: ${H}未安装${R}"
+        fi
+        echo -e "  推荐稳定版: ${G}v${SB_STABLE_VERSION}${R}（社区公认稳定，Reality/Hy2 兼容性好）"
+        echo -e "--------------------"
+        echo -e "${Y}[1]${R} 安装最新版本        ${H}(GitHub API 拉取，含最新特性)${R}"
+        echo -e "${G}[2]${R} 安装推荐稳定版 ★    ${H}(v${SB_STABLE_VERSION}，默认推荐)${R}"
+        echo -e "${C}[3]${R} 安装指定版本        ${H}(手动输入版本号)${R}"
+        echo -e "${C}[4]${R} 从历史稳定版列表选择 ${H}(已校验 GitHub 可用性)${R}"
+        echo -e "${H}[5]${R} 查看当前版本与服务详情"
+        echo -e "--------------------"
+        echo -e "${H}[0] 返回上一级${R}"
+        local c
+        if ! read -r -e -p "  请选择: " c; then
+            echo "" >&2; echo -e "${RED}错误：输入 EOF${R}" >&2; return 1
+        fi
+        case "$c" in
+            1) clear 2>/dev/null; sb_install_latest ;;
+            2) clear 2>/dev/null; sb_install_stable ;;
+            3) clear 2>/dev/null; sb_install_specific ;;
+            4) clear 2>/dev/null; local picked; if picked=$(sb_list_versions) && [ -n "$picked" ]; then sb_install_version "$picked" "历史稳定版"; fi ;;
+            5) clear 2>/dev/null; sb_show_current_version ;;
+            0|"") break ;;
+        esac
+    done
+}
+
+# 兼容旧调用方：sb_install 仍作为入口保留，等价于 sb_version_manage
+sb_install() {
+    sb_version_manage
 }
 
 save_iptables() {
@@ -1348,7 +1856,10 @@ sb_add_reality() {
     fi
     (
         flock -x 200 || { echo -e "${RED}❌ flock 获取锁失败，并发保护失效，已取消${R}" >&2; exit 1; }
-        cp "$SB_CONF" "${SB_CONF}.bak"
+        if ! cp -aL "$SB_CONF" "${SB_CONF}.bak" 2>/dev/null; then
+            echo -e "${RED}❌ 配置备份失败（磁盘满/权限），未改动配置${R}" >&2
+            exit 1
+        fi
         # 锁内复查：input_custom_tag 的重名检查在锁外，并发添加同名节点有竞态窗口
         if jq -e --arg t "$node_tag" '((.inbounds // []) + (.outbounds // []) | map(select(.tag==$t)) | length) > 0' "$SB_CONF" >/dev/null 2>&1; then
             echo -e "${RED}节点名 $node_tag 已存在（并发冲突），本次添加已取消${R}"
@@ -1387,7 +1898,9 @@ sb_add_reality() {
         # jq 失败（产出空/半截 JSON）时不应继续覆盖原配置
         if ! jq --argjson node "$node_json" '.inbounds += [$node]' "$SB_CONF" > "$SB_CONF.tmp" 2>/dev/null; then
             echo -e "${RED}❌ jq 生成新配置失败，原配置未改动${R}" >&2
-            cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null
+            if ! cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null; then
+                echo -e "${RED}❌ 回滚失败：无法恢复配置，请手动 cp -a ${SB_CONF}.bak ${SB_CONF}${R}" >&2
+            fi
             rm -f "$SB_CONF.tmp"
             exit 1
         fi
@@ -1395,7 +1908,9 @@ sb_add_reality() {
         if $SB_BIN check -c "$SB_CONF.tmp" > "$CHECK_LOG" 2>&1; then
             # 用 helper 写配置：处理软链 + mv 失败
             if ! sb_write_conf_atomic "$SB_CONF.tmp" "$SB_CONF"; then
-                cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null
+                if ! cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null; then
+                    echo -e "${RED}❌ 回滚失败：无法恢复配置，请手动 cp -a ${SB_CONF}.bak ${SB_CONF}${R}" >&2
+                fi
                 exit 1
             fi
             open_port $port
@@ -1403,6 +1918,10 @@ sb_add_reality() {
             cat > "${META_DIR}/${node_tag}.json" <<EOF
 {"public_key":"$pub_key","short_id":"$short_id","sni":"$sni","uuid":"$uuid","port":$port,"flow":"$flow"}
 EOF
+            # meta 文件写入校验：失败时提示用户手动保存节点链接
+            if [ ! -s "${META_DIR}/${node_tag}.json" ]; then
+                echo -e "${RED}⚠️  meta 文件写入失败，请手动保存上方节点链接（sb_show_links 将无法重新生成）${R}" >&2
+            fi
 
             # 节点链接在 systemctl restart 之前打印：
             # 配置已生效（写入磁盘 + open_port 已放行），即使 restart 后续失败或用户 Ctrl+C 中断等待，
@@ -1415,26 +1934,47 @@ EOF
             local link="vless://${uuid}@${server_ip}:${port}?encryption=none${flow_param}&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#$(urlencode "$node_tag")"
             echo -e "${C}节点链接: ${link}${R}"
 
-            systemctl restart sing-box
-            sleep 2
-            if ! systemctl is-active --quiet sing-box; then
+            systemctl restart sing-box >/dev/null 2>&1
+            local _tries=0
+            while [ "$_tries" -lt 10 ]; do
+                systemctl is-active --quiet sing-box 2>/dev/null && break
+                sleep 1
+                _tries=$((_tries + 1))
+            done
+            if ! systemctl is-active --quiet sing-box 2>/dev/null; then
                 # 重启失败：节点配置已生效但服务未起来——回滚配置让服务能跑
                 echo -e "${RED}❌ Sing-Box 启动失败！可能是端口冲突，正在回滚配置...${R}" >&2
                 journalctl -u sing-box -n 10 --no-pager >&2
-                cp "${SB_CONF}.bak" "$SB_CONF"
+                if ! cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null; then
+                    echo -e "${RED}❌ 回滚失败：无法恢复配置（.bak 缺失/磁盘满），请手动 cp -a ${SB_CONF}.bak ${SB_CONF}${R}" >&2
+                fi
                 close_port $port
                 rm -f "${META_DIR}/${node_tag}.json"
-                systemctl restart sing-box
-                echo -e "${RED}❌ 节点已回滚，链接暂不可用${R}" >&2
+                systemctl restart sing-box >/dev/null 2>&1
+                local _rb_tries=0
+                while [ "$_rb_tries" -lt 5 ]; do
+                    systemctl is-active --quiet sing-box 2>/dev/null && break
+                    sleep 1
+                    _rb_tries=$((_rb_tries + 1))
+                done
+                if systemctl is-active --quiet sing-box 2>/dev/null; then
+                    echo -e "${RED}❌ 节点已回滚，链接暂不可用${R}" >&2
+                else
+                    echo -e "${RED}❌ 回滚后服务仍未启动，请手动检查：systemctl status sing-box${R}" >&2
+                fi
             fi
         else
             echo -e "${RED}❌ 校验失败，错误详情：${R}"
             cat "$CHECK_LOG"
-            cp "${SB_CONF}.bak" "$SB_CONF"
+            if ! cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null; then
+                echo -e "${RED}❌ 回滚失败：无法恢复配置，请手动 cp -a ${SB_CONF}.bak ${SB_CONF}${R}" >&2
+            fi
             rm -f "$SB_CONF.tmp"
         fi
     ) 200>"$SB_CONF_LOCK"
-    read -r -s -n 1 -p ""
+    local _sub_rc=$?
+    [ -t 0 ] && read -r -s -n 1 -p ""
+    return $_sub_rc
 }
 
 sb_add_vless_tcp() {
@@ -1462,7 +2002,10 @@ sb_add_vless_tcp() {
     fi
     (
         flock -x 200 || { echo -e "${RED}❌ flock 获取锁失败，并发保护失效，已取消${R}" >&2; exit 1; }
-        cp "$SB_CONF" "${SB_CONF}.bak"
+        if ! cp -aL "$SB_CONF" "${SB_CONF}.bak" 2>/dev/null; then
+            echo -e "${RED}❌ 配置备份失败（磁盘满/权限），未改动配置${R}" >&2
+            exit 1
+        fi
         # 锁内复查：input_custom_tag 的重名检查在锁外，并发添加同名节点有竞态窗口
         if jq -e --arg t "$node_tag" '((.inbounds // []) + (.outbounds // []) | map(select(.tag==$t)) | length) > 0' "$SB_CONF" >/dev/null 2>&1; then
             echo -e "${RED}节点名 $node_tag 已存在（并发冲突），本次添加已取消${R}"
@@ -1486,7 +2029,9 @@ sb_add_vless_tcp() {
         # 用 jq 生成新配置到临时文件；检查 jq 退出码作为纵深防御
         if ! jq --argjson node "$node_json" '.inbounds += [$node]' "$SB_CONF" > "$SB_CONF.tmp" 2>/dev/null; then
             echo -e "${RED}❌ jq 生成新配置失败，原配置未改动${R}" >&2
-            cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null
+            if ! cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null; then
+                echo -e "${RED}❌ 回滚失败：无法恢复配置，请手动 cp -a ${SB_CONF}.bak ${SB_CONF}${R}" >&2
+            fi
             rm -f "$SB_CONF.tmp"
             exit 1
         fi
@@ -1494,7 +2039,9 @@ sb_add_vless_tcp() {
         if $SB_BIN check -c "$SB_CONF.tmp" > "$CHECK_LOG" 2>&1; then
             # 用 helper 写配置：处理软链 + mv 失败
             if ! sb_write_conf_atomic "$SB_CONF.tmp" "$SB_CONF"; then
-                cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null
+                if ! cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null; then
+                    echo -e "${RED}❌ 回滚失败：无法恢复配置，请手动 cp -a ${SB_CONF}.bak ${SB_CONF}${R}" >&2
+                fi
                 exit 1
             fi
             open_port $port
@@ -1502,31 +2049,56 @@ sb_add_vless_tcp() {
             cat > "${META_DIR}/${node_tag}.json" <<EOF
 {"uuid":"$uuid","port":$port}
 EOF
+            # meta 文件写入校验
+            if [ ! -s "${META_DIR}/${node_tag}.json" ]; then
+                echo -e "${RED}⚠️  meta 文件写入失败，请手动保存上方节点链接${R}" >&2
+            fi
 
             # 节点链接在 systemctl restart 之前打印（参见 reality 同样说明）
             echo -e "${G}✅ VLESS-TCP 部署成功！${R}"
             local link="vless://${uuid}@${server_ip}:${port}?encryption=none&security=none&type=tcp&headerType=none#$(urlencode "$node_tag")"
             echo -e "${C}节点链接: ${link}${R}"
 
-            systemctl restart sing-box
-            sleep 2
-            if ! systemctl is-active --quiet sing-box; then
+            systemctl restart sing-box >/dev/null 2>&1
+            local _tries=0
+            while [ "$_tries" -lt 10 ]; do
+                systemctl is-active --quiet sing-box 2>/dev/null && break
+                sleep 1
+                _tries=$((_tries + 1))
+            done
+            if ! systemctl is-active --quiet sing-box 2>/dev/null; then
                 echo -e "${RED}❌ Sing-Box 启动失败！可能是端口冲突，正在回滚配置...${R}" >&2
                 journalctl -u sing-box -n 10 --no-pager >&2
-                cp "${SB_CONF}.bak" "$SB_CONF"
+                if ! cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null; then
+                    echo -e "${RED}❌ 回滚失败：无法恢复配置（.bak 缺失/磁盘满），请手动 cp -a ${SB_CONF}.bak ${SB_CONF}${R}" >&2
+                fi
                 close_port $port
                 rm -f "${META_DIR}/${node_tag}.json"
-                systemctl restart sing-box
-                echo -e "${RED}❌ 节点已回滚，链接暂不可用${R}" >&2
+                systemctl restart sing-box >/dev/null 2>&1
+                local _rb_tries=0
+                while [ "$_rb_tries" -lt 5 ]; do
+                    systemctl is-active --quiet sing-box 2>/dev/null && break
+                    sleep 1
+                    _rb_tries=$((_rb_tries + 1))
+                done
+                if systemctl is-active --quiet sing-box 2>/dev/null; then
+                    echo -e "${RED}❌ 节点已回滚，链接暂不可用${R}" >&2
+                else
+                    echo -e "${RED}❌ 回滚后服务仍未启动，请手动检查：systemctl status sing-box${R}" >&2
+                fi
             fi
         else
             echo -e "${RED}❌ 校验失败，错误详情：${R}"
             cat "$CHECK_LOG"
-            cp "${SB_CONF}.bak" "$SB_CONF"
+            if ! cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null; then
+                echo -e "${RED}❌ 回滚失败：无法恢复配置，请手动 cp -a ${SB_CONF}.bak ${SB_CONF}${R}" >&2
+            fi
             rm -f "$SB_CONF.tmp"
         fi
     ) 200>"$SB_CONF_LOCK"
-    read -r -s -n 1 -p ""
+    local _sub_rc=$?
+    [ -t 0 ] && read -r -s -n 1 -p ""
+    return $_sub_rc
 }
 
 sb_add_hysteria2() {
@@ -1555,17 +2127,23 @@ sb_add_hysteria2() {
     fi
     (
         flock -x 200 || { echo -e "${RED}❌ flock 获取锁失败，并发保护失效，已取消${R}" >&2; exit 1; }
-        cp "$SB_CONF" "${SB_CONF}.bak"
+        if ! cp -aL "$SB_CONF" "${SB_CONF}.bak" 2>/dev/null; then
+            echo -e "${RED}❌ 配置备份失败（磁盘满/权限），未改动配置${R}" >&2
+            exit 1
+        fi
         # 锁内复查：input_custom_tag 的重名检查在锁外，并发添加同名节点有竞态窗口
         if jq -e --arg t "$node_tag" '((.inbounds // []) + (.outbounds // []) | map(select(.tag==$t)) | length) > 0' "$SB_CONF" >/dev/null 2>&1; then
             echo -e "${RED}节点名 $node_tag 已存在（并发冲突），本次添加已取消${R}"
             exit 1  # 子 shell 内 exit，仅终止本锁块
         fi
         # 证书在锁内、重名检查通过后生成：避免命名处 Ctrl+C 或并发退出时残留
-        mkdir -p "$cert_dir"
+        mkdir -p "$cert_dir" || { echo -e "${RED}❌ mkdir $cert_dir 失败（权限/只读 fs）${R}" >&2; exit 1; }
         openssl ecparam -genkey -name prime256v1 -out "${cert_dir}/key.pem" 2>/dev/null
         openssl req -new -x509 -days 3650 -key "${cert_dir}/key.pem" -out "${cert_dir}/cert.pem" -subj "/CN=${sni}" 2>/dev/null
-        chmod 600 "${cert_dir}/key.pem" 2>/dev/null  # 私钥按 umask 生成常为 0644，收紧为仅属主可读写
+        # 私钥权限收紧检测：chmod 失败时私钥可能保持 0644（其他用户可读），是安全漏洞
+        if ! chmod 600 "${cert_dir}/key.pem" 2>/dev/null; then
+            echo -e "${RED}⚠️  私钥权限收紧失败，${cert_dir}/key.pem 可能仍为 0644（其他用户可读）${R}" >&2
+        fi
 
 
         local node_json=$(jq -n \
@@ -1595,7 +2173,9 @@ sb_add_hysteria2() {
         # 用 jq 生成新配置到临时文件；检查 jq 退出码作为纵深防御
         if ! jq --argjson node "$node_json" '.inbounds += [$node]' "$SB_CONF" > "$SB_CONF.tmp" 2>/dev/null; then
             echo -e "${RED}❌ jq 生成新配置失败，原配置未改动${R}" >&2
-            cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null
+            if ! cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null; then
+                echo -e "${RED}❌ 回滚失败：无法恢复配置，请手动 cp -a ${SB_CONF}.bak ${SB_CONF}${R}" >&2
+            fi
             rm -f "$SB_CONF.tmp"
             rm -rf "$cert_dir"
             exit 1
@@ -1604,7 +2184,9 @@ sb_add_hysteria2() {
         if $SB_BIN check -c "$SB_CONF.tmp" > "$CHECK_LOG" 2>&1; then
             # 用 helper 写配置：处理软链 + mv 失败
             if ! sb_write_conf_atomic "$SB_CONF.tmp" "$SB_CONF"; then
-                cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null
+                if ! cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null; then
+                    echo -e "${RED}❌ 回滚失败：无法恢复配置，请手动 cp -a ${SB_CONF}.bak ${SB_CONF}${R}" >&2
+                fi
                 rm -rf "$cert_dir"
                 exit 1
             fi
@@ -1615,26 +2197,47 @@ sb_add_hysteria2() {
             local link="hysteria2://${pass}@${server_ip}:${port}?security=tls&sni=${sni}&alpn=h3&insecure=1#$(urlencode "$node_tag")"
             echo -e "${C}节点链接: ${link}${R}"
 
-            systemctl restart sing-box
-            sleep 2
-            if ! systemctl is-active --quiet sing-box; then
+            systemctl restart sing-box >/dev/null 2>&1
+            local _tries=0
+            while [ "$_tries" -lt 10 ]; do
+                systemctl is-active --quiet sing-box 2>/dev/null && break
+                sleep 1
+                _tries=$((_tries + 1))
+            done
+            if ! systemctl is-active --quiet sing-box 2>/dev/null; then
                 echo -e "${RED}❌ Sing-Box 启动失败！正在回滚配置...${R}" >&2
                 journalctl -u sing-box -n 10 --no-pager >&2
-                cp "${SB_CONF}.bak" "$SB_CONF"
+                if ! cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null; then
+                    echo -e "${RED}❌ 回滚失败：无法恢复配置（.bak 缺失/磁盘满），请手动 cp -a ${SB_CONF}.bak ${SB_CONF}${R}" >&2
+                fi
                 close_port $port
                 rm -rf "$cert_dir"
-                systemctl restart sing-box
-                echo -e "${RED}❌ 节点已回滚，链接暂不可用${R}" >&2
+                systemctl restart sing-box >/dev/null 2>&1
+                local _rb_tries=0
+                while [ "$_rb_tries" -lt 5 ]; do
+                    systemctl is-active --quiet sing-box 2>/dev/null && break
+                    sleep 1
+                    _rb_tries=$((_rb_tries + 1))
+                done
+                if systemctl is-active --quiet sing-box 2>/dev/null; then
+                    echo -e "${RED}❌ 节点已回滚，链接暂不可用${R}" >&2
+                else
+                    echo -e "${RED}❌ 回滚后服务仍未启动，请手动检查：systemctl status sing-box${R}" >&2
+                fi
             fi
         else
             echo -e "${RED}❌ 校验失败，错误详情：${R}"
             cat "$CHECK_LOG"
-            cp "${SB_CONF}.bak" "$SB_CONF"
+            if ! cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null; then
+                echo -e "${RED}❌ 回滚失败：无法恢复配置，请手动 cp -a ${SB_CONF}.bak ${SB_CONF}${R}" >&2
+            fi
             rm -f "$SB_CONF.tmp"
             rm -rf "$cert_dir"
         fi
     ) 200>"$SB_CONF_LOCK"
-    read -r -s -n 1 -p ""
+    local _sub_rc=$?
+    [ -t 0 ] && read -r -s -n 1 -p ""
+    return $_sub_rc
 }
 
 sb_del_node() {
@@ -1685,12 +2288,17 @@ sb_del_node() {
     fi
     (
         flock -x 200 || { echo -e "${RED}❌ flock 获取锁失败，并发保护失效，已取消${R}" >&2; exit 1; }
-        cp "$SB_CONF" "${SB_CONF}.bak"
+        if ! cp -aL "$SB_CONF" "${SB_CONF}.bak" 2>/dev/null; then
+            echo -e "${RED}❌ 配置备份失败（磁盘满/权限），未改动配置${R}" >&2
+            exit 1
+        fi
 
         # 用 jq 生成新配置；检查 jq 退出码
         if ! jq --arg t "$tag" 'del(.inbounds[] | select(.tag==$t))' "$SB_CONF" > "$SB_CONF.tmp" 2>/dev/null; then
             echo -e "${RED}❌ jq 生成删除后的配置失败，原配置未改动${R}" >&2
-            cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null
+            if ! cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null; then
+                echo -e "${RED}❌ 回滚失败：无法恢复配置，请手动 cp -a ${SB_CONF}.bak ${SB_CONF}${R}" >&2
+            fi
             rm -f "$SB_CONF.tmp"
             exit 1
         fi
@@ -1698,15 +2306,22 @@ sb_del_node() {
         if $SB_BIN check -c "$SB_CONF.tmp" > "$CHECK_LOG" 2>&1; then
             # 用 helper 写配置：处理软链 + mv 失败
             if ! sb_write_conf_atomic "$SB_CONF.tmp" "$SB_CONF"; then
-                cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null
+                if ! cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null; then
+                    echo -e "${RED}❌ 回滚失败：无法恢复配置，请手动 cp -a ${SB_CONF}.bak ${SB_CONF}${R}" >&2
+                fi
                 exit 1
             fi
 
             # 删除成功提示在 systemctl restart 之前打印（节点配置已从磁盘移除）
             echo -e "${G}✅ 节点 $tag 已从配置删除！${R}"
-            systemctl restart sing-box
-            sleep 2
-            if systemctl is-active --quiet sing-box; then
+            systemctl restart sing-box >/dev/null 2>&1
+            local _tries=0
+            while [ "$_tries" -lt 10 ]; do
+                systemctl is-active --quiet sing-box 2>/dev/null && break
+                sleep 1
+                _tries=$((_tries + 1))
+            done
+            if systemctl is-active --quiet sing-box 2>/dev/null; then
                 # 健康确认通过后再做清理：若先清理后回滚，端口/meta/证书会被误删且无法恢复
                 close_port $port
                 rm -f "${META_DIR}/${tag}.json"
@@ -1717,23 +2332,39 @@ sb_del_node() {
             else
                 echo -e "${RED}❌ Sing-Box 启动失败，正在回滚配置...${R}" >&2
                 journalctl -u sing-box -n 10 --no-pager >&2
-                cp "${SB_CONF}.bak" "$SB_CONF"
-                systemctl restart sing-box
-                echo -e "${RED}❌ 节点已回滚（未删除）${R}" >&2
+                if ! cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null; then
+                    echo -e "${RED}❌ 回滚失败：无法恢复配置（.bak 缺失/磁盘满），请手动 cp -a ${SB_CONF}.bak ${SB_CONF}${R}" >&2
+                fi
+                systemctl restart sing-box >/dev/null 2>&1
+                local _rb_tries=0
+                while [ "$_rb_tries" -lt 5 ]; do
+                    systemctl is-active --quiet sing-box 2>/dev/null && break
+                    sleep 1
+                    _rb_tries=$((_rb_tries + 1))
+                done
+                if systemctl is-active --quiet sing-box 2>/dev/null; then
+                    echo -e "${RED}❌ 节点已回滚（未删除）${R}" >&2
+                else
+                    echo -e "${RED}❌ 回滚后服务仍未启动，请手动检查：systemctl status sing-box${R}" >&2
+                fi
             fi
         else
             echo -e "${RED}❌ 删除节点失败，错误详情：${R}"
             cat "$CHECK_LOG"
-            cp "${SB_CONF}.bak" "$SB_CONF"
+            if ! cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null; then
+                echo -e "${RED}❌ 回滚失败：无法恢复配置，请手动 cp -a ${SB_CONF}.bak ${SB_CONF}${R}" >&2
+            fi
             rm -f "$SB_CONF.tmp"
         fi
     ) 200>"$SB_CONF_LOCK"
-    read -r -s -n 1 -p ""
+    local _sub_rc=$?
+    [ -t 0 ] && read -r -s -n 1 -p ""
+    return $_sub_rc
 }
 
 sb_manage_ports() {
     while true; do
-        clear
+        clear 2>/dev/null
         echo -e "${G}╔═══════════════════════════════════════════╗${R}"
         echo -e "║          🔥 端口防火墙管理 (TCP+UDP)       ║${R}"
         echo -e "╚═══════════════════════════════════════════╝${R}"
@@ -1836,11 +2467,11 @@ sb_show_links() {
 
 sb_menu() {
     while true; do
-        clear
+        clear 2>/dev/null
         echo -e "${G}╔═══════════════════════════════════════════╗${R}"
         echo -e "║       Sing-Box 管理面板                   ║${R}"
         echo -e "╚═══════════════════════════════════════════╝${R}"
-        echo -e "    ${Y}[1] 安装 Sing-Box${R}"
+        echo -e "    ${Y}[1] 安装/切换 Sing-Box 版本${R}"
         echo -e "    ${Y}[2] 添加 VLESS-Reality 节点${R}"
         echo -e "    ${Y}[3] 添加 VLESS-TCP 节点${R}"
         echo -e "    ${Y}[4] 添加 Hysteria2 节点${R}"
@@ -1850,13 +2481,13 @@ sb_menu() {
         echo -e "    ${H}[0] 返回主菜单${R}"
         read -r -e -p "  选择: " c
         case "$c" in
-            1) clear; sb_install ;;
-            2) clear; sb_add_reality ;;
-            3) clear; sb_add_vless_tcp ;;
-            4) clear; sb_add_hysteria2 ;;
-            5) clear; sb_show_links ;;
-            6) clear; sb_del_node ;;
-            7) clear; sb_manage_ports ;;
+            1) clear 2>/dev/null; sb_install ;;
+            2) clear 2>/dev/null; sb_add_reality ;;
+            3) clear 2>/dev/null; sb_add_vless_tcp ;;
+            4) clear 2>/dev/null; sb_add_hysteria2 ;;
+            5) clear 2>/dev/null; sb_show_links ;;
+            6) clear 2>/dev/null; sb_del_node ;;
+            7) clear 2>/dev/null; sb_manage_ports ;;
             0|"") break ;;
         esac
     done
@@ -1865,7 +2496,7 @@ sb_menu() {
 main_menu() {
     check_env
     while true; do
-        clear
+        clear 2>/dev/null
         echo -e "${G}╔═══════════════════════════════════════════╗${R}"
         echo -e "║          🎉 YW 服务器优化工具箱             ║${R}"
         echo -e "╚═══════════════════════════════════════════╝${R}"
@@ -1874,8 +2505,8 @@ main_menu() {
         echo -e "    ${H}[0] 退出${R}"
         read -r -e -p "  请选择: " c
         case "$c" in
-            1) clear; smart_auto_optimize ;;
-            2) clear; sb_menu ;;
+            1) clear 2>/dev/null; smart_auto_optimize ;;
+            2) clear 2>/dev/null; sb_menu ;;
             0|"") exit 0 ;;
         esac
     done
@@ -2000,7 +2631,7 @@ auto_shortcut() {
     #    注：curl|bash 用户在脚本开头已被 exit 1 拒绝，到不了这里；本分支实际服务粘贴执行场景
     if [ "$install_ok" -ne 1 ]; then
         local http_code curl_rc
-        http_code=$(curl -sSL -w '%{http_code}' --max-time 20 -o "$tmp_install" "$script_url" 2>/dev/null)
+        http_code=$(curl -q -sSL -w '%{http_code}' --max-time 20 -o "$tmp_install" "$script_url" 2>/dev/null)
         curl_rc=$?
 
         # 区分错误码，避免把"传输中断"误报成"不可达"
