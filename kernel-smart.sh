@@ -180,7 +180,8 @@ get_my_ip() {
         local ip="$1"
         [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
         local IFS=.
-        local -a segs=($ip)
+        local -a segs
+        IFS=. read -ra segs <<< "$ip"
         [ ${#segs[@]} -eq 4 ] || return 1
         local s
         for s in "${segs[@]}"; do
@@ -195,7 +196,7 @@ get_my_ip() {
         server_ip=""
     fi
     if [ -z "$server_ip" ]; then
-        server_ip=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++)if($i=="src")print $(i+1)}')
+        server_ip=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++)if($i=="src"){print $(i+1); exit}}')
         # 同样校验回退路径拿到的 IP
         if ! _is_valid_ipv4 "$server_ip"; then
             server_ip=""
@@ -265,6 +266,12 @@ take_factory_snapshot() {
             echo "$k = $(sysctl -n "$k" 2>/dev/null)"
         done
     } > "$FACTORY_SNAPSHOT"
+    # 回读校验：与迁移分支对称，防止半截快照成为永久快照
+    if [ ! -s "$FACTORY_SNAPSHOT" ] || ! grep -q '=' "$FACTORY_SNAPSHOT" 2>/dev/null; then
+        echo -e "${RED}❌ 出厂快照写入失败（磁盘满/权限）${R}" >&2
+        rm -f "$FACTORY_SNAPSHOT" 2>/dev/null
+        return 1
+    fi
     echo -e "${G}出厂快照已保存至 ${FACTORY_SNAPSHOT}${R}"
 }
 
@@ -282,13 +289,18 @@ apply_optimize() {
     take_factory_snapshot
 
     # 直播模式的 UDP 内存阈值按物理内存等比推导（原写死值约为 4GB 机器的量级）
-    local mem_kb=$(awk '/MemTotal:/{print $2}' /proc/meminfo)
-    local pages_total=$(( mem_kb / 4 ))
-    local u_min=$(( pages_total * 379008 / 1048576 ))
+    local mem_kb
+    mem_kb=$(awk '/MemTotal:/{print $2}' /proc/meminfo) || mem_kb=""
+    local pages_total
+    pages_total=$(( mem_kb / 4 )) || pages_total=""
+    local u_min
+    u_min=$(( pages_total * 379008 / 1048576 )) || u_min=""
     [ "$u_min" -lt 16384 ] && u_min=16384
     [ "$u_min" -gt 1048576 ] && u_min=1048576
-    local u_pressure=$(( u_min * 4 / 3 ))
-    local u_max=$(( u_min * 2 ))
+    local u_pressure
+    u_pressure=$(( u_min * 4 / 3 )) || u_pressure=""
+    local u_max
+    u_max=$(( u_min * 2 )) || u_max=""
 
     # BBR/fq 可用性探测（与高级模式一致）：不支持的内核回退，避免写死值导致每行写入失败
     modprobe tcp_bbr 2>/dev/null
@@ -298,7 +310,8 @@ apply_optimize() {
         new_cc="cubic"
     fi
     local new_qd="fq"
-    local orig_qd=$(sysctl -n net.core.default_qdisc 2>/dev/null)
+    local orig_qd
+    orig_qd=$(sysctl -n net.core.default_qdisc 2>/dev/null) || orig_qd=""
     if ! sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1; then
         echo -e "${Y}内核不支持 fq，回退到 fq_codel${R}"
         new_qd="fq_codel"
@@ -306,8 +319,12 @@ apply_optimize() {
     # 探测本身是一次内核写入，恢复原值以保无副作用，后续由统一应用流程写入
     [ -n "$orig_qd" ] && sysctl -w net.core.default_qdisc="$orig_qd" >/dev/null 2>&1
 
+    # 原子化写入：mktemp 防 symlink 竞态，cat 中途失败（磁盘满/信号中断）不会污染 $SYSCTL_CONF 半截
+    # 与 apply_advanced_optimize 保持一致，避免非原子写入导致旧配置已被覆盖但新配置仅写半截
+    local tmp_conf
+    tmp_conf=$(mktemp /tmp/.yw_sysctl.XXXXXX) || { echo -e "${RED}❌ mktemp 失败（/tmp 满/只读）${R}" >&2; return 1; }
     if [ "$mode" == "balance" ]; then
-        cat > "$SYSCTL_CONF" << EOF
+        cat > "$tmp_conf" << EOF
 net.ipv4.ip_forward = 1
 net.ipv6.conf.all.forwarding = 1
 net.core.default_qdisc = $new_qd
@@ -326,7 +343,7 @@ net.ipv4.tcp_tw_reuse = 1
 net.ipv4.tcp_fin_timeout = 30
 EOF
     elif [ "$mode" == "live" ]; then
-        cat > "$SYSCTL_CONF" << EOF
+        cat > "$tmp_conf" << EOF
 net.ipv4.ip_forward = 1
 net.ipv6.conf.all.forwarding = 1
 net.core.default_qdisc = $new_qd
@@ -350,13 +367,22 @@ net.ipv4.tcp_fin_timeout = 30
 EOF
     fi
 
-    # 检查配置文件是否真写进去：路径被占成目录、磁盘满、权限不足时 cat 会失败但 bash 不报错
+    # 检查临时文件是否真写进去：路径被占成目录、磁盘满、权限不足时 cat 会失败但 bash 不报错
     # 回读校验：写完文件应非空且至少包含一个 '='（key=value 行）
-    if [ ! -s "$SYSCTL_CONF" ] || ! grep -q '=' "$SYSCTL_CONF" 2>/dev/null; then
-        echo -e "${RED}❌ 写入 $SYSCTL_CONF 失败（可能路径被占用、磁盘满或权限不足）${R}" >&2
+    if [ ! -s "$tmp_conf" ] || ! grep -q '=' "$tmp_conf" 2>/dev/null; then
+        echo -e "${RED}❌ 写入 sysctl 配置失败（可能路径被占用、磁盘满或权限不足）${R}" >&2
         echo -e "${RED}   参数未落盘，重启后不会生效。请检查 $SYSCTL_CONF 路径后重试${R}" >&2
+        rm -f "$tmp_conf"
         return 1
     fi
+    # mv 检测退出码：失败时 tmp_conf 残留，避免误导用户“已持久化”
+    if ! mv -f "$tmp_conf" "$SYSCTL_CONF" 2>/dev/null; then
+        echo -e "${RED}❌ 持久化失败：无法 mv 到 $SYSCTL_CONF（磁盘满/权限/SELinux）${R}" >&2
+        echo -e "${RED}   临时配置保留在 $tmp_conf，请手动 mv 后重试${R}" >&2
+        rm -f "$tmp_conf" 2>/dev/null
+        return 1
+    fi
+    chmod 644 "$SYSCTL_CONF" 2>/dev/null || true   # 权限非关键，失败不致命
 
     echo -e "${Y}应用优化参数...${R}"
     # 逐 key 应用并精确计数：sysctl -p 的输出格式不统一（Invalid argument 等失败行既无 = 也无 cannot stat），grep 计数会虚高/漏报
@@ -382,7 +408,7 @@ EOF
     done < "$SYSCTL_CONF"
 
     # 模式标记在应用之后写；applied=0（一个都没应用上，如只读容器）时不写，避免菜单显示与实际不符
-    [ "$applied" -gt 0 ] && echo "$mode_name" > "$MODE_FILE"
+    [ "$applied" -gt 0 ] && echo "$mode_name" > "$MODE_FILE" || echo -e "${Y}⚠️  模式标记写入失败，菜单显示可能不准${R}" >&2
 
     echo -e "${G}已应用 ${applied} 项参数${R}"
     [ "$skipped" -gt 0 ] && echo -e "${Y}跳过 ${skipped} 项本内核不存在的参数${R}"
@@ -391,9 +417,12 @@ EOF
     # 本次配置没覆盖的 key 恢复出厂值，避免从其他模式切换后旧值残留
     restore_unmanaged_keys "$SYSCTL_CONF"
     
-    local mem=$(free -m | awk '/Mem:/{print $2}')
-    local cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
-    local qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
+    local mem
+    mem=$(free -m | awk '/Mem:/{print $2}') || mem=""
+    local cc
+    cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null) || cc=""
+    local qdisc
+    qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null) || qdisc=""
     
     echo -e "内存: ${mem}MB | 拥塞算法: ${cc} | 队列: ${qdisc}"
     echo -e "${Y}提示：网络参数已变更，若出现终端卡顿或断开，请重新连接 SSH 即可。${R}"
@@ -431,9 +460,12 @@ restore_default() {
         sysctl -p >/dev/null 2>&1
     fi
     
-    local mem=$(free -m | awk '/Mem:/{print $2}')
-    local cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
-    local qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
+    local mem
+    mem=$(free -m | awk '/Mem:/{print $2}') || mem=""
+    local cc
+    cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null) || cc=""
+    local qdisc
+    qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null) || qdisc=""
     
     echo -e "${G}已还原系统默认网络配置${R}"
     echo -e "内存: ${mem}MB | 拥塞算法: ${cc} | 队列: ${qdisc}"
@@ -454,20 +486,27 @@ apply_advanced_optimize() {
     take_factory_snapshot
 
     # 2. 动态推导 TCP 缓冲区上限 (防止小内存机 OOM)
-    local mem_total_kb=$(awk '/MemTotal:/{print $2}' /proc/meminfo)
-    local mem_mb=$((mem_total_kb / 1024))
+    local mem_total_kb
+    mem_total_kb=$(awk '/MemTotal:/{print $2}' /proc/meminfo) || mem_total_kb=""
+    local mem_mb
+    mem_mb=$((mem_total_kb / 1024)) || mem_mb=""
     # 核心逻辑: 取内存的 1/32，上限 64MB (67108864)，下限 4MB (4194304)
-    local buf_max=$(( mem_mb * 1024 * 1024 / 32 ))
+    local buf_max
+    buf_max=$(( mem_mb * 1024 * 1024 / 32 )) || buf_max=""
     [ "$buf_max" -gt 67108864 ] && buf_max=67108864
     [ "$buf_max" -lt 4194304 ] && buf_max=4194304
 
     # UDP 内存阈值同样按物理内存等比推导（单位：页）
-    local pages_total=$(( mem_total_kb / 4 ))
-    local u_min=$(( pages_total * 379008 / 1048576 ))
+    local pages_total
+    pages_total=$(( mem_total_kb / 4 )) || pages_total=""
+    local u_min
+    u_min=$(( pages_total * 379008 / 1048576 )) || u_min=""
     [ "$u_min" -lt 16384 ] && u_min=16384
     [ "$u_min" -gt 1048576 ] && u_min=1048576
-    local u_pressure=$(( u_min * 4 / 3 ))
-    local u_max=$(( u_min * 2 ))
+    local u_pressure
+    u_pressure=$(( u_min * 4 / 3 )) || u_pressure=""
+    local u_max
+    u_max=$(( u_min * 2 )) || u_max=""
     
     echo -e "${C}物理内存: ${mem_mb} MB | 推导 TCP 缓冲区上限: $(( buf_max / 1024 / 1024 )) MB${R}"
     
@@ -480,7 +519,8 @@ apply_advanced_optimize() {
     fi
     # fq 探测与标准模式同步：不支持则回退 fq_codel（通常编译进内核，必然可用）
     local qd="fq"
-    local orig_qd_adv=$(sysctl -n net.core.default_qdisc 2>/dev/null)
+    local orig_qd_adv
+    orig_qd_adv=$(sysctl -n net.core.default_qdisc 2>/dev/null) || orig_qd_adv=""
     if ! sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1; then
         echo -e "${RED}警告：内核不支持 fq，回退到 fq_codel${R}"
         qd="fq_codel"
@@ -580,11 +620,14 @@ EOF
     # 本次配置没覆盖的 key 恢复出厂值，避免从其他模式切换后旧值残留
     restore_unmanaged_keys "$ADV_SYSCTL_CONF"
     # 模式标记在应用之后写；applied=0（一个都没应用上，如只读容器）时不写，避免菜单显示与实际不符
-    [ "$applied" -gt 0 ] && echo "$mode_name" > "$ADV_MODE_FILE"
+    [ "$applied" -gt 0 ] && echo "$mode_name" > "$ADV_MODE_FILE" || echo -e "${Y}⚠️  模式标记写入失败，菜单显示可能不准${R}" >&2
     
-    local current_mem=$(free -m | awk '/Mem:/{print $2}')
-    local current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
-    local current_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
+    local current_mem
+    current_mem=$(free -m | awk '/Mem:/{print $2}') || current_mem=""
+    local current_cc
+    current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null) || current_cc=""
+    local current_qdisc
+    current_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null) || current_qdisc=""
     
     echo -e "内存: ${current_mem}MB | 拥塞算法: ${current_cc} | 队列: ${current_qdisc}"
     echo -e "${Y}提示：网络参数已变更，若出现终端卡顿或断开，请重新连接 SSH 即可。${R}"
@@ -629,9 +672,12 @@ restore_advanced_default() {
         sysctl -p >/dev/null 2>&1
     fi
     
-    local current_mem=$(free -m | awk '/Mem:/{print $2}')
-    local current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
-    local current_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
+    local current_mem
+    current_mem=$(free -m | awk '/Mem:/{print $2}') || current_mem=""
+    local current_cc
+    current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null) || current_cc=""
+    local current_qdisc
+    current_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null) || current_qdisc=""
     
     echo -e "${G}✅ 还原完毕${R}"
     echo -e "内存: ${current_mem}MB | 拥塞算法: ${current_cc} | 队列: ${current_qdisc}"
@@ -639,7 +685,8 @@ restore_advanced_default() {
 }
 
 bbr_kernel_manage() {
-    local vi=$(systemd-detect-virt 2>/dev/null)
+    local vi
+    vi=$(systemd-detect-virt 2>/dev/null) || vi=""
     if [[ "$vi" =~ lxc|openvz ]]; then
         echo -e "${RED}当前VPS的架构为 $vi，不支持开启原版BBR加速${R}"
         read -r -s -n 1 -p ""; return
@@ -657,8 +704,10 @@ smart_auto_optimize() {
         echo -e "║          🚀 网络与内核优化中心             ║${R}"
         echo -e "╚═══════════════════════════════════════════╝${R}"
         
-        local current_kernel=$(uname -r)
-        local current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+        local current_kernel
+        current_kernel=$(uname -r) || current_kernel="unknown"
+        local current_cc
+        current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null) || current_cc=""
         local current_mode="默认设置"
         if [ -f "$MODE_FILE" ]; then
             current_mode=$(cat "$MODE_FILE")
@@ -721,7 +770,7 @@ xanmod_add_repo() {
     fi
     local orig_codename="$os_codename"
 
-    if ! echo "bookworm trixie forky sid noble plucky questing resolute faye gigi wilma xia zara zena" | grep -qw "$os_codename"; then
+    if ! echo "bookworm trixie forky sid noble plucky questing resolute" | grep -qw "$os_codename"; then
         os_codename="releases"
     fi
 
@@ -744,15 +793,22 @@ xanmod_add_repo() {
 
 xanmod_detect_psabi_level() {
     local psabi_output=""
-    psabi_output=$(awk 'BEGIN {
-        while (!/flags/) if (getline < "/proc/cpuinfo" != 1) exit 1
-        if (/lm/&&/cmov/&&/cx8/&&/fpu/&&/fxsr/&&/mmx/&&/syscall/&&/sse2/) level = 1
-        if (level == 1 && /cx16/&&/lahf/&&/popcnt/&&/sse4_1/&&/sse4_2/&&/ssse3/) level = 2
-        if (level == 2 && /avx/&&/avx2/&&/bmi1/&&/bmi2/&&/f16c/&&/fma/&&/abm/&&/movbe/&&/xsave/) level = 3
-        if (level == 3 && /avx512f/&&/avx512bw/&&/avx512cd/&&/avx512dq/&&/avx512vl/) level = 4
-        if (level > 0) { print level; exit }
-        exit 1
-    }' /proc/cpuinfo 2>/dev/null) || return 1
+    # awk 的 /flag/ 是子串匹配：/lm/ 会误匹配 lahf_lm、pclmulqdq 中的 "lm" 子串，
+    # 把不支持 long-mode 的伪命中计入 level=1，最终选错 ABI 包导致内核启动 panic。
+    # 改用 has() 辅助函数做单词边界匹配：flag 前后必须是行首或空格。
+    # 注：mawk 要求 function 定义在 BEGIN 块外（gawk 允许内嵌，mawk 报 syntax error）
+    psabi_output=$(awk '
+        function has(f) { return $0 ~ "(^| )" f "( |$)" }
+        BEGIN {
+            while (!/flags/) if (getline < "/proc/cpuinfo" != 1) exit 1
+            if (has("lm")&&has("cmov")&&has("cx8")&&has("fpu")&&has("fxsr")&&has("mmx")&&has("syscall")&&has("sse2")) level = 1
+            if (level == 1 && has("cx16")&&has("lahf")&&has("popcnt")&&has("sse4_1")&&has("sse4_2")&&has("ssse3")) level = 2
+            if (level == 2 && has("avx")&&has("avx2")&&has("bmi1")&&has("bmi2")&&has("f16c")&&has("fma")&&has("abm")&&has("movbe")&&has("xsave")) level = 3
+            if (level == 3 && has("avx512f")&&has("avx512bw")&&has("avx512cd")&&has("avx512dq")&&has("avx512vl")) level = 4
+            if (level > 0) { print level; exit }
+            exit 1
+        }
+    ' /proc/cpuinfo 2>/dev/null) || return 1
     printf '%s' "$psabi_output" | tr -dc '0-9' | head -c 1
 }
 
@@ -849,7 +905,8 @@ xanmod_uninstall() {
         # 改 grub 前先备份：用户可能设置过 GRUB_DEFAULT=saved 或指定内核序号，静默丢失后无法还原
         local _grub_backup_ok=0
         if [ -f /etc/default/grub ]; then
-            local _grub_bak="/etc/default/grub.bak.$(date +%s)"
+            local _grub_bak
+            _grub_bak="/etc/default/grub.bak.$(date +%s)"
             if cp -a /etc/default/grub "$_grub_bak" 2>/dev/null; then
                 echo -e "${Y}已备份 GRUB 配置到 $_grub_bak${R}"
                 echo -e "${Y}如需还原：cp -a $_grub_bak /etc/default/grub && update-grub${R}"
@@ -892,7 +949,8 @@ xanmod_manage() {
     if xanmod_installed; then
         while true; do
             clear 2>/dev/null
-            local kernel_version=$(uname -r)
+            local kernel_version
+            kernel_version=$(uname -r) || kernel_version="unknown"
             echo -e "${G}您已安装xanmod的BBRv3内核${R}"
             echo -e "当前内核版本: ${C}$kernel_version${R}\n"
             echo -e "${Y}内核管理${R}"
@@ -1039,7 +1097,8 @@ sb_check() {
         #     软链指向的目标文件永远停在坏内容
         #   - 用 cp -a 复制内容（解析软链），.bak 里存的是真实配置内容
         #   - 备份后原文件（软链本身或普通文件）仍在原位置，再让 sb_init_conf 走 helper 写入
-        local _bak_file="${SB_CONF}.bak.$(date +%s).$$"   # 加 $$ 避免并发同秒碰撞
+        local _bak_file
+        _bak_file="${SB_CONF}.bak.$(date +%s).$$"   # 加 $$ 避免并发同秒碰撞
         if ! cp -a "$SB_CONF" "$_bak_file" 2>/dev/null; then
             echo -e "${RED}❌ 备份失败：无法复制 $SB_CONF 到 $_bak_file（可能磁盘满或权限不足）${R}" >&2
             echo -e "${RED}   原配置未改动，请手动备份后重试：cp -a $SB_CONF ${SB_CONF}.manual_bak${R}" >&2
@@ -1306,6 +1365,24 @@ sb_install_version() {
         return 1
     fi
 
+    # 磁盘空间预检查：tarball ~20MB + 解压 ~60MB ≈ 80MB，留 100MB 余量
+    # /tmp 通常是 tmpfs，小内存 VPS 上可能远小于根分区
+    local _tmp_free_kb; _tmp_free_kb=$(df -P /tmp 2>/dev/null | awk 'NR==2{print $4}')
+    if [ -n "$_tmp_free_kb" ] && [ "$_tmp_free_kb" -lt 102400 ] 2>/dev/null; then
+        echo -e "${RED}❌ /tmp 可用空间不足：当前 $((_tmp_free_kb/1024))MB，需 ≥100MB（下载+解压）${R}" >&2
+        return 1
+    fi
+    local _bin_dir; _bin_dir=$(dirname "$SB_BIN")
+    local _bin_free_kb; _bin_free_kb=$(df -P "$_bin_dir" 2>/dev/null | awk 'NR==2{print $4}')
+    if [ -n "$_bin_free_kb" ] && [ "$_bin_free_kb" -lt 51200 ] 2>/dev/null; then
+        echo -e "${RED}❌ $_bin_dir 可用空间不足：当前 $((_bin_free_kb/1024))MB，需 ≥50MB${R}" >&2
+        return 1
+    fi
+    if [ ! -w "$_bin_dir" ]; then
+        echo -e "${RED}❌ $_bin_dir 不可写（可能是只读 fs），已取消${R}" >&2
+        return 1
+    fi
+
     echo -e "${Y}正在下载 Sing-Box v${target_ver} (linux-${arch})...${R}"
     mkdir -p /etc/sing-box || { echo -e "${RED}❌ mkdir /etc/sing-box 失败（权限/只读 fs）${R}" >&2; return 1; }
     # mktemp 失败检测：原 `local workdir=$(mktemp -d ...)` 会被 local 的退出码 0 遮蔽 mktemp 失败，
@@ -1324,11 +1401,13 @@ sb_install_version() {
         rm -f "${SB_BIN}.new.$$" 2>/dev/null   # 清理可能残留的 staged bin
         [ -n "$old_binary_backup" ] && rm -f "$old_binary_backup" 2>/dev/null   # 清理孤儿备份
         # 恢复与 auto_shortcut 一致的多信号 trap（不能只恢复 EXIT，会丢失 INT/TERM/HUP 保护）
+        # shellcheck disable=SC2154 # rc is assigned via $? in trap body at trigger time
         trap 'rc=$?; rm -f "$CHECK_LOG" 2>/dev/null; exit $rc' EXIT INT TERM HUP
     }
     # trap body 含 workdir + staged bin + CHECK_LOG，信号中断时清理
     # old_binary_backup 在 line 1322 创建后才赋值，此处 trap body 无法引用——
     # 创建备份后会在下方重建 trap 加入 old_binary_backup 清理
+        # shellcheck disable=SC2154 # rc is assigned via $? in trap body at trigger time
     trap 'rc=$?; rm -rf "'"$workdir"'" 2>/dev/null; rm -f "'"${SB_BIN}.new.$$"'" 2>/dev/null; rm -f "$CHECK_LOG" 2>/dev/null; exit $rc' EXIT INT TERM HUP
     # -fL 让 HTTP 404 直接失败（curl 默认 404 仍返回 0）
     # 404 通常是版本号拼错或 release 不存在该架构包，必须显式报错而非"二进制文件缺失"误导
@@ -1359,6 +1438,7 @@ sb_install_version() {
             return 1
         fi
         # 重建 trap 加入 old_binary_backup 清理，避免信号中断时备份文件残留为孤儿
+        # shellcheck disable=SC2154 # rc is assigned via $? in trap body at trigger time
         trap 'rc=$?; rm -rf "'"$workdir"'" 2>/dev/null; rm -f "'"${SB_BIN}.new.$$"'" 2>/dev/null; rm -f "'"$old_binary_backup"'" 2>/dev/null; rm -f "$CHECK_LOG" 2>/dev/null; exit $rc' EXIT INT TERM HUP
     fi
 
@@ -1415,6 +1495,7 @@ sb_install_version() {
     rm -f "${SB_BIN}.new.$$" 2>/dev/null
     # 恢复 trap：保留 old_binary_backup 清理（信号中断时才清理，正常路径不清理）
     # fresh=1 路径 old_binary_backup="" → rm -f "" 安全空操作
+        # shellcheck disable=SC2154 # rc is assigned via $? in trap body at trigger time
     trap 'rc=$?; rm -f "'"$old_binary_backup"'" 2>/dev/null; rm -f "$CHECK_LOG" 2>/dev/null; exit $rc' EXIT INT TERM HUP
 
     if [ "$fresh" -eq 1 ]; then
@@ -1481,6 +1562,7 @@ sb_install_version() {
 [Unit]
 Description=Sing-Box Service
 After=network.target nss-lookup.target
+Wants=network-online.target
 [Service]
 Type=simple
 User=root
@@ -1488,6 +1570,25 @@ ExecStart=$SB_BIN run -c $SB_CONF
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=1048576
+# 安全加固
+ProtectSystem=strict
+ReadWritePaths=/etc/sing-box
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -1688,8 +1789,19 @@ save_iptables() {
         service iptables save >/dev/null 2>&1
     elif command -v iptables-save >/dev/null 2>&1; then
         mkdir -p /etc/iptables
-        iptables-save > /etc/iptables/rules.v4 2>/dev/null
-        ip6tables-save > /etc/iptables/rules.v6 2>/dev/null
+        # 原子写入：> 会先截断目标文件，iptables-save 失败时原规则丢失
+        local _ipt_tmp; _ipt_tmp=$(mktemp /etc/iptables/rules.v4.XXXXXX 2>/dev/null) || return 1
+        if iptables-save >"$_ipt_tmp" 2>/dev/null; then
+            mv -f "$_ipt_tmp" /etc/iptables/rules.v4 2>/dev/null
+        else
+            rm -f "$_ipt_tmp"; return 1
+        fi
+        local _ip6_tmp; _ip6_tmp=$(mktemp /etc/iptables/rules.v6.XXXXXX 2>/dev/null) || return 1
+        if ip6tables-save >"$_ip6_tmp" 2>/dev/null; then
+            mv -f "$_ip6_tmp" /etc/iptables/rules.v6 2>/dev/null
+        else
+            rm -f "$_ip6_tmp"
+        fi
     fi
 }
 
@@ -1699,11 +1811,11 @@ open_port() {
         echo -e "${RED}警告：未检测到 iptables，端口 ${port} 可能未实际放行（firewalld/ufw/nft 环境请手动放行）${R}" >&2
         return 1
     fi
-    iptables -C INPUT -p tcp --dport ${port} -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport ${port} -j ACCEPT
-    iptables -C INPUT -p udp --dport ${port} -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport ${port} -j ACCEPT
+    iptables -C INPUT -p tcp --dport "${port}" -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport "${port}" -j ACCEPT
+    iptables -C INPUT -p udp --dport "${port}" -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport "${port}" -j ACCEPT
     if command -v ip6tables >/dev/null 2>&1; then
-        ip6tables -C INPUT -p tcp --dport ${port} -j ACCEPT 2>/dev/null || ip6tables -I INPUT -p tcp --dport ${port} -j ACCEPT
-        ip6tables -C INPUT -p udp --dport ${port} -j ACCEPT 2>/dev/null || ip6tables -I INPUT -p udp --dport ${port} -j ACCEPT
+        ip6tables -C INPUT -p tcp --dport "${port}" -j ACCEPT 2>/dev/null || ip6tables -I INPUT -p tcp --dport "${port}" -j ACCEPT
+        ip6tables -C INPUT -p udp --dport "${port}" -j ACCEPT 2>/dev/null || ip6tables -I INPUT -p udp --dport "${port}" -j ACCEPT
     fi
     fw_sync_open "$port"
     save_iptables
@@ -1712,27 +1824,27 @@ open_port() {
 fw_sync_open() {
     local port=$1
     if systemctl is-active --quiet firewalld 2>/dev/null && command -v firewall-cmd >/dev/null 2>&1; then
-        firewall-cmd --add-port=${port}/tcp >/dev/null 2>&1
-        firewall-cmd --add-port=${port}/udp >/dev/null 2>&1
-        firewall-cmd --permanent --add-port=${port}/tcp >/dev/null 2>&1
-        firewall-cmd --permanent --add-port=${port}/udp >/dev/null 2>&1
+        firewall-cmd --add-port="${port}"/tcp >/dev/null 2>&1
+        firewall-cmd --add-port="${port}"/udp >/dev/null 2>&1
+        firewall-cmd --permanent --add-port="${port}"/tcp >/dev/null 2>&1
+        firewall-cmd --permanent --add-port="${port}"/udp >/dev/null 2>&1
     fi
-    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
-        ufw allow ${port}/tcp >/dev/null 2>&1
-        ufw allow ${port}/udp >/dev/null 2>&1
+    if command -v ufw >/dev/null 2>&1 && LANG=C LC_ALL=C ufw status 2>/dev/null | grep -qi '^Status: active'; then
+        ufw allow "${port}"/tcp >/dev/null 2>&1
+        ufw allow "${port}"/udp >/dev/null 2>&1
     fi
 }
 fw_sync_close() {
     local port=$1
     if systemctl is-active --quiet firewalld 2>/dev/null && command -v firewall-cmd >/dev/null 2>&1; then
-        firewall-cmd --remove-port=${port}/tcp >/dev/null 2>&1
-        firewall-cmd --remove-port=${port}/udp >/dev/null 2>&1
-        firewall-cmd --permanent --remove-port=${port}/tcp >/dev/null 2>&1
-        firewall-cmd --permanent --remove-port=${port}/udp >/dev/null 2>&1
+        firewall-cmd --remove-port="${port}"/tcp >/dev/null 2>&1
+        firewall-cmd --remove-port="${port}"/udp >/dev/null 2>&1
+        firewall-cmd --permanent --remove-port="${port}"/tcp >/dev/null 2>&1
+        firewall-cmd --permanent --remove-port="${port}"/udp >/dev/null 2>&1
     fi
-    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
-        ufw delete allow ${port}/tcp >/dev/null 2>&1
-        ufw delete allow ${port}/udp >/dev/null 2>&1
+    if command -v ufw >/dev/null 2>&1 && LANG=C LC_ALL=C ufw status 2>/dev/null | grep -qi '^Status: active'; then
+        ufw delete allow "${port}"/tcp >/dev/null 2>&1
+        ufw delete allow "${port}"/udp >/dev/null 2>&1
     fi
 }
 close_port() {
@@ -1742,11 +1854,11 @@ close_port() {
         echo -e "${Y}未检测到 iptables，跳过端口 $port 的防火墙关闭${R}"
         return 1
     fi
-    iptables -D INPUT -p tcp --dport ${port} -j ACCEPT 2>/dev/null
-    iptables -D INPUT -p udp --dport ${port} -j ACCEPT 2>/dev/null
+    iptables -D INPUT -p tcp --dport "${port}" -j ACCEPT 2>/dev/null
+    iptables -D INPUT -p udp --dport "${port}" -j ACCEPT 2>/dev/null
     if command -v ip6tables >/dev/null 2>&1; then
-        ip6tables -D INPUT -p tcp --dport ${port} -j ACCEPT 2>/dev/null
-        ip6tables -D INPUT -p udp --dport ${port} -j ACCEPT 2>/dev/null
+        ip6tables -D INPUT -p tcp --dport "${port}" -j ACCEPT 2>/dev/null
+        ip6tables -D INPUT -p udp --dport "${port}" -j ACCEPT 2>/dev/null
     fi
     fw_sync_close "$port"
     save_iptables
@@ -1764,13 +1876,19 @@ input_custom_port() {
         if [ -z "$port" ]; then
             # 随机端口同样检测占用，避免撞端口后白走一轮写配置→重启失败→回滚
             while true; do
-                port=$(shuf -i 443-65535 -n 1)
+                port=$(shuf -i 443-65535 -n 1) || { echo -e "${RED}错误：随机端口生成失败${R}" >&2; return 1; }
+                [ -n "$port" ] || continue
                 ss -tuln | grep -q ":$port " || break
             done
             echo -e "${Y}已随机生成端口: $port${R}" >&2
             break
         fi
         if ! [[ "$port" =~ ^[0-9]+$ ]]; then
+            echo -e "${RED}端口必须在 1-65535 之间，请重新输入${R}" >&2
+            continue
+        fi
+        # 长度闸门：超长纯数字（如 20+ 位）通过正则但 $(( )) 会溢出报错
+        if [ "${#port}" -gt 5 ]; then
             echo -e "${RED}端口必须在 1-65535 之间，请重新输入${R}" >&2
             continue
         fi
@@ -1818,22 +1936,36 @@ input_custom_tag() {
 
 sb_add_reality() {
     sb_check || return
-    local server_ip=$(get_my_ip)
+    local server_ip
+    server_ip=$(get_my_ip) || server_ip=""
     if [ -z "$server_ip" ]; then
         echo -e "${RED}❌ 无法获取服务器 IP（网络不可达），请检查网络后重试${R}"
         read -r -s -n 1 -p ""
         return 1
     fi
-    local listen_addr=$(sb_listen_addr)
+    local listen_addr
+    listen_addr=$(sb_listen_addr)
     echo -e "${Y}设置 VLESS-Reality 端口${R}"
     local port
     port=$(input_custom_port) || return 1   # EOF 时 input 返回 1
-    local uuid=$($SB_BIN generate uuid)
+    # generate 系列退出码 + 非空双检查：
+    # `$SB_BIN generate` 失败（二进制损坏/参数错误/源码 panic）时输出可能为空但 bash 不报错，
+    # 写入空 uuid/private_key 会让 sing-box 校验失败或上线后节点不可用
+    local uuid
+    uuid=$($SB_BIN generate uuid) || { echo -e "${RED}❌ uuid 生成失败${R}" >&2; return 1; }
+    [ -z "$uuid" ] && { echo -e "${RED}❌ uuid 生成失败${R}" >&2; return 1; }
     local sni="apple.com"
-    local keys_output=$($SB_BIN generate reality-keypair)
-    local priv_key=$(echo "$keys_output" | awk '/PrivateKey/{print $2}')
-    local pub_key=$(echo "$keys_output" | awk '/PublicKey/{print $2}')
-    local short_id=$($SB_BIN generate rand --hex 4)
+    local keys_output
+    keys_output=$($SB_BIN generate reality-keypair) || { echo -e "${RED}❌ reality-keypair 生成失败${R}" >&2; return 1; }
+    [ -z "$keys_output" ] && { echo -e "${RED}❌ reality-keypair 生成失败${R}" >&2; return 1; }
+    local priv_key pub_key
+    priv_key=$(echo "$keys_output" | awk '/PrivateKey/{print $2}') || priv_key=""
+    pub_key=$(echo "$keys_output" | awk '/PublicKey/{print $2}') || pub_key=""
+    [ -z "$priv_key" ] && { echo -e "${RED}❌ PrivateKey 解析失败${R}" >&2; return 1; }
+    [ -z "$pub_key" ] && { echo -e "${RED}❌ PublicKey 解析失败${R}" >&2; return 1; }
+    local short_id
+    short_id=$($SB_BIN generate rand --hex 4) || { echo -e "${RED}❌ short_id 生成失败${R}" >&2; return 1; }
+    [ -z "$short_id" ] && { echo -e "${RED}❌ short_id 生成失败${R}" >&2; return 1; }
 
     local default_tag="vless-reality-${port}"
     local node_tag
@@ -1867,9 +1999,12 @@ sb_add_reality() {
         fi
 
 
-        local node_json=$(jq -n \
+        # local var=$(cmd) 会用 local 的退出码（恒 0）遮蔽 jq 的退出码，
+        # jq 失败（参数错误/语法错误）产出空字符串时此处不报错，后续会写入空 inbound
+        local node_json
+        node_json=$(jq -n \
           --arg tag "$node_tag" \
-          --argjson port $port \
+          --argjson port "$port" \
           --arg uuid "$uuid" \
           --arg sni "$sni" \
           --arg priv_key "$priv_key" \
@@ -1892,7 +2027,8 @@ sb_add_reality() {
                 short_id: [$short_id]
               }
             }
-          }')
+          }') || { echo -e "${RED}❌ jq -n 失败（生成 node_json 失败），已取消${R}" >&2; exit 1; }
+        [ -z "$node_json" ] && { echo -e "${RED}❌ jq -n 失败（node_json 为空），已取消${R}" >&2; exit 1; }
 
         # 用 jq 生成新配置到临时文件；检查 jq 退出码作为纵深防御
         # jq 失败（产出空/半截 JSON）时不应继续覆盖原配置
@@ -1913,7 +2049,7 @@ sb_add_reality() {
                 fi
                 exit 1
             fi
-            open_port $port
+            open_port "$port"
 
             cat > "${META_DIR}/${node_tag}.json" <<EOF
 {"public_key":"$pub_key","short_id":"$short_id","sni":"$sni","uuid":"$uuid","port":$port,"flow":"$flow"}
@@ -1923,17 +2059,22 @@ EOF
                 echo -e "${RED}⚠️  meta 文件写入失败，请手动保存上方节点链接（sb_show_links 将无法重新生成）${R}" >&2
             fi
 
-            # 节点链接在 systemctl restart 之前打印：
-            # 配置已生效（写入磁盘 + open_port 已放行），即使 restart 后续失败或用户 Ctrl+C 中断等待，
-            # 节点实际已可访问——只是服务进程尚未重新加载。打印成功+链接让用户知道已建成。
-            echo -e "${G}✅ VLESS-Reality 部署成功！${R}"
-            local flow_param=""
-            if [ -n "$flow" ]; then
-                flow_param="&flow=${flow}"
-            fi
-            local link="vless://${uuid}@${server_ip}:${port}?encryption=none${flow_param}&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#$(urlencode "$node_tag")"
-            echo -e "${C}节点链接: ${link}${R}"
+            # 节点链接在 systemctl restart 轮询通过之后打印：
+            # restart 失败会回滚配置（链接失效），提前打印"部署成功"会误导用户。
+            echo -e "${Y}节点配置已写入，正在重启服务...${R}"
 
+            # 在 restart 轮询期间捕获 INT：Ctrl+C 中断等待时走回滚，
+            # 避免配置已写入但服务未起来留下不一致状态（端口已放行、meta 已写但服务挂）
+            _reality_rollback_on_int() {
+                echo -e "${RED}❌ 收到中断信号，正在回滚配置...${R}" >&2
+                cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null || \
+                    echo -e "${RED}❌ 回滚失败：无法恢复配置，请手动 cp -a ${SB_CONF}.bak ${SB_CONF}${R}" >&2
+                close_port "$port"
+                rm -f "${META_DIR}/${node_tag}.json"
+                systemctl restart sing-box >/dev/null 2>&1
+                exit 130
+            }
+            trap '_reality_rollback_on_int' INT
             systemctl restart sing-box >/dev/null 2>&1
             local _tries=0
             while [ "$_tries" -lt 10 ]; do
@@ -1941,14 +2082,25 @@ EOF
                 sleep 1
                 _tries=$((_tries + 1))
             done
-            if ! systemctl is-active --quiet sing-box 2>/dev/null; then
+            trap - INT   # 轮询结束（成功或超时）后立即解除捕获，让失败分支或后续逻辑能正常响应中断
+            if systemctl is-active --quiet sing-box 2>/dev/null; then
+                # 服务已起来：节点可访问，此时打印"部署成功"+链接
+                echo -e "${G}✅ VLESS-Reality 部署成功！${R}"
+                local flow_param=""
+                if [ -n "$flow" ]; then
+                    flow_param="&flow=${flow}"
+                fi
+                local link
+                link="vless://${uuid}@${server_ip}:${port}?encryption=none${flow_param}&security=reality&sni=${sni}&fp=chrome&pbk=${pub_key}&sid=${short_id}&type=tcp&headerType=none#$(urlencode "$node_tag")"
+                echo -e "${C}节点链接: ${link}${R}"
+            else
                 # 重启失败：节点配置已生效但服务未起来——回滚配置让服务能跑
                 echo -e "${RED}❌ Sing-Box 启动失败！可能是端口冲突，正在回滚配置...${R}" >&2
                 journalctl -u sing-box -n 10 --no-pager >&2
                 if ! cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null; then
                     echo -e "${RED}❌ 回滚失败：无法恢复配置（.bak 缺失/磁盘满），请手动 cp -a ${SB_CONF}.bak ${SB_CONF}${R}" >&2
                 fi
-                close_port $port
+                close_port "$port"
                 rm -f "${META_DIR}/${node_tag}.json"
                 systemctl restart sing-box >/dev/null 2>&1
                 local _rb_tries=0
@@ -1979,17 +2131,22 @@ EOF
 
 sb_add_vless_tcp() {
     sb_check || return
-    local server_ip=$(get_my_ip)
+    local server_ip
+    server_ip=$(get_my_ip) || server_ip=""
     if [ -z "$server_ip" ]; then
         echo -e "${RED}❌ 无法获取服务器 IP（网络不可达），请检查网络后重试${R}"
         read -r -s -n 1 -p ""
         return 1
     fi
-    local listen_addr=$(sb_listen_addr)
+    local listen_addr
+    listen_addr=$(sb_listen_addr)
     echo -e "${Y}设置 VLESS-TCP 端口${R}"
     local port
     port=$(input_custom_port) || return 1
-    local uuid=$($SB_BIN generate uuid)
+    # generate 退出码 + 非空双检查（避免空 uuid 写入配置导致节点不可用）
+    local uuid
+    uuid=$($SB_BIN generate uuid) || { echo -e "${RED}❌ uuid 生成失败${R}" >&2; return 1; }
+    [ -z "$uuid" ] && { echo -e "${RED}❌ uuid 生成失败${R}" >&2; return 1; }
 
     local default_tag="vless-tcp-${port}"
     local node_tag
@@ -2013,9 +2170,12 @@ sb_add_vless_tcp() {
         fi
 
 
-        local node_json=$(jq -n \
+        # local var=$(cmd) 会用 local 的退出码（恒 0）遮蔽 jq 的退出码，
+        # jq 失败（参数错误/语法错误）产出空字符串时此处不报错，后续会写入空 inbound
+        local node_json
+        node_json=$(jq -n \
           --arg tag "$node_tag" \
-          --argjson port $port \
+          --argjson port "$port" \
           --arg uuid "$uuid" \
           --arg listen "$listen_addr" \
           '{
@@ -2024,7 +2184,8 @@ sb_add_vless_tcp() {
             listen: $listen,
             listen_port: $port,
             users: [{uuid: $uuid}]
-          }')
+          }') || { echo -e "${RED}❌ jq -n 失败（生成 node_json 失败），已取消${R}" >&2; exit 1; }
+        [ -z "$node_json" ] && { echo -e "${RED}❌ jq -n 失败（node_json 为空），已取消${R}" >&2; exit 1; }
 
         # 用 jq 生成新配置到临时文件；检查 jq 退出码作为纵深防御
         if ! jq --argjson node "$node_json" '.inbounds += [$node]' "$SB_CONF" > "$SB_CONF.tmp" 2>/dev/null; then
@@ -2044,7 +2205,7 @@ sb_add_vless_tcp() {
                 fi
                 exit 1
             fi
-            open_port $port
+            open_port "$port"
 
             cat > "${META_DIR}/${node_tag}.json" <<EOF
 {"uuid":"$uuid","port":$port}
@@ -2054,11 +2215,22 @@ EOF
                 echo -e "${RED}⚠️  meta 文件写入失败，请手动保存上方节点链接${R}" >&2
             fi
 
-            # 节点链接在 systemctl restart 之前打印（参见 reality 同样说明）
-            echo -e "${G}✅ VLESS-TCP 部署成功！${R}"
-            local link="vless://${uuid}@${server_ip}:${port}?encryption=none&security=none&type=tcp&headerType=none#$(urlencode "$node_tag")"
-            echo -e "${C}节点链接: ${link}${R}"
+            # 节点链接在 systemctl restart 轮询通过之后打印：
+            # restart 失败会回滚配置（链接失效），提前打印"部署成功"会误导用户。
+            echo -e "${Y}节点配置已写入，正在重启服务...${R}"
 
+            # 在 restart 轮询期间捕获 INT：Ctrl+C 中断等待时走回滚，
+            # 避免配置已写入但服务未起来留下不一致状态（端口已放行、meta 已写但服务挂）
+            _vless_tcp_rollback_on_int() {
+                echo -e "${RED}❌ 收到中断信号，正在回滚配置...${R}" >&2
+                cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null || \
+                    echo -e "${RED}❌ 回滚失败：无法恢复配置，请手动 cp -a ${SB_CONF}.bak ${SB_CONF}${R}" >&2
+                close_port "$port"
+                rm -f "${META_DIR}/${node_tag}.json"
+                systemctl restart sing-box >/dev/null 2>&1
+                exit 130
+            }
+            trap '_vless_tcp_rollback_on_int' INT
             systemctl restart sing-box >/dev/null 2>&1
             local _tries=0
             while [ "$_tries" -lt 10 ]; do
@@ -2066,13 +2238,19 @@ EOF
                 sleep 1
                 _tries=$((_tries + 1))
             done
-            if ! systemctl is-active --quiet sing-box 2>/dev/null; then
+            trap - INT   # 轮询结束（成功或超时）后立即解除捕获
+            if systemctl is-active --quiet sing-box 2>/dev/null; then
+                echo -e "${G}✅ VLESS-TCP 部署成功！${R}"
+                local link
+                link="vless://${uuid}@${server_ip}:${port}?encryption=none&security=none&type=tcp&headerType=none#$(urlencode "$node_tag")"
+                echo -e "${C}节点链接: ${link}${R}"
+            else
                 echo -e "${RED}❌ Sing-Box 启动失败！可能是端口冲突，正在回滚配置...${R}" >&2
                 journalctl -u sing-box -n 10 --no-pager >&2
                 if ! cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null; then
                     echo -e "${RED}❌ 回滚失败：无法恢复配置（.bak 缺失/磁盘满），请手动 cp -a ${SB_CONF}.bak ${SB_CONF}${R}" >&2
                 fi
-                close_port $port
+                close_port "$port"
                 rm -f "${META_DIR}/${node_tag}.json"
                 systemctl restart sing-box >/dev/null 2>&1
                 local _rb_tries=0
@@ -2103,17 +2281,22 @@ EOF
 
 sb_add_hysteria2() {
     sb_check || return
-    local server_ip=$(get_my_ip)
+    local server_ip
+    server_ip=$(get_my_ip) || server_ip=""
     if [ -z "$server_ip" ]; then
         echo -e "${RED}❌ 无法获取服务器 IP（网络不可达），请检查网络后重试${R}"
         read -r -s -n 1 -p ""
         return 1
     fi
-    local listen_addr=$(sb_listen_addr)
+    local listen_addr
+    listen_addr=$(sb_listen_addr)
     echo -e "${Y}设置 Hysteria2 端口${R}"
     local port
     port=$(input_custom_port) || return 1
-    local pass=$($SB_BIN generate rand --hex 16)
+    # generate 退出码 + 非空双检查（空 pass 会让 hysteria2 节点变成无密码可任意接入）
+    local pass
+    pass=$($SB_BIN generate rand --hex 16) || { echo -e "${RED}❌ pass 生成失败${R}" >&2; return 1; }
+    [ -z "$pass" ] && { echo -e "${RED}❌ pass 生成失败${R}" >&2; return 1; }
     local sni="www.bing.com"
     local cert_dir="/etc/sing-box/certs/hy2-${port}"
     local default_tag="hysteria2-${port}"
@@ -2138,17 +2321,30 @@ sb_add_hysteria2() {
         fi
         # 证书在锁内、重名检查通过后生成：避免命名处 Ctrl+C 或并发退出时残留
         mkdir -p "$cert_dir" || { echo -e "${RED}❌ mkdir $cert_dir 失败（权限/只读 fs）${R}" >&2; exit 1; }
-        openssl ecparam -genkey -name prime256v1 -out "${cert_dir}/key.pem" 2>/dev/null
-        openssl req -new -x509 -days 3650 -key "${cert_dir}/key.pem" -out "${cert_dir}/cert.pem" -subj "/CN=${sni}" 2>/dev/null
-        # 私钥权限收紧检测：chmod 失败时私钥可能保持 0644（其他用户可读），是安全漏洞
+        # openssl 退出码检测：失败时清理 cert_dir 并中止
+        if ! openssl ecparam -genkey -name prime256v1 -out "${cert_dir}/key.pem" 2>/dev/null; then
+            echo -e "${RED}❌ openssl ecparam 失败（/dev/urandom 不可用/磁盘满）${R}" >&2
+            rm -rf "$cert_dir"; exit 1
+        fi
+        if ! openssl req -new -x509 -days 3650 -key "${cert_dir}/key.pem" -out "${cert_dir}/cert.pem" -subj "/CN=${sni}" 2>/dev/null; then
+            echo -e "${RED}❌ openssl req 失败（key.pem 异常）${R}" >&2
+            rm -rf "$cert_dir"; exit 1
+        fi
+        # 证书文件完整性校验
+        [ -s "${cert_dir}/key.pem" ] && [ -s "${cert_dir}/cert.pem" ] || { echo -e "${RED}❌ 证书文件生成不完整${R}" >&2; rm -rf "$cert_dir"; exit 1; }
+        # 私钥权限收紧：失败时 exit 而非仅警告（安全敏感，私钥 0644 可被同机其他用户读取）
         if ! chmod 600 "${cert_dir}/key.pem" 2>/dev/null; then
-            echo -e "${RED}⚠️  私钥权限收紧失败，${cert_dir}/key.pem 可能仍为 0644（其他用户可读）${R}" >&2
+            echo -e "${RED}❌ 私钥权限收紧失败，${cert_dir}/key.pem 可能仍为 0644（其他用户可读），已中止${R}" >&2
+            rm -rf "$cert_dir"; exit 1
         fi
 
 
-        local node_json=$(jq -n \
+        # local var=$(cmd) 会用 local 的退出码（恒 0）遮蔽 jq 的退出码，
+        # jq 失败（参数错误/语法错误）产出空字符串时此处不报错，后续会写入空 inbound
+        local node_json
+        node_json=$(jq -n \
           --arg tag "$node_tag" \
-          --argjson port $port \
+          --argjson port "$port" \
           --arg pass "$pass" \
           --arg cert "${cert_dir}/cert.pem" \
           --arg key "${cert_dir}/key.pem" \
@@ -2168,7 +2364,8 @@ sb_add_hysteria2() {
               key_path: $key
             },
             ignore_client_bandwidth: false
-          }')
+          }') || { echo -e "${RED}❌ jq -n 失败（生成 node_json 失败），已取消${R}" >&2; rm -rf "$cert_dir"; exit 1; }
+        [ -z "$node_json" ] && { echo -e "${RED}❌ jq -n 失败（node_json 为空），已取消${R}" >&2; rm -rf "$cert_dir"; exit 1; }
 
         # 用 jq 生成新配置到临时文件；检查 jq 退出码作为纵深防御
         if ! jq --argjson node "$node_json" '.inbounds += [$node]' "$SB_CONF" > "$SB_CONF.tmp" 2>/dev/null; then
@@ -2190,13 +2387,24 @@ sb_add_hysteria2() {
                 rm -rf "$cert_dir"
                 exit 1
             fi
-            open_port $port
+            open_port "$port"
 
-            # 节点链接在 systemctl restart 之前打印（参见 reality 同样说明）
-            echo -e "${G}✅ Hysteria2 部署成功！${R}"
-            local link="hysteria2://${pass}@${server_ip}:${port}?security=tls&sni=${sni}&alpn=h3&insecure=1#$(urlencode "$node_tag")"
-            echo -e "${C}节点链接: ${link}${R}"
+            # 节点链接在 systemctl restart 轮询通过之后打印：
+            # restart 失败会回滚配置（链接失效），提前打印"部署成功"会误导用户。
+            echo -e "${Y}节点配置已写入，正在重启服务...${R}"
 
+            # 在 restart 轮询期间捕获 INT：Ctrl+C 中断等待时走回滚，
+            # 避免配置已写入但服务未起来留下不一致状态（端口已放行、证书已生成但服务挂）
+            _hysteria2_rollback_on_int() {
+                echo -e "${RED}❌ 收到中断信号，正在回滚配置...${R}" >&2
+                cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null || \
+                    echo -e "${RED}❌ 回滚失败：无法恢复配置，请手动 cp -a ${SB_CONF}.bak ${SB_CONF}${R}" >&2
+                close_port "$port"
+                rm -rf "$cert_dir"
+                systemctl restart sing-box >/dev/null 2>&1
+                exit 130
+            }
+            trap '_hysteria2_rollback_on_int' INT
             systemctl restart sing-box >/dev/null 2>&1
             local _tries=0
             while [ "$_tries" -lt 10 ]; do
@@ -2204,13 +2412,19 @@ sb_add_hysteria2() {
                 sleep 1
                 _tries=$((_tries + 1))
             done
-            if ! systemctl is-active --quiet sing-box 2>/dev/null; then
+            trap - INT   # 轮询结束（成功或超时）后立即解除捕获
+            if systemctl is-active --quiet sing-box 2>/dev/null; then
+                echo -e "${G}✅ Hysteria2 部署成功！${R}"
+                local link
+                link="hysteria2://${pass}@${server_ip}:${port}?security=tls&sni=${sni}&alpn=h3&insecure=1#$(urlencode "$node_tag")"
+                echo -e "${C}节点链接: ${link}${R}"
+            else
                 echo -e "${RED}❌ Sing-Box 启动失败！正在回滚配置...${R}" >&2
                 journalctl -u sing-box -n 10 --no-pager >&2
                 if ! cp "${SB_CONF}.bak" "$SB_CONF" 2>/dev/null; then
                     echo -e "${RED}❌ 回滚失败：无法恢复配置（.bak 缺失/磁盘满），请手动 cp -a ${SB_CONF}.bak ${SB_CONF}${R}" >&2
                 fi
-                close_port $port
+                close_port "$port"
                 rm -rf "$cert_dir"
                 systemctl restart sing-box >/dev/null 2>&1
                 local _rb_tries=0
@@ -2269,7 +2483,10 @@ sb_del_node() {
     if [[ "$c" =~ ^[0-9]+$ ]] && [ "$c" -ge 1 ] && [ "$c" -le ${#tags[@]} ]; then
         tag="${tags[$((c-1))]}"
     else
-        tag=$(jq -r --arg p "$c" '.inbounds[] | select(.listen_port==($p|tonumber)) | .tag' "$SB_CONF" 2>/dev/null)
+        # 端口号查询：多个 inbound 共享同一端口时 jq 会返回多行（含换行），
+        # tag 含换行会让后续 ${META_DIR}/${tag}.json 路径异常、del(.tag==$t) 匹配失败。
+        # 加 head -1 取首个匹配，行为与"按序号选择"一致（单选）。
+        tag=$(jq -r --arg p "$c" '.inbounds[] | select(.listen_port==($p|tonumber)) | .tag' "$SB_CONF" 2>/dev/null | head -1)
     fi
 
     if [ -z "$tag" ]; then
@@ -2278,8 +2495,17 @@ sb_del_node() {
         return
     fi
 
-    local port=$(jq -r --arg t "$tag" '.inbounds[] | select(.tag==$t) | .listen_port' "$SB_CONF")
-    local type=$(jq -r --arg t "$tag" '.inbounds[] | select(.tag==$t) | .type' "$SB_CONF")
+    # local var=$(jq) 会让 local 的退出码（恒 0）遮蔽 jq 退出码：
+    # jq 失败（配置损坏/语法错）时 port/type 为空但此处不报错，
+    # 后续 close_port "$port"（空）会调用 iptables -D INPUT -p tcp --dport  -j ACCEPT 等危险命令。
+    local port
+    port=$(jq -r --arg t "$tag" '.inbounds[] | select(.tag==$t) | .listen_port' "$SB_CONF" 2>/dev/null) \
+        || { echo -e "${RED}❌ jq 读取 listen_port 失败${R}" >&2; return 1; }
+    local type
+    type=$(jq -r --arg t "$tag" '.inbounds[] | select(.tag==$t) | .type' "$SB_CONF" 2>/dev/null) \
+        || { echo -e "${RED}❌ jq 读取 type 失败${R}" >&2; return 1; }
+    [ -z "$port" ] && { echo -e "${RED}❌ 节点 $tag 的 listen_port 为空，已中止${R}" >&2; return 1; }
+    [ -z "$type" ] && { echo -e "${RED}❌ 节点 $tag 的 type 为空，已中止${R}" >&2; return 1; }
 
     # flock 检测
     if ! (exec 200>"$SB_CONF_LOCK") 2>/dev/null; then
@@ -2323,7 +2549,7 @@ sb_del_node() {
             done
             if systemctl is-active --quiet sing-box 2>/dev/null; then
                 # 健康确认通过后再做清理：若先清理后回滚，端口/meta/证书会被误删且无法恢复
-                close_port $port
+                close_port "$port"
                 rm -f "${META_DIR}/${tag}.json"
                 if [ "$type" == "hysteria2" ]; then
                     rm -rf "/etc/sing-box/certs/hy2-${port}"
@@ -2371,12 +2597,20 @@ sb_manage_ports() {
         echo -e "    ${Y}[1] 放行指定端口${R}"
         echo -e "    ${Y}[2] 关闭指定端口${R}"
         echo -e "    ${H}[0] 返回上一级${R}"
-        read -r -e -p "  请选择: " c
+        # EOF 处理：管道答案耗尽或 Ctrl+D 时 read 失败，$c 保持上一轮值会导致死循环
+        # （如 c="1" 时反复进 case 1 询问端口但端口 read 也 EOF），故 read 失败必须 break
+        if ! read -r -e -p "  请选择: " c; then
+            echo "" >&2
+            break
+        fi
         case "$c" in
             1) 
-                read -r -e -p "请输入要放行的端口号: " p
+                if ! read -r -e -p "请输入要放行的端口号: " p; then
+                    echo "" >&2
+                    break
+                fi
                 if [[ "$p" =~ ^[0-9]+$ ]] && [ "$p" -ge 1 ] && [ "$p" -le 65535 ]; then
-                    if open_port $p; then
+                    if open_port "$p"; then
                         echo -e "${G}✅ 端口 $p 已放行 (TCP+UDP)${R}"
                     else
                         echo -e "${RED}端口 $p 放行未完成${R}"
@@ -2387,9 +2621,12 @@ sb_manage_ports() {
                 read -r -s -n 1 -p ""
                 ;;
             2) 
-                read -r -e -p "请输入要关闭的端口号: " p
+                if ! read -r -e -p "请输入要关闭的端口号: " p; then
+                    echo "" >&2
+                    break
+                fi
                 if [[ "$p" =~ ^[0-9]+$ ]] && [ "$p" -ge 1 ] && [ "$p" -le 65535 ]; then
-                    if close_port $p; then
+                    if close_port "$p"; then
                         echo -e "${G}✅ 端口 $p 已关闭 (TCP+UDP)${R}"
                     else
                         echo -e "${RED}端口 $p 关闭未完成${R}"
@@ -2406,7 +2643,8 @@ sb_manage_ports() {
 
 sb_show_links() {
     sb_check || return
-    local server_ip=$(get_my_ip)
+    local server_ip
+    server_ip=$(get_my_ip) || server_ip=""
     if [ -z "$server_ip" ]; then
         echo -e "${RED}警告：无法获取服务器公网 IP，生成的链接中地址为空，请手动替换为你的公网 IP 后再使用${R}"
     fi
@@ -2429,12 +2667,13 @@ sb_show_links() {
                     continue
                 fi
                 local meta="${META_DIR}/${tag}.json"
-                local uuid=$(jq -r '.uuid' "$meta")
-                local port=$(jq -r '.port' "$meta")
-                local sni=$(jq -r '.sni' "$meta")
-                local pub_key=$(jq -r '.public_key' "$meta")
-                local short_id=$(jq -r '.short_id' "$meta")
-                local flow=$(jq -r '.flow // empty' "$meta")
+                local uuid port sni pub_key short_id flow
+                uuid=$(jq -r '.uuid' "$meta" 2>/dev/null) || uuid=""
+                port=$(jq -r '.port' "$meta" 2>/dev/null) || port=""
+                sni=$(jq -r '.sni' "$meta" 2>/dev/null) || sni=""
+                pub_key=$(jq -r '.public_key' "$meta" 2>/dev/null) || pub_key=""
+                short_id=$(jq -r '.short_id' "$meta" 2>/dev/null) || short_id=""
+                flow=$(jq -r '.flow // empty' "$meta" 2>/dev/null) || flow=""
                 local flow_param=""
                 if [ -n "$flow" ]; then
                     flow_param="&flow=${flow}"
@@ -2451,8 +2690,9 @@ sb_show_links() {
                     continue
                 fi
                 local meta="${META_DIR}/${tag}.json"
-                local uuid=$(jq -r '.uuid' "$meta")
-                local port=$(jq -r '.port' "$meta")
+                local uuid port
+                uuid=$(jq -r '.uuid' "$meta" 2>/dev/null) || uuid=""
+                port=$(jq -r '.port' "$meta" 2>/dev/null) || port=""
                 echo "vless://${uuid}@${server_ip}:${port}?encryption=none&security=none&type=tcp&headerType=none#$(urlencode "$tag")"
             fi
         done
@@ -2569,6 +2809,7 @@ auto_shortcut() {
     #     下次启动会看到下面的"被动提示"，由用户决定是否手动清理
     local _old_trap_body
     _old_trap_body=$(trap -p EXIT | sed -E "s/^trap -- '//; s/' EXIT$//" 2>/dev/null)
+        # shellcheck disable=SC2154 # rc is assigned via $? in trap body at trigger time
     trap 'rc=$?; rm -f "'"${tmp_install}"'" 2>/dev/null; '"${_old_trap_body}"' 2>/dev/null; rm -f "$CHECK_LOG" 2>/dev/null; exit $rc' EXIT INT TERM HUP
 
     # 被动检测疑似残留（trap 已挂好，本进程自己的临时文件已受保护）
